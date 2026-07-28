@@ -87,6 +87,7 @@ def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_config = LaunchConfiguration("rviz_config")
+    publish_rmp_ee_pose = LaunchConfiguration("publish_rmp_ee_pose")
     use_interactive_goal = LaunchConfiguration("use_interactive_goal")
     use_obstacles = LaunchConfiguration("use_obstacles")
     use_proximity_bridge = LaunchConfiguration("use_proximity_bridge")
@@ -95,6 +96,15 @@ def generate_launch_description():
     )
     rmp_flag_gate_enabled = LaunchConfiguration("rmp_flag_gate_enabled")
     control_rate = LaunchConfiguration("control_rate")
+    solver_backend = LaunchConfiguration("solver_backend")
+    publish_control_timing_debug = LaunchConfiguration(
+        "publish_control_timing_debug"
+    )
+    control_timing_publish_rate = LaunchConfiguration(
+        "control_timing_publish_rate"
+    )
+    casadi_rmp2_max_obstacles = LaunchConfiguration("casadi_rmp2_max_obstacles")
+    casadi_rmp2_jit = LaunchConfiguration("casadi_rmp2_jit")
     goal_x = LaunchConfiguration("goal_x")
     goal_y = LaunchConfiguration("goal_y")
     goal_z = LaunchConfiguration("goal_z")
@@ -263,7 +273,24 @@ def generate_launch_description():
             {
                 "backend_mode": "simulation",
                 "command_mode": command_mode,
+                "solver_backend": solver_backend,
                 "control_rate": ParameterValue(control_rate, value_type=float),
+                "publish_control_timing_debug": ParameterValue(
+                    publish_control_timing_debug,
+                    value_type=bool,
+                ),
+                "control_timing_debug_topic": LaunchConfiguration(
+                    "control_timing_debug_topic"
+                ),
+                "control_timing_publish_rate": ParameterValue(
+                    control_timing_publish_rate,
+                    value_type=float,
+                ),
+                "casadi_rmp2_max_obstacles": ParameterValue(
+                    casadi_rmp2_max_obstacles,
+                    value_type=int,
+                ),
+                "casadi_rmp2_jit": _bool_config("casadi_rmp2_jit"),
                 "root_solve_offset": ParameterValue(
                     root_solve_offset,
                     value_type=float,
@@ -332,6 +359,10 @@ def generate_launch_description():
                 "position_command_topic": "/position_controllers/commands",
                 "publish_target_q": True,
                 "target_q_topic": "/target_q",
+                "publish_rmp_ee_pose": ParameterValue(
+                    publish_rmp_ee_pose,
+                    value_type=bool,
+                ),
                 "publish_rmp_accel_debug": True,
                 "rmp_joint_accel_topic": "/rmp_joint_accel",
                 "rmp_tcp_accel_topic": "/rmp_tcp_accel",
@@ -630,6 +661,11 @@ def generate_launch_description():
         DeclareLaunchArgument("use_rviz", default_value="true"),
         DeclareLaunchArgument("rviz_config", default_value=rviz_config_path),
         DeclareLaunchArgument(
+            "publish_rmp_ee_pose",
+            default_value="true",
+            description="Publish /rmp_ee_pose for fake closed-loop A/B analysis.",
+        ),
+        DeclareLaunchArgument(
             "use_interactive_goal",
             default_value="false",
             description="Start the RViz interactive goal publisher.",
@@ -667,6 +703,21 @@ def generate_launch_description():
             ),
         ),
         DeclareLaunchArgument("control_rate", default_value="200.0"),
+        DeclareLaunchArgument("publish_control_timing_debug", default_value="false"),
+        DeclareLaunchArgument(
+            "control_timing_debug_topic",
+            default_value="/rmp_control_timing",
+        ),
+        DeclareLaunchArgument("control_timing_publish_rate", default_value="10.0"),
+        DeclareLaunchArgument(
+            "solver_backend",
+            default_value="pinocchio_direct",
+            description=(
+                "Runtime RMP solver: pinocchio_direct (default) or casadi_rmp2."
+            ),
+        ),
+        DeclareLaunchArgument("casadi_rmp2_max_obstacles", default_value="24"),
+        DeclareLaunchArgument("casadi_rmp2_jit", default_value="true"),
         DeclareLaunchArgument("root_solve_offset", default_value="0.001"),
         DeclareLaunchArgument("max_joint_accel", default_value="10.0"),
         DeclareLaunchArgument(
@@ -683,7 +734,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "target_rmp_proximity_metric_boost_scalar",
-            default_value="2.0",
+            default_value="4.0",
         ),
         DeclareLaunchArgument(
             "axis_target_rmp_proximity_metric_boost_scalar",
@@ -772,7 +823,7 @@ def generate_launch_description():
         DeclareLaunchArgument("enable_tangent_escape_rmp", default_value="true"),
         DeclareLaunchArgument(
             "tangent_escape_rmp_metric_scalar",
-            default_value="50000.0",
+            default_value="100000.0",
             description="Independent Tangent Escape metric scalar.",
         ),
         DeclareLaunchArgument(
@@ -830,7 +881,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "tangent_escape_rmp_max_accel",
-            default_value="0.6",
+            default_value="2.0",
             description=(
                 "Escape task-space acceleration saturation. risk_damped "
                 "requires a positive value; max_joint_accel independently "
@@ -845,7 +896,7 @@ def generate_launch_description():
         DeclareLaunchArgument("tangent_escape_rmp_prevent_weight", default_value="0.5"),
         DeclareLaunchArgument("tangent_escape_rmp_prevent_speed", default_value="0.018"),
         DeclareLaunchArgument("tangent_escape_rmp_recovery_speed", default_value="0.05"),
-        DeclareLaunchArgument("tangent_escape_rmp_max_speed", default_value="0.05"),
+        DeclareLaunchArgument("tangent_escape_rmp_max_speed", default_value="0.20"),
         DeclareLaunchArgument(
             "tangent_escape_rmp_desired_velocity_time_constant",
             default_value="0.22",
@@ -886,11 +937,11 @@ def generate_launch_description():
         DeclareLaunchArgument("tangent_escape_rmp_intent_full_speed", default_value="0.03"),
         DeclareLaunchArgument(
             "tangent_escape_rmp_minimum_drive_duration",
-            default_value="0.8",
+            default_value="2.0",
         ),
         DeclareLaunchArgument(
             "tangent_escape_rmp_command_test_distance",
-            default_value="0.002",
+            default_value="0.02",
         ),
         DeclareLaunchArgument(
             "tangent_escape_rmp_minimum_move_ratio",

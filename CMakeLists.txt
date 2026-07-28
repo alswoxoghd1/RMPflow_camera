@@ -45,36 +45,50 @@ find_library(
   HINTS "${PINOCCHIO_ROOT}/lib/x86_64-linux-gnu"
   REQUIRED
 )
+find_path(TINYXML2_INCLUDE_DIR tinyxml2.h REQUIRED)
+find_library(TINYXML2_LIBRARY tinyxml2 REQUIRED)
+
+add_library(rb10_rmp_core
+  src/paper_gds_collision.cpp
+  src/paper_gds_joint_limit.cpp
+  src/escape_energy_certificate.cpp
+  src/rmp_stability_profile.cpp
+)
+target_include_directories(rb10_rmp_core PUBLIC include)
+target_link_libraries(rb10_rmp_core Eigen3::Eigen)
 
 add_library(rb10_casadi_graph
   src/casadi_task_graph.cpp
+  src/casadi_rb10_kinematics.cpp
+  src/casadi_rmp2_solver.cpp
+  src/tangent_escape_canonical.cpp
 )
-target_include_directories(rb10_casadi_graph PRIVATE include)
-target_include_directories(rb10_casadi_graph SYSTEM PRIVATE ${CASADI_INCLUDE_DIR})
+target_include_directories(rb10_casadi_graph PUBLIC include)
+target_include_directories(rb10_casadi_graph SYSTEM PUBLIC ${CASADI_INCLUDE_DIR})
+target_include_directories(rb10_casadi_graph SYSTEM PRIVATE ${TINYXML2_INCLUDE_DIR})
 set_target_properties(
   rb10_casadi_graph PROPERTIES
   BUILD_RPATH "${CASADI_ROOT}/lib"
   INSTALL_RPATH "${CASADI_ROOT}/lib"
 )
-target_link_libraries(rb10_casadi_graph Eigen3::Eigen ${CASADI_LIBRARY})
+target_link_libraries(
+  rb10_casadi_graph
+  Eigen3::Eigen
+  rb10_rmp_core
+  ${TINYXML2_LIBRARY}
+  ${CASADI_LIBRARY}
+)
 
 add_library(rb10_pinocchio_rmp
   src/pinocchio_model.cpp
   src/pinocchio_direct_solver.cpp
-  src/tangent_escape_canonical.cpp
-  src/paper_gds_collision.cpp
-  src/paper_gds_joint_limit.cpp
-  src/escape_energy_certificate.cpp
 )
 target_include_directories(rb10_pinocchio_rmp PUBLIC include)
 target_include_directories(
   rb10_pinocchio_rmp SYSTEM PUBLIC
   ${PINOCCHIO_INCLUDE_DIR}
 )
-target_include_directories(
-  rb10_pinocchio_rmp SYSTEM PRIVATE
-  ${CASADI_INCLUDE_DIR}
-)
+target_include_directories(rb10_pinocchio_rmp SYSTEM PRIVATE ${CASADI_INCLUDE_DIR})
 set_target_properties(
   rb10_pinocchio_rmp PROPERTIES
   BUILD_RPATH "${CASADI_ROOT}/lib"
@@ -88,7 +102,6 @@ target_link_libraries(
   ${PINOCCHIO_DEFAULT_LIBRARY}
   ${PINOCCHIO_PARSERS_LIBRARY}
   rb10_casadi_graph
-  ${CASADI_LIBRARY}
 )
 
 add_library(rb10_learning_support
@@ -99,7 +112,7 @@ target_include_directories(rb10_learning_support PUBLIC include)
 target_link_libraries(
   rb10_learning_support
   Eigen3::Eigen
-  rb10_pinocchio_rmp
+  rb10_casadi_graph
 )
 
 add_executable(
@@ -116,6 +129,7 @@ set_target_properties(
 target_link_libraries(
   rmpflow_controller
   Eigen3::Eigen
+  rb10_casadi_graph
   rb10_pinocchio_rmp
   Threads::Threads
   ${CASADI_LIBRARY}
@@ -200,6 +214,15 @@ ament_target_dependencies(
   visualization_msgs
 )
 
+add_executable(generate_casadi_rmp2_policy src/generate_casadi_rmp2_policy.cpp)
+target_include_directories(generate_casadi_rmp2_policy PRIVATE include)
+set_target_properties(
+  generate_casadi_rmp2_policy PROPERTIES
+  BUILD_RPATH "${CASADI_ROOT}/lib"
+  INSTALL_RPATH "${CASADI_ROOT}/lib"
+)
+target_link_libraries(generate_casadi_rmp2_policy rb10_casadi_graph)
+
 add_executable(rmpflow_bridge src/rmpflow_bridge.cpp)
 target_include_directories(rmpflow_bridge PRIVATE include)
 target_link_libraries(rmpflow_bridge Eigen3::Eigen)
@@ -235,14 +258,16 @@ ament_target_dependencies(
 
 install(
   TARGETS
-    rb10_pinocchio_rmp
+    rb10_rmp_core
     rb10_casadi_graph
+    rb10_pinocchio_rmp
     rb10_learning_support
     rmpflow_controller
     interactive_goal
     obstacle_manager
     tof_ray_visualizer
     proximity_obstacle_bridge
+    generate_casadi_rmp2_policy
     rmpflow_bridge
     joint_state_adapter
     rb10_direct_bridge
@@ -289,10 +314,13 @@ install(
     scripts/analyze_rmp_dataset.py
     scripts/create_tuning_experiment.py
     scripts/move_to_saved_start_pose.py
-	    scripts/joint_velocity_logger.py
-	    scripts/fake_proximity_scenario.py
-	    scripts/fake_proximity_scenario_v2.py
-	    scripts/check_tangent_escape_stage0_fake.py
+    scripts/joint_velocity_logger.py
+    scripts/fake_proximity_scenario.py
+    scripts/fake_proximity_scenario_v2.py
+    scripts/fixed_obstacle_tof_raycast.py
+    scripts/run_fixed_obstacle_escape_benchmark.py
+    scripts/plot_fixed_obstacle_escape_tuning.py
+    scripts/check_tangent_escape_stage0_fake.py
     scripts/check_tangent_escape_closed_loop.py
     scripts/compare_tangent_escape_ab.py
   scripts/analyze_rmp_leaf_ablation.py
@@ -307,8 +335,11 @@ install(
 	    scripts/plot_tcp_accel_direction.py
     scripts/plot_tangent_escape_geometry_report.py
     scripts/stability_certificate_visualizer.py
+    scripts/plot_rmpflow_proof_run.py
+    scripts/plot_escape_stability_evidence.py
 	    scripts/plot_velocity_filter_comparison.py
     scripts/plot_velocity_dataset_comparison.py
+    scripts/record_rmp_control_rate.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -327,7 +358,7 @@ if(BUILD_TESTING)
   target_link_libraries(
     test_tangent_escape_canonical
     Eigen3::Eigen
-    rb10_pinocchio_rmp
+    rb10_casadi_graph
   )
   add_test(
     NAME tangent_escape_canonical
@@ -344,7 +375,7 @@ if(BUILD_TESTING)
   target_link_libraries(
     test_paper_gds_collision
     Eigen3::Eigen
-    rb10_pinocchio_rmp
+    rb10_rmp_core
   )
 
   ament_add_gtest(
@@ -355,7 +386,7 @@ if(BUILD_TESTING)
   target_link_libraries(
     test_paper_gds_joint_limit
     Eigen3::Eigen
-    rb10_pinocchio_rmp
+    rb10_rmp_core
   )
 
   ament_add_gtest(
@@ -366,8 +397,100 @@ if(BUILD_TESTING)
   target_link_libraries(
     test_escape_energy_certificate
     Eigen3::Eigen
+    rb10_rmp_core
+  )
+
+  ament_add_gtest(
+    test_casadi_rb10_kinematics
+    test/test_casadi_rb10_kinematics.cpp
+  )
+  target_include_directories(test_casadi_rb10_kinematics PRIVATE include)
+  target_compile_definitions(
+    test_casadi_rb10_kinematics
+    PRIVATE RB10_TEST_URDF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/urdf/rb10_1300e.urdf"
+  )
+  set_target_properties(
+    test_casadi_rb10_kinematics PROPERTIES
+    BUILD_RPATH "${CASADI_ROOT}/lib"
+  )
+  target_link_libraries(
+    test_casadi_rb10_kinematics
+    Eigen3::Eigen
+    rb10_casadi_graph
+  )
+
+  ament_add_gtest(
+    test_casadi_rmp2_solver
+    test/test_casadi_rmp2_solver.cpp
+  )
+  target_include_directories(test_casadi_rmp2_solver PRIVATE include)
+  target_compile_definitions(
+    test_casadi_rmp2_solver
+    PRIVATE RB10_TEST_URDF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/urdf/rb10_1300e.urdf"
+  )
+  set_target_properties(
+    test_casadi_rmp2_solver PROPERTIES
+    BUILD_RPATH "${CASADI_ROOT}/lib"
+  )
+  target_link_libraries(
+    test_casadi_rmp2_solver
+    Eigen3::Eigen
+    rb10_casadi_graph
+  )
+
+  ament_add_gtest(
+    test_solver_backend_equivalence
+    test/test_solver_backend_equivalence.cpp
+  )
+  target_include_directories(test_solver_backend_equivalence PRIVATE include)
+  target_compile_definitions(
+    test_solver_backend_equivalence
+    PRIVATE RB10_TEST_URDF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/urdf/rb10_1300e.urdf"
+  )
+  set_target_properties(
+    test_solver_backend_equivalence PROPERTIES
+    BUILD_RPATH "${CASADI_ROOT}/lib"
+  )
+  target_link_libraries(
+    test_solver_backend_equivalence
+    Eigen3::Eigen
+    rb10_casadi_graph
     rb10_pinocchio_rmp
   )
+
+  ament_add_gtest(
+    test_full_rmp_properties
+    test/test_full_rmp_properties.cpp
+  )
+  target_include_directories(test_full_rmp_properties PRIVATE include)
+  target_compile_definitions(
+    test_full_rmp_properties
+    PRIVATE RB10_TEST_URDF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/urdf/rb10_1300e.urdf"
+  )
+  set_target_properties(
+    test_full_rmp_properties PROPERTIES
+    BUILD_RPATH "${CASADI_ROOT}/lib"
+  )
+  target_link_libraries(
+    test_full_rmp_properties
+    Eigen3::Eigen
+    rb10_pinocchio_rmp
+  )
+
+  ament_add_gtest(
+    test_rb10_model_context
+    test/test_rb10_model_context.cpp
+  )
+  target_include_directories(test_rb10_model_context PRIVATE include)
+  target_link_libraries(test_rb10_model_context Eigen3::Eigen)
+
+  ament_add_gtest(
+    test_rb10_socket_client_read_only
+    test/test_rb10_socket_client_read_only.cpp
+    src/rb10_socket_client.cpp
+  )
+  target_include_directories(test_rb10_socket_client_read_only PRIVATE include)
+  target_link_libraries(test_rb10_socket_client_read_only Threads::Threads)
 endif()
 
 ament_package()

@@ -45,7 +45,8 @@ public:
     StateCallback state_callback,
     LogCallback log_callback,
     bool enable_realtime_threads = false,
-    int realtime_priority = 0);
+    int realtime_priority = 0,
+    bool enable_command_channel = true);
   void disconnect();
 
   bool initialize_robot(bool simulation_mode);
@@ -89,6 +90,7 @@ private:
   double data_request_rate_hz_{100.0};
   bool realtime_threads_enabled_{false};
   int realtime_priority_{0};
+  bool command_channel_enabled_{true};
   int cmd_sock_{-1};
   int data_sock_{-1};
   std::atomic<bool> running_{false};

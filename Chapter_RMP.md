@@ -87,7 +87,12 @@ The desired joint acceleration is computed as
 \ddot{q}^{*}=(A+\lambda I)^{-1}f,
 \]
 
-where \(\lambda I\) is the root regularization term. The current implementation uses the Pinocchio-based direct solver with `solve_method: rmp2` and `rmp_type: canonical`.
+where \(\lambda I\) is the root regularization term. The controller keeps
+`solve_method: rmp2` and `rmp_type: canonical` in both backends. Runtime control
+uses an explicit Pinocchio/Eigen accumulation, while the CasADi Algorithm-3 DAG
+is retained as a reference implementation. Automated same-state tests compare
+the resulting root metric \(A\), natural force \(f\), and resolved acceleration
+\(\ddot q^*\), including the stateful Tangent Escape path.
 
 ## D. RMP Leaves
 

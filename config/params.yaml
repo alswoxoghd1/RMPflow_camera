@@ -2,8 +2,13 @@
 
 rmpflow_controller:
   ros__parameters:
-      # RMP solver common
+    # Real-time default. Use casadi_rmp2 only for reference/equivalence checks.
+    solver_backend: "pinocchio_direct"
+
+    # RMP solver common
     root_solve_offset: 0.001
+    casadi_rmp2_max_obstacles: 24
+    casadi_rmp2_jit: true
 
     # Collision RMP
     # lula_canonical preserves the existing production/site formula.
@@ -102,19 +107,28 @@ rmpflow_controller:
     preserve_joint_accel_direction: true
     # max_joint_accel: 1.5
     command_guard_max_velocity_rad_s: 1.0
+    command_guard_velocity_slew_enabled: false
+    command_guard_max_accel_rad_s2: 10.0
     # command_guard_max_velocity_rad_s: 0.5
     predictive_joint_limit_guard: true
 
 
 
     control_rate: 200.0
+    # Disabled in normal runs. The rate benchmark enables this low-rate topic.
+    publish_control_timing_debug: false
+    control_timing_debug_topic: "/rmp_control_timing"
+    control_timing_publish_rate: 10.0
     estimate_velocity_in_controller: false
     controller_velocity_filter_alpha: 0.5
-    use_synced_input_velocity_filter: false
+    use_synced_input_velocity_filter: true
     synced_input_velocity_filter_type: "alpha-beta"
     synced_input_velocity_filter_alpha: 0.7
     synced_input_velocity_filter_beta: 0.04
     synced_input_velocity_ratio_tolerance: 0.05
+    synced_input_velocity_max_raw_rad_s: 6.0
+    synced_input_velocity_position_step_margin_rad: 0.01
+    synced_input_velocity_max_output_rad_s: 2.0
     use_velocity_feedback_in_solver: true
     measured_position_feedback_blend: 1.0
     measured_velocity_feedback_blend: 0.6
@@ -143,29 +157,31 @@ rmpflow_controller:
     # only for controlled A/B rollback and is not selected by this profile.
     enable_tangent_escape_rmp: false
     tangent_escape_rmp_acceleration_model: "risk_damped"
-    # Independent numeric values. The Escape metric is intentionally lower
-    # than Collision's 100000.0 after the visual tuning run. The clearance
-    # margin remains the same numeric 0.0 m, but neither value is linked to
-    # Collision parameters at runtime.
-    tangent_escape_rmp_metric_scalar: 50000.0
+    # Independent numeric values. The fixed-cylinder ON/OFF profile now gives
+    # Escape the same base metric scale as Collision. The clearance margin
+    # remains independent from Collision parameters at runtime.
+    tangent_escape_rmp_metric_scalar: 100000.0
     tangent_escape_rmp_clearance_margin: 0.0
     # In risk_damped mode its effective rank-one metric is m_t * lambda * B.
     # canonical_velocity-only compatibility gain (unused by risk_damped).
     tangent_escape_rmp_velocity_gain: 20.0
     # This is a Cartesian tangent-task limit (m/s^2). The resolved joint
     # acceleration still follows the independent global max_joint_accel limit.
-    tangent_escape_rmp_max_accel: 0.6
+    tangent_escape_rmp_max_accel: 4.0
     tangent_escape_rmp_goal_block_beta_on: 0.5
     tangent_escape_rmp_goal_block_beta_full: 0.94
     tangent_escape_rmp_nominal_prediction_dt: 0.01
     tangent_escape_rmp_normal_tolerance: 0.20
 
     # Active risk-damped acceleration:
-    #   a_risk = k_p exp(-d+/sigma_p)
+    #   a_base = k_p exp(-d+/sigma_p)
     #          + g_v(dot_d) k_v max(0,-dot_d)/(d+/sigma_v+eps)
+    #   a_stuck = alpha_stuck * ramp(t_active) * a_floor
+    #   a_risk = hypot(a_base, a_stuck)
     #   a_y = sat(a_risk - b_t v_t),  m_y = m_t lambda B.
-    # Only the clearance derivative is filtered; B is never filtered.
-    tangent_escape_rmp_risk_distance_gain: 0.30
+    # The floor ramps in only after a blocked episode remains stuck. Only the
+    # clearance derivative is filtered; B is never filtered.
+    tangent_escape_rmp_risk_distance_gain: 8.00
     tangent_escape_rmp_risk_distance_scale: 0.08
     tangent_escape_rmp_risk_approach_gain: 0.50
     tangent_escape_rmp_risk_approach_distance_scale: 0.08
@@ -173,6 +189,9 @@ rmpflow_controller:
     tangent_escape_rmp_risk_velocity_gate_scale: 0.03
     tangent_escape_rmp_risk_clearance_rate_filter_time_constant: 0.05
     tangent_escape_rmp_risk_tangent_damping_gain: 10.0
+    tangent_escape_rmp_risk_stuck_accel_floor: 0.20
+    tangent_escape_rmp_risk_stuck_dwell_time: 0.30
+    tangent_escape_rmp_risk_stuck_ramp_time: 0.30
 
     # Compatibility/shared supervisor block. risk_damped ignores the old z-LPF,
     # desired-velocity, drive-ramp, and RELEASE parameters, while it still uses
@@ -194,13 +213,13 @@ rmpflow_controller:
     tangent_escape_rmp_intent_full_speed: 0.03
     tangent_escape_rmp_prevent_speed: 0.018
     tangent_escape_rmp_recovery_speed: 0.05
-    tangent_escape_rmp_max_speed: 0.05
+    tangent_escape_rmp_max_speed: 0.20
     tangent_escape_rmp_desired_velocity_time_constant: 0.22
     tangent_escape_rmp_release_stop_speed: 0.01
     tangent_escape_rmp_release_hold_speed: 0.06
     tangent_escape_rmp_drive_ramp_duration: 0.25
     tangent_escape_rmp_handoff_duration: 0.25
-    tangent_escape_rmp_minimum_drive_duration: 0.8
+    tangent_escape_rmp_minimum_drive_duration: 2.0
     tangent_escape_rmp_release_blockage_threshold: 0.03
     tangent_escape_rmp_pair_switch_margin: 0.10
     tangent_escape_rmp_direction_switch_margin: 0.08
@@ -214,7 +233,7 @@ rmpflow_controller:
     tangent_escape_rmp_blocked_memory_penalty_weight: 2.0
     tangent_escape_rmp_candidate_min_displacement: 0.00001
     tangent_escape_rmp_refinement_iterations: 5
-    tangent_escape_rmp_command_test_distance: 0.002
+    tangent_escape_rmp_command_test_distance: 0.02
     tangent_escape_rmp_minimum_move_ratio: 0.30
     tangent_escape_rmp_goal_change_reset_distance: 0.02
 
@@ -267,25 +286,29 @@ rmpflow_controller:
     joint_upper_limits_deg: [211.68, 70.0, -50.0, 80.0, 120.0, 360.0]
     joint_limit_buffers: [0.01, 0.01, 0.01, 0.01, 0.01, 0.01]
     backend_mode: "simulation"
+    # Set false only for read-only hardware observation. No RB10 command socket is opened.
+    hardware_command_enabled: true
     hardware_state_topic: "hardware_joint_states"
     hardware_command_topic: "hardware_joint_command"
     joint_state_topic: "joint_states"
     position_command_topic: "position_controllers/commands"
+    dry_run_command_topic: "/rmp_dry_run_command"
     publish_position_command: true
     position_command_state_topic: "/rmp_position_command"
-    publish_rmp_accel_debug: true
+    publish_rmp_accel_debug: false
     rmp_joint_accel_topic: "/rmp_joint_accel"
     rmp_tcp_accel_topic: "/rmp_tcp_accel"
     # position: move_servo_j(q), velocity: move_speed_j(qd)
     # command_mode: "position"
     command_mode: "velocity"
     # SpeedJ parameters used only when command_mode is velocity.
-    speedj_t1: 0.02
-    speedj_t2: 0.2
-    speedj_gain: 0.05
+    speedj_t1: 0.002
+    speedj_t2: 0.1
+    speedj_gain: 0.005
     speedj_alpha: 0.1
     publish_joint_states: true
     joint_state_publish_topic: "joint_states"
+    publish_rmp_ee_pose: false
     publish_goal_tf: false
     goal_tf_parent_frame: "base_link"
     goal_tf_child_frame: "rmp_goal_target"
@@ -834,6 +857,9 @@ rb10_api_bridge:
     speedj_t2: 0.1
     speedj_gain: 0.005
     speedj_alpha: 0.1
+    publish_only_new_state_packets: true
+    state_max_raw_velocity_rad_s: 6.0
+    state_position_step_margin_rad: 0.01
 
 rb10_direct_bridge:
   ros__parameters:

@@ -33,6 +33,7 @@ def generate_launch_description():
     robot_ip = LaunchConfiguration("robot_ip")
     params_file = LaunchConfiguration("params_file")
     use_rviz = LaunchConfiguration("use_rviz")
+    solver_backend = LaunchConfiguration("solver_backend")
     cb_simulation = LaunchConfiguration("cb_simulation")
     use_direct_hardware_backend = LaunchConfiguration("use_direct_hardware_backend")
     real_joint_state_source = LaunchConfiguration("real_joint_state_source")
@@ -109,7 +110,15 @@ def generate_launch_description():
     joint_velocity_log_prefix = LaunchConfiguration("joint_velocity_log_prefix")
     controller_parameters = {
         "robot_ip": robot_ip,
-        "simulation_mode": cb_simulation,
+        "solver_backend": solver_backend,
+        # Local simulation must never be forwarded as RB controller-box mode.
+        "simulation_mode": False,
+        "hardware_command_enabled": ParameterValue(
+            PythonExpression([
+                'False if "', cb_simulation, '" == "true" else True'
+            ]),
+            value_type=bool,
+        ),
         "real_joint_state_source": real_joint_state_source,
         "hardware_data_request_rate": bridge_publish_rate,
         "joint_state_topic": normalized_joint_state_topic,
@@ -126,14 +135,17 @@ def generate_launch_description():
         "target_metric_topic": target_metric_topic,
         "publish_joint_states": ParameterValue(
             PythonExpression([
-                'True if "', use_direct_hardware_backend, '" == "true" else False'
+                'True if "', cb_simulation, '" == "true" or "',
+                use_direct_hardware_backend, '" == "true" else False'
             ]),
             value_type=bool,
         ),
         "backend_mode": ParameterValue(
             PythonExpression([
-                '"rb10_direct_api" if "', use_direct_hardware_backend,
-                '" == "true" else "joint_command_topics"'
+                '"simulation" if "', cb_simulation,
+                '" == "true" else ("rb10_direct_api" if "',
+                use_direct_hardware_backend,
+                '" == "true" else "joint_command_topics")'
             ]),
             value_type=str,
         ),
@@ -189,14 +201,15 @@ def generate_launch_description():
         name="rb10_api_bridge",
         output="screen",
         condition=IfCondition(PythonExpression([
-            '"', use_direct_hardware_backend, '" != "true" and "',
+            '"', cb_simulation, '" != "true" and "',
+            use_direct_hardware_backend, '" != "true" and "',
             start_api_bridge, '" == "true"',
         ])),
         parameters=[
             params_file,
             {
                 "robot_ip": robot_ip,
-                "simulation_mode": cb_simulation,
+                "simulation_mode": False,
                 "command_mode": command_mode,
                 "command_topic": "/position_controllers/commands",
                 "joint_state_topic": "/joint_states",
@@ -221,7 +234,8 @@ def generate_launch_description():
         name="joint_state_adapter",
         output="screen",
         condition=IfCondition(PythonExpression([
-            '"', use_direct_hardware_backend, '" != "true" and "',
+            '"', cb_simulation, '" != "true" and "',
+            use_direct_hardware_backend, '" != "true" and "',
             raw_joint_state_topic, '" != "', normalized_joint_state_topic, '"'
         ])),
         parameters=[{
@@ -349,7 +363,13 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(record_data),
         parameters=[{
-            "mode": "real",
+            "mode": ParameterValue(
+                PythonExpression([
+                    '"simulation" if "', cb_simulation,
+                    '" == "true" else "real"'
+                ]),
+                value_type=str,
+            ),
             "auto_start": auto_start_recording,
             "recording_rate": recording_rate,
             "output_directory": recording_output_directory,
@@ -412,7 +432,13 @@ def generate_launch_description():
             "external_goal_topic": "/RMP_goal",
             "controller_goal_topic": "/goal_pose",
             "joint_state_topic": normalized_joint_state_topic,
-            "command_topic": "/position_controllers/commands",
+            "command_topic": ParameterValue(
+                PythonExpression([
+                    '"/rmp_dry_run_command" if "', cb_simulation,
+                    '" == "true" else "/position_controllers/commands"'
+                ]),
+                value_type=str,
+            ),
             "target_q_topic": "/target_q",
             "target_metric_topic": target_metric_topic,
             "debug_state_topic": "/rmp_debug_state",
@@ -488,9 +514,20 @@ def generate_launch_description():
             description="Start RViz.",
         ),
         DeclareLaunchArgument(
+            "solver_backend",
+            default_value="pinocchio_direct",
+            description=(
+                "Runtime RMP solver: pinocchio_direct (real-time default) or "
+                "casadi_rmp2 (reference/equivalence backend)."
+            ),
+        ),
+        DeclareLaunchArgument(
             "cb_simulation",
             default_value="false",
-            description="Use the RB controller box in simulation mode.",
+            description=(
+                "Use the local in-process simulation backend. This mode never opens "
+                "RB10 hardware sockets or sends hardware commands."
+            ),
         ),
         DeclareLaunchArgument(
             "use_direct_hardware_backend",
@@ -596,12 +633,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "publish_rmp_ee_pose",
-            default_value="true",
+            default_value="false",
             description="Publish the controller's internal RMP end-effector pose topic.",
         ),
         DeclareLaunchArgument(
             "publish_target_metric",
-            default_value="true",
+            default_value="false",
             description="Publish the controller target RMP 3x3 leaf metric as Float64MultiArray.",
         ),
         DeclareLaunchArgument(
@@ -664,7 +701,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_rmpflow_trace_logger",
-            default_value="true",
+            default_value="false",
             description="Start a trace logger that records RMP inputs, sensor ranges, metrics, and commands.",
         ),
         DeclareLaunchArgument(
@@ -692,7 +729,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "publish_tangent_escape_rmp_data",
-            default_value="true",
+            default_value="false",
             description="Publish tangent escape RMP diagnostics for trace logging.",
         ),
         DeclareLaunchArgument(

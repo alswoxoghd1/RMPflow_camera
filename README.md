@@ -5,8 +5,11 @@
 현재 구현은 아래 조합을 사용합니다.
 
 - `Eigen`: 수치 계산
-- `Pinocchio`: RB10 kinematics / Jacobian
-- `CasADi`: task-map / DAG 미분
+- `Pinocchio`: 실제 제어 주기의 RB10 운동학과 explicit RMP2 root 누적
+- `CasADi`: Algorithm-3 DAG 참조 구현, task-map 미분, backend 동등성 검증
+
+실제 제어 기본값은 `solver_backend: pinocchio_direct`입니다. CasADi 전체
+solver는 `solver_backend:=casadi_rmp2`를 명시한 검증 실험에서만 사용합니다.
 
 이 문서는 처음 받은 사람이 GitHub에서 내려받아 바로 실행하는 기준으로 다시 정리한 사용 가이드입니다.
 
@@ -45,6 +48,7 @@ sudo apt install -y \
   libeigen3-dev \
   libboost-filesystem-dev \
   libboost-serialization-dev \
+  libtinyxml2-dev \
   python3-colcon-common-extensions \
   python3-rosdep \
   ros-humble-rclcpp \
@@ -54,10 +58,10 @@ sudo apt install -y \
   ros-humble-visualization-msgs \
   ros-humble-tf2-ros \
   ros-humble-interactive-markers \
+  ros-humble-pinocchio \
   ros-humble-robot-state-publisher \
   ros-humble-joint-state-publisher \
-  ros-humble-rviz2 \
-  ros-humble-pinocchio
+  ros-humble-rviz2
 ```
 
 `rosdep`를 아직 초기화하지 않았다면:
@@ -98,7 +102,8 @@ ls ~/rb10_rl_sim/third_party/casadi/install/lib/libcasadi.so
 ```bash
 source /opt/ros/humble/setup.bash
 cd ~/rb10_rl_sim
-colcon build --packages-select rb10_rmpflow_rviz --symlink-install
+colcon build --packages-select rb10_rmpflow_rviz --symlink-install \
+  --cmake-args -DCMAKE_BUILD_TYPE=Release
 source ~/rb10_rl_sim/install/setup.bash
 ```
 
@@ -115,6 +120,12 @@ source ~/rb10_rl_sim/install/setup.bash
 source /opt/ros/humble/setup.bash
 source ~/rb10_rl_sim/install/setup.bash
 ros2 launch rb10_rmpflow_rviz rb10_rmpflow.launch.py
+```
+
+CasADi 참조 backend를 명시적으로 비교할 때만 다음을 추가합니다.
+
+```bash
+solver_backend:=casadi_rmp2 casadi_rmp2_jit:=true
 ```
 
 ### 옵션
@@ -156,12 +167,6 @@ ls ~/rb10_rl_sim/third_party/casadi/install/lib/libcasadi.so
 만약 작업공간를 `~/rb10_rl_sim`가 아닌 다른 경로에 두었다면:
 - [`CMakeLists.txt`](/home/song/rb10_rl_sim/rb10_rmpflow_rviz/CMakeLists.txt)의 `CASADI_ROOT`를 수정하고 다시 빌드해야 합니다.
 
-### `pinocchio` 관련 에러가 나는 경우
-
-```bash
-sudo apt install -y ros-humble-pinocchio
-```
-
 ### 빌드는 되는데 launch가 안 되는 경우
 
 아래 순서로 다시 실행:
@@ -177,7 +182,9 @@ ros2 launch rb10_rmpflow_rviz rb10_rmpflow.launch.py
 - launch: [`rb10_rmpflow.launch.py`](/home/song/rb10_rl_sim/rb10_rmpflow_rviz/launch/rb10_rmpflow.launch.py)
 - controller 파라미터: [`params.yaml`](/home/song/rb10_rl_sim/rb10_rmpflow_rviz/config/params.yaml)
 - controller node: [`rmpflow_controller_node.cpp`](/home/song/rb10_rl_sim/rb10_rmpflow_rviz/src/rmpflow_controller_node.cpp)
-- solver: [`pinocchio_direct_solver.cpp`](/home/song/rb10_rl_sim/rb10_rmpflow_rviz/src/pinocchio_direct_solver.cpp)
+- 실시간 solver: [`pinocchio_direct_solver.cpp`](/home/song/rb10_rl_sim/rb10_rmpflow_rviz/src/pinocchio_direct_solver.cpp)
+- 참조 solver: [`casadi_rmp2_solver.cpp`](/home/song/rb10_rl_sim/rb10_rmpflow_rviz/src/casadi_rmp2_solver.cpp)
+- backend 동등성 테스트: [`test_solver_backend_equivalence.cpp`](/home/song/rb10_rl_sim/rb10_rmpflow_rviz/test/test_solver_backend_equivalence.cpp)
 
 ## 10. 빠른 실행 요약
 
@@ -189,13 +196,13 @@ cd ~/rb10_rl_sim
 sudo apt update
 sudo apt install -y \
   build-essential cmake git \
-  libeigen3-dev libboost-filesystem-dev libboost-serialization-dev \
+  libeigen3-dev \
   python3-colcon-common-extensions python3-rosdep \
   ros-humble-rclcpp ros-humble-std-msgs ros-humble-sensor-msgs \
   ros-humble-geometry-msgs ros-humble-visualization-msgs \
   ros-humble-tf2-ros ros-humble-interactive-markers \
   ros-humble-robot-state-publisher ros-humble-joint-state-publisher \
-  ros-humble-rviz2 ros-humble-pinocchio
+  ros-humble-rviz2
 
 mkdir -p ~/rb10_rl_sim/third_party
 git clone --depth 1 --branch 3.7.2 https://github.com/casadi/casadi.git ~/rb10_rl_sim/third_party/casadi

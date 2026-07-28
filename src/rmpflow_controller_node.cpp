@@ -41,6 +41,7 @@
 #include "visualization_msgs/msg/marker_array.hpp"
 
 #include "rb10_rmpflow_rviz/rb10_socket_client.hpp"
+#include "rb10_rmpflow_rviz/casadi_rmp2_solver.hpp"
 #include "rb10_rmpflow_rviz/joint_acceleration_limiter.hpp"
 #include "rb10_rmpflow_rviz/pinocchio_direct_solver.hpp"
 #include "rb10_rmpflow_rviz/rb10_model.hpp"
@@ -83,6 +84,95 @@ struct RobotState
   JointVector q{JointVector::Zero()};
   JointVector qd{JointVector::Zero()};
 };
+
+struct CommandGuardDiagnostics
+{
+  bool clamped{false};
+  bool velocity_slew_clamped{false};
+  JointVector pre_guard_command{JointVector::Zero()};
+  JointVector command_step{JointVector::Zero()};
+};
+
+struct BackendTimingSnapshot
+{
+  std::uint64_t state_interval_count{0U};
+  double state_interval_latest_sec{0.0};
+  double state_interval_total_sec{0.0};
+  double state_interval_max_sec{0.0};
+  double state_interval_window_max_sec{0.0};
+  std::uint64_t state_gap_over_5ms_count{0U};
+  std::uint64_t state_gap_over_20ms_count{0U};
+  std::uint64_t state_gap_over_100ms_count{0U};
+  std::uint64_t velocity_filter_update_count{0U};
+  std::uint64_t velocity_filter_input_reject_count{0U};
+  std::uint64_t velocity_filter_output_reject_count{0U};
+  double velocity_filter_synced_dt_window_max_sec{0.0};
+  std::uint64_t controller_packet_time_used_count{0U};
+  std::uint64_t controller_packet_time_fallback_count{0U};
+  std::uint64_t controller_packet_time_duplicate_count{0U};
+  std::uint64_t controller_packet_time_reset_count{0U};
+  double controller_packet_time_dt_window_max_sec{0.0};
+  JointVector raw_position_step_abs_window_max{JointVector::Zero()};
+  JointVector raw_velocity_abs_window_max{JointVector::Zero()};
+  JointVector velocity_filter_residual_abs_window_max{JointVector::Zero()};
+  JointVector filtered_velocity_abs_window_max{JointVector::Zero()};
+};
+
+struct ControlTimingAccumulator
+{
+  std::uint64_t active_cycle_count{0U};
+  bool previous_active_cycle_valid{false};
+  std::chrono::steady_clock::time_point previous_active_cycle_start{};
+  std::chrono::steady_clock::time_point last_publish_time{};
+  double cycle_interval_latest_sec{0.0};
+  double cycle_interval_total_sec{0.0};
+  double cycle_interval_max_sec{0.0};
+  double cycle_interval_window_max_sec{0.0};
+  double solve_latest_sec{0.0};
+  double solve_total_sec{0.0};
+  double solve_max_sec{0.0};
+  double solve_window_max_sec{0.0};
+  double pre_solve_total_sec{0.0};
+  double pre_solve_window_max_sec{0.0};
+  double post_solve_total_sec{0.0};
+  double post_solve_window_max_sec{0.0};
+  double work_latest_sec{0.0};
+  double work_total_sec{0.0};
+  double work_max_sec{0.0};
+  double work_window_max_sec{0.0};
+  double start_lateness_latest_sec{0.0};
+  double start_lateness_total_sec{0.0};
+  double start_lateness_max_sec{0.0};
+  double start_lateness_window_max_sec{0.0};
+  std::uint64_t deadline_miss_count{0U};
+  double measured_qd_norm_max{0.0};
+  double measured_qd_max_abs_max{0.0};
+  double qdd_norm_max{0.0};
+  double qdd_max_abs_max{0.0};
+  double command_norm_max{0.0};
+  double command_max_abs_max{0.0};
+};
+
+void update_atomic_max(std::atomic<std::int64_t> & target, std::int64_t value)
+{
+  std::int64_t current = target.load(std::memory_order_relaxed);
+  while (
+    value > current &&
+    !target.compare_exchange_weak(
+      current, value, std::memory_order_relaxed, std::memory_order_relaxed))
+  {
+  }
+}
+
+std::int64_t diagnostic_value_to_nano(double value)
+{
+  constexpr double kMaximumDiagnosticMagnitude = 1.0e6;
+  if (!std::isfinite(value)) {
+    return 0;
+  }
+  return static_cast<std::int64_t>(
+    std::llround(std::min(std::abs(value), kMaximumDiagnosticMagnitude) * 1.0e9));
+}
 
 enum class CommandMode
 {
@@ -153,6 +243,19 @@ struct TangentEscapeGeometrySample
   double velocity_tangent_dot{0.0};
 };
 
+struct VelocityFilterDiagnostics
+{
+  bool valid_sample{false};
+  bool output_updated{false};
+  bool input_rejected{false};
+  bool output_rejected{false};
+  double synced_dt_sec{0.0};
+  JointVector position_step{JointVector::Zero()};
+  JointVector raw_velocity{JointVector::Zero()};
+  JointVector residual{JointVector::Zero()};
+  JointVector filtered_velocity{JointVector::Zero()};
+};
+
 class SynchronizedVelocityFilter
 {
 public:
@@ -188,13 +291,19 @@ public:
     double lowpass_alpha,
     double ratio_tolerance,
     FilterType filter_type = FilterType::kMovingAverage,
-    double alpha_beta_beta = 0.0)
+    double alpha_beta_beta = 0.0,
+    double max_raw_velocity_rad_s = 6.0,
+    double position_step_margin_rad = 0.01,
+    double max_filtered_velocity_rad_s = 2.0)
   : input_rate_hz_(std::max(input_rate_hz, 1.0)),
     output_rate_hz_(std::max(output_rate_hz, 1.0)),
     lowpass_alpha_(std::clamp(lowpass_alpha, 0.0, 1.0)),
     ratio_tolerance_(std::max(ratio_tolerance, 0.0)),
     filter_type_(filter_type),
-    alpha_beta_beta_(std::clamp(alpha_beta_beta, 0.0, 1.0))
+    alpha_beta_beta_(std::clamp(alpha_beta_beta, 0.0, 1.0)),
+    max_raw_velocity_rad_s_(std::max(max_raw_velocity_rad_s, 0.0)),
+    position_step_margin_rad_(std::max(position_step_margin_rad, 0.0)),
+    max_filtered_velocity_rad_s_(std::max(max_filtered_velocity_rad_s, 0.0))
   {
     const double raw_ratio = input_rate_hz_ / output_rate_hz_;
     const double rounded_ratio = std::round(raw_ratio);
@@ -216,7 +325,7 @@ public:
   {
     previous_position_ = position;
     previous_time_ = current_time;
-    accumulated_velocity_.setZero();
+    accumulated_position_step_.setZero();
     filtered_velocity_.setZero();
     accumulated_time_sec_ = 0.0;
     alpha_beta_position_.setZero();
@@ -224,12 +333,14 @@ public:
     accumulated_samples_ = 0;
     initialized_ = true;
     output_initialized_ = false;
+    diagnostics_ = VelocityFilterDiagnostics{};
   }
 
   JointVector update(
     const JointVector & position,
     const std::chrono::steady_clock::time_point & current_time)
   {
+    diagnostics_ = VelocityFilterDiagnostics{};
     if (!initialized_) {
       reset(position, current_time);
       return JointVector::Zero();
@@ -242,16 +353,34 @@ public:
       return JointVector::Zero();
     }
 
-    const JointVector raw_velocity = (position - previous_position_) / dt_sec;
+    const JointVector position_step = position - previous_position_;
+    const JointVector raw_velocity = position_step / dt_sec;
+    diagnostics_.valid_sample = true;
+    diagnostics_.position_step = position_step;
+    diagnostics_.raw_velocity = raw_velocity;
+    diagnostics_.filtered_velocity = filtered_velocity_;
+    const double allowed_position_step =
+      max_raw_velocity_rad_s_ * dt_sec + position_step_margin_rad_;
+    if (
+      !position.allFinite() || !raw_velocity.allFinite() ||
+      position_step.cwiseAbs().maxCoeff() > allowed_position_step)
+    {
+      diagnostics_.input_rejected = true;
+      if (!output_initialized_) {
+        return JointVector::Zero();
+      }
+      return filtered_velocity_;
+    }
     previous_position_ = position;
     previous_time_ = current_time;
-    accumulated_velocity_ += raw_velocity;
+    accumulated_position_step_ += position_step;
     accumulated_time_sec_ += dt_sec;
     ++accumulated_samples_;
 
     if (accumulated_samples_ >= sync_multiple_) {
       const JointVector measured_velocity =
-        accumulated_velocity_ / static_cast<double>(accumulated_samples_);
+        accumulated_position_step_ /
+        std::max(accumulated_time_sec_, std::numeric_limits<double>::epsilon());
       const double synced_dt_sec =
         std::max(accumulated_time_sec_, std::numeric_limits<double>::epsilon());
 
@@ -264,6 +393,7 @@ public:
           const JointVector predicted_position =
             alpha_beta_position_ + filtered_velocity_ * synced_dt_sec;
           const JointVector residual = position - predicted_position;
+          diagnostics_.residual = residual;
           alpha_beta_position_ = predicted_position + lowpass_alpha_ * residual;
           filtered_velocity_ += (alpha_beta_beta_ * residual) / synced_dt_sec;
         }
@@ -277,7 +407,20 @@ public:
         }
       }
       output_initialized_ = true;
-      accumulated_velocity_.setZero();
+      diagnostics_.output_updated = true;
+      diagnostics_.synced_dt_sec = synced_dt_sec;
+      if (
+        !filtered_velocity_.allFinite() ||
+        filtered_velocity_.cwiseAbs().maxCoeff() > max_filtered_velocity_rad_s_)
+      {
+        VelocityFilterDiagnostics rejected_diagnostics = diagnostics_;
+        rejected_diagnostics.output_rejected = true;
+        rejected_diagnostics.filtered_velocity = filtered_velocity_;
+        reset(position, current_time);
+        diagnostics_ = rejected_diagnostics;
+        return JointVector::Zero();
+      }
+      accumulated_position_step_.setZero();
       accumulated_time_sec_ = 0.0;
       accumulated_samples_ = 0;
     }
@@ -285,7 +428,13 @@ public:
     if (!output_initialized_) {
       return JointVector::Zero();
     }
+    diagnostics_.filtered_velocity = filtered_velocity_;
     return filtered_velocity_;
+  }
+
+  const VelocityFilterDiagnostics & diagnostics() const
+  {
+    return diagnostics_;
   }
 
   int sync_multiple() const
@@ -305,6 +454,9 @@ private:
   double ratio_tolerance_{0.05};
   FilterType filter_type_{FilterType::kMovingAverage};
   double alpha_beta_beta_{0.0};
+  double max_raw_velocity_rad_s_{6.0};
+  double position_step_margin_rad_{0.01};
+  double max_filtered_velocity_rad_s_{2.0};
   bool alpha_beta_initialized_{false};
   JointVector alpha_beta_position_{JointVector::Zero()};
   int sync_multiple_{1};
@@ -313,10 +465,149 @@ private:
   bool output_initialized_{false};
   int accumulated_samples_{0};
   JointVector previous_position_{JointVector::Zero()};
-  JointVector accumulated_velocity_{JointVector::Zero()};
+  JointVector accumulated_position_step_{JointVector::Zero()};
   JointVector filtered_velocity_{JointVector::Zero()};
   std::chrono::steady_clock::time_point previous_time_{};
   double accumulated_time_sec_{0.0};
+  VelocityFilterDiagnostics diagnostics_{};
+};
+
+class ControllerPacketSampleClock
+{
+public:
+  struct Update
+  {
+    std::chrono::steady_clock::time_point sample_time{};
+    double controller_dt_sec{0.0};
+    bool advanced{false};
+    bool reset_filter{false};
+    bool used_controller_time{false};
+    bool used_fallback_time{false};
+    bool duplicate_controller_time{false};
+    bool controller_time_reset{false};
+  };
+
+  explicit ControllerPacketSampleClock(double nominal_rate_hz)
+  : nominal_period_sec_(1.0 / std::max(nominal_rate_hz, 1.0))
+  {
+  }
+
+  Update update(
+    double controller_time_sec,
+    const std::chrono::steady_clock::time_point & arrival_time)
+  {
+    Update result;
+    result.sample_time = sample_time_;
+    if (!initialized_) {
+      initialized_ = true;
+      sample_time_ = arrival_time;
+      detection_start_time_ = arrival_time;
+      previous_controller_time_sec_ = controller_time_sec;
+      previous_controller_time_valid_ = std::isfinite(controller_time_sec);
+      result.sample_time = sample_time_;
+      result.reset_filter = true;
+      return result;
+    }
+
+    if (mode_ == Mode::kFallback) {
+      sample_time_ = std::max(
+        sample_time_ + duration(nominal_period_sec_),
+        arrival_time);
+      result.sample_time = sample_time_;
+      result.advanced = true;
+      result.used_fallback_time = true;
+      return result;
+    }
+
+    const bool controller_time_valid = std::isfinite(controller_time_sec);
+    const double controller_dt_sec =
+      controller_time_valid && previous_controller_time_valid_ ?
+      controller_time_sec - previous_controller_time_sec_ : 0.0;
+    if (controller_time_valid) {
+      previous_controller_time_sec_ = controller_time_sec;
+      previous_controller_time_valid_ = true;
+    } else {
+      previous_controller_time_valid_ = false;
+    }
+
+    constexpr double kMinimumControllerDtSec = 1.0e-6;
+    constexpr double kMaximumControllerDtSec = 0.1;
+    if (
+      controller_time_valid &&
+      controller_dt_sec > kMinimumControllerDtSec &&
+      controller_dt_sec <= kMaximumControllerDtSec)
+    {
+      mode_ = Mode::kControllerTime;
+      sample_time_ += duration(controller_dt_sec);
+      result.sample_time = sample_time_;
+      result.controller_dt_sec = controller_dt_sec;
+      result.advanced = true;
+      result.used_controller_time = true;
+      return result;
+    }
+
+    const bool duplicate =
+      controller_time_valid &&
+      std::abs(controller_dt_sec) <= kMinimumControllerDtSec;
+    result.duplicate_controller_time = duplicate;
+    if (mode_ == Mode::kControllerTime && duplicate) {
+      result.sample_time = sample_time_;
+      return result;
+    }
+
+    const bool reset =
+      !controller_time_valid ||
+      (previous_controller_time_valid_ &&
+      (controller_dt_sec < -kMinimumControllerDtSec ||
+      controller_dt_sec > kMaximumControllerDtSec));
+    if (mode_ == Mode::kControllerTime && reset) {
+      mode_ = Mode::kDetecting;
+      detection_start_time_ = arrival_time;
+      sample_time_ = arrival_time;
+      result.sample_time = sample_time_;
+      result.reset_filter = true;
+      result.controller_time_reset = true;
+      return result;
+    }
+
+    constexpr double kControllerClockDetectionTimeoutSec = 0.05;
+    if (
+      std::chrono::duration<double>(arrival_time - detection_start_time_).count() <
+      kControllerClockDetectionTimeoutSec)
+    {
+      result.sample_time = sample_time_;
+      return result;
+    }
+
+    mode_ = Mode::kFallback;
+    sample_time_ = arrival_time;
+    result.sample_time = sample_time_;
+    result.reset_filter = true;
+    result.used_fallback_time = true;
+    return result;
+  }
+
+private:
+  enum class Mode
+  {
+    kDetecting,
+    kControllerTime,
+    kFallback
+  };
+
+  static std::chrono::steady_clock::duration duration(double seconds)
+  {
+    return std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+      std::chrono::duration<double>(seconds));
+  }
+
+  double nominal_period_sec_{0.002};
+  bool initialized_{false};
+  bool previous_controller_time_valid_{false};
+  double previous_controller_time_sec_{0.0};
+  Mode mode_{Mode::kDetecting};
+  std::chrono::steady_clock::time_point sample_time_{};
+  std::chrono::steady_clock::time_point detection_start_time_{};
 };
 
 struct ExternalRmpBuffer
@@ -377,6 +668,10 @@ public:
   virtual bool ready() const
   {
     return true;
+  }
+  virtual BackendTimingSnapshot take_timing_snapshot()
+  {
+    return BackendTimingSnapshot{};
   }
   virtual void apply_command(
     const RobotState & command_state,
@@ -511,14 +806,58 @@ public:
     const JointVector & initial_q,
     const std::string & state_topic,
     const std::string & command_topic,
-    CommandMode command_mode)
+    CommandMode command_mode,
+    bool collect_timing_debug,
+    double state_rate_hz,
+    double control_rate_hz,
+    bool use_synced_input_velocity_filter,
+    double synced_input_velocity_filter_alpha,
+    double synced_input_velocity_filter_beta,
+    const std::string & synced_input_velocity_filter_type,
+    double synced_input_velocity_ratio_tolerance,
+    double synced_input_velocity_max_raw_rad_s,
+    double synced_input_velocity_position_step_margin_rad,
+    double synced_input_velocity_max_output_rad_s)
   : node_(node)
   , state_topic_(state_topic)
   , command_mode_(command_mode)
+  , collect_timing_debug_(collect_timing_debug)
+  , use_synced_input_velocity_filter_(use_synced_input_velocity_filter)
   {
     RobotState initial_state;
     initial_state.q = initial_q;
     state_buffer_.initRT(initial_state);
+    if (use_synced_input_velocity_filter_) {
+      const auto filter_type =
+        SynchronizedVelocityFilter::parse_filter_type(synced_input_velocity_filter_type);
+      synced_input_velocity_filter_ = std::make_unique<SynchronizedVelocityFilter>(
+        state_rate_hz,
+        control_rate_hz,
+        synced_input_velocity_filter_alpha,
+        synced_input_velocity_ratio_tolerance,
+        filter_type,
+        synced_input_velocity_filter_beta,
+        synced_input_velocity_max_raw_rad_s,
+        synced_input_velocity_position_step_margin_rad,
+        synced_input_velocity_max_output_rad_s);
+      RCLCPP_INFO(
+        node_->get_logger(),
+        "Joint-state topic velocity sync filter enabled (%s, alpha=%.3f beta=%.3f, raw limit=%.2f rad/s, output limit=%.2f rad/s): %.1f Hz input -> %d-sample synced velocity for %.1f Hz control",
+        SynchronizedVelocityFilter::filter_type_to_string(filter_type),
+        synced_input_velocity_filter_alpha,
+        synced_input_velocity_filter_beta,
+        synced_input_velocity_max_raw_rad_s,
+        synced_input_velocity_max_output_rad_s,
+        state_rate_hz,
+        synced_input_velocity_filter_->sync_multiple(),
+        control_rate_hz);
+      if (!synced_input_velocity_filter_->integer_ratio_aligned()) {
+        RCLCPP_WARN(
+          node_->get_logger(),
+          "joint-state input/control rate is not close to an integer multiple; using the nearest %d-sample velocity sync window",
+          synced_input_velocity_filter_->sync_multiple());
+      }
+    }
     command_pub_ = node_->create_publisher<std_msgs::msg::Float64MultiArray>(command_topic, 10);
     state_sub_ = node_->create_subscription<sensor_msgs::msg::JointState>(
       state_topic,
@@ -534,6 +873,62 @@ public:
   bool ready() const override
   {
     return state_received_.load();
+  }
+
+  BackendTimingSnapshot take_timing_snapshot() override
+  {
+    constexpr double kNanosecondsToSeconds = 1e-9;
+    BackendTimingSnapshot snapshot;
+    snapshot.state_interval_count =
+      state_interval_count_.load(std::memory_order_relaxed);
+    snapshot.state_interval_latest_sec =
+      static_cast<double>(state_interval_latest_ns_.load(std::memory_order_relaxed)) *
+      kNanosecondsToSeconds;
+    snapshot.state_interval_total_sec =
+      static_cast<double>(state_interval_total_ns_.load(std::memory_order_relaxed)) *
+      kNanosecondsToSeconds;
+    snapshot.state_interval_max_sec =
+      static_cast<double>(state_interval_max_ns_.load(std::memory_order_relaxed)) *
+      kNanosecondsToSeconds;
+    snapshot.state_interval_window_max_sec =
+      static_cast<double>(
+      state_interval_window_max_ns_.exchange(0, std::memory_order_relaxed)) *
+      kNanosecondsToSeconds;
+    snapshot.state_gap_over_5ms_count =
+      state_gap_over_5ms_count_.load(std::memory_order_relaxed);
+    snapshot.state_gap_over_20ms_count =
+      state_gap_over_20ms_count_.load(std::memory_order_relaxed);
+    snapshot.state_gap_over_100ms_count =
+      state_gap_over_100ms_count_.load(std::memory_order_relaxed);
+    snapshot.velocity_filter_update_count =
+      velocity_filter_update_count_.load(std::memory_order_relaxed);
+    snapshot.velocity_filter_input_reject_count =
+      velocity_filter_input_reject_count_.load(std::memory_order_relaxed);
+    snapshot.velocity_filter_output_reject_count =
+      velocity_filter_output_reject_count_.load(std::memory_order_relaxed);
+    snapshot.velocity_filter_synced_dt_window_max_sec =
+      static_cast<double>(
+      velocity_filter_synced_dt_window_max_ns_.exchange(0, std::memory_order_relaxed)) *
+      kNanosecondsToSeconds;
+    for (int joint = 0; joint < 6; ++joint) {
+      snapshot.raw_position_step_abs_window_max[joint] =
+        static_cast<double>(
+        raw_position_step_abs_window_max_nano_[joint].exchange(
+          0, std::memory_order_relaxed)) * kNanosecondsToSeconds;
+      snapshot.raw_velocity_abs_window_max[joint] =
+        static_cast<double>(
+        raw_velocity_abs_window_max_nano_[joint].exchange(
+          0, std::memory_order_relaxed)) * kNanosecondsToSeconds;
+      snapshot.velocity_filter_residual_abs_window_max[joint] =
+        static_cast<double>(
+        velocity_filter_residual_abs_window_max_nano_[joint].exchange(
+          0, std::memory_order_relaxed)) * kNanosecondsToSeconds;
+      snapshot.filtered_velocity_abs_window_max[joint] =
+        static_cast<double>(
+        filtered_velocity_abs_window_max_nano_[joint].exchange(
+          0, std::memory_order_relaxed)) * kNanosecondsToSeconds;
+    }
+    return snapshot;
   }
 
   void apply_command(
@@ -555,9 +950,51 @@ public:
 private:
   void on_state(const sensor_msgs::msg::JointState::SharedPtr msg)
   {
+    const auto callback_time = std::chrono::steady_clock::now();
+    if (collect_timing_debug_) {
+      record_state_interval(callback_time);
+    }
     RobotState next_state;
     if (!joint_state_to_robot_state(*msg, next_state)) {
       return;
+    }
+
+    bool velocity_input_rejected = false;
+    bool velocity_output_rejected = false;
+    VelocityFilterDiagnostics velocity_diagnostics;
+    if (use_synced_input_velocity_filter_ && synced_input_velocity_filter_) {
+      auto sample_time = callback_time;
+      const std::int64_t stamp_ns = rclcpp::Time(msg->header.stamp).nanoseconds();
+      if (stamp_ns > 0) {
+        sample_time = std::chrono::steady_clock::time_point(
+          std::chrono::nanoseconds(stamp_ns));
+      }
+      next_state.qd = synced_input_velocity_filter_->update(next_state.q, sample_time);
+      velocity_diagnostics = synced_input_velocity_filter_->diagnostics();
+      velocity_input_rejected = velocity_diagnostics.input_rejected;
+      velocity_output_rejected = velocity_diagnostics.output_rejected;
+      if (collect_timing_debug_) {
+        record_velocity_filter_diagnostics(velocity_diagnostics);
+      }
+    }
+
+    if (velocity_input_rejected) {
+      RCLCPP_ERROR_THROTTLE(
+        node_->get_logger(),
+        *node_->get_clock(),
+        1000,
+        "Rejected implausible topic joint-state step before velocity estimation (raw max=%.3f rad/s, step max=%.6f rad)",
+        velocity_diagnostics.raw_velocity.cwiseAbs().maxCoeff(),
+        velocity_diagnostics.position_step.cwiseAbs().maxCoeff());
+      return;
+    }
+    if (velocity_output_rejected) {
+      RCLCPP_ERROR_THROTTLE(
+        node_->get_logger(),
+        *node_->get_clock(),
+        1000,
+        "Reset topic velocity filter after implausible output (max=%.3f rad/s)",
+        velocity_diagnostics.filtered_velocity.cwiseAbs().maxCoeff());
     }
 
     state_buffer_.writeFromNonRT(next_state);
@@ -571,12 +1008,95 @@ private:
     }
   }
 
+  void record_state_interval(const std::chrono::steady_clock::time_point & current_time)
+  {
+    const auto current_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      current_time.time_since_epoch()).count();
+    const std::int64_t previous_ns =
+      previous_state_time_ns_.exchange(current_ns, std::memory_order_relaxed);
+    if (previous_ns <= 0 || current_ns <= previous_ns) {
+      return;
+    }
+
+    const std::int64_t interval_ns = current_ns - previous_ns;
+    state_interval_latest_ns_.store(interval_ns, std::memory_order_relaxed);
+    state_interval_total_ns_.fetch_add(interval_ns, std::memory_order_relaxed);
+    state_interval_count_.fetch_add(1U, std::memory_order_relaxed);
+    update_atomic_max(state_interval_max_ns_, interval_ns);
+    update_atomic_max(state_interval_window_max_ns_, interval_ns);
+    if (interval_ns > 5'000'000) {
+      state_gap_over_5ms_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    if (interval_ns > 20'000'000) {
+      state_gap_over_20ms_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    if (interval_ns > 100'000'000) {
+      state_gap_over_100ms_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+  }
+
+  void record_velocity_filter_diagnostics(const VelocityFilterDiagnostics & diagnostics)
+  {
+    if (!diagnostics.valid_sample) {
+      return;
+    }
+    if (diagnostics.input_rejected) {
+      velocity_filter_input_reject_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    if (diagnostics.output_rejected) {
+      velocity_filter_output_reject_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    for (int joint = 0; joint < 6; ++joint) {
+      update_atomic_max(
+        raw_position_step_abs_window_max_nano_[joint],
+        diagnostic_value_to_nano(diagnostics.position_step[joint]));
+      update_atomic_max(
+        raw_velocity_abs_window_max_nano_[joint],
+        diagnostic_value_to_nano(diagnostics.raw_velocity[joint]));
+      update_atomic_max(
+        filtered_velocity_abs_window_max_nano_[joint],
+        diagnostic_value_to_nano(diagnostics.filtered_velocity[joint]));
+      if (diagnostics.output_updated) {
+        update_atomic_max(
+          velocity_filter_residual_abs_window_max_nano_[joint],
+          diagnostic_value_to_nano(diagnostics.residual[joint]));
+      }
+    }
+    if (diagnostics.output_updated) {
+      velocity_filter_update_count_.fetch_add(1U, std::memory_order_relaxed);
+      update_atomic_max(
+        velocity_filter_synced_dt_window_max_ns_,
+        diagnostic_value_to_nano(diagnostics.synced_dt_sec));
+    }
+  }
+
   rclcpp::Node * node_;
   std::string state_topic_;
   CommandMode command_mode_{CommandMode::kPosition};
+  bool collect_timing_debug_{false};
+  bool use_synced_input_velocity_filter_{false};
   realtime_tools::RealtimeBuffer<RobotState> state_buffer_;
   std::atomic<bool> state_received_{false};
   bool logged_initial_state_{false};
+  std::atomic<std::int64_t> previous_state_time_ns_{0};
+  std::atomic<std::int64_t> state_interval_latest_ns_{0};
+  std::atomic<std::int64_t> state_interval_total_ns_{0};
+  std::atomic<std::int64_t> state_interval_max_ns_{0};
+  std::atomic<std::int64_t> state_interval_window_max_ns_{0};
+  std::atomic<std::uint64_t> state_interval_count_{0U};
+  std::atomic<std::uint64_t> state_gap_over_5ms_count_{0U};
+  std::atomic<std::uint64_t> state_gap_over_20ms_count_{0U};
+  std::atomic<std::uint64_t> state_gap_over_100ms_count_{0U};
+  std::atomic<std::uint64_t> velocity_filter_update_count_{0U};
+  std::atomic<std::uint64_t> velocity_filter_input_reject_count_{0U};
+  std::atomic<std::uint64_t> velocity_filter_output_reject_count_{0U};
+  std::atomic<std::int64_t> velocity_filter_synced_dt_window_max_ns_{0};
+  std::array<std::atomic<std::int64_t>, 6> raw_position_step_abs_window_max_nano_{};
+  std::array<std::atomic<std::int64_t>, 6> raw_velocity_abs_window_max_nano_{};
+  std::array<std::atomic<std::int64_t>, 6>
+  velocity_filter_residual_abs_window_max_nano_{};
+  std::array<std::atomic<std::int64_t>, 6> filtered_velocity_abs_window_max_nano_{};
+  std::unique_ptr<SynchronizedVelocityFilter> synced_input_velocity_filter_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr command_pub_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr state_sub_;
 };
@@ -592,6 +1112,8 @@ public:
     const std::string & real_joint_state_source,
     bool publish_debug_joint_state_sources,
     CommandMode command_mode,
+    bool hardware_command_enabled,
+    bool collect_timing_debug,
     double data_request_rate_hz,
     double control_rate_hz,
     double servo_t1,
@@ -607,6 +1129,9 @@ public:
     double synced_input_velocity_filter_beta,
     const std::string & synced_input_velocity_filter_type,
     double synced_input_velocity_ratio_tolerance,
+    double synced_input_velocity_max_raw_rad_s,
+    double synced_input_velocity_position_step_margin_rad,
+    double synced_input_velocity_max_output_rad_s,
     bool startup_move_to_default_pose,
     const std::vector<double> & startup_home_joints_deg,
     double startup_movej_speed,
@@ -622,6 +1147,11 @@ public:
     real_joint_state_source_(real_joint_state_source),
     publish_debug_joint_state_sources_(publish_debug_joint_state_sources),
     command_mode_(command_mode),
+    hardware_command_enabled_(hardware_command_enabled),
+    collect_timing_debug_(collect_timing_debug),
+    controller_packet_sample_clock_(data_request_rate_hz),
+    socket_realtime_enabled_(enable_socket_realtime),
+    socket_realtime_priority_(std::max(socket_realtime_priority, 1)),
     servo_t1_(servo_t1),
     servo_t2_(servo_t2),
     servo_gain_(servo_gain),
@@ -655,14 +1185,25 @@ public:
         std::bind(&DirectRb10Backend::on_state, this, std::placeholders::_1),
         std::bind(&DirectRb10Backend::on_cmd_log, this, std::placeholders::_1),
         enable_socket_realtime,
-        socket_realtime_priority))
+        socket_realtime_priority,
+        hardware_command_enabled_))
     {
-      throw std::runtime_error("Failed to open RB10 command/data sockets from direct backend");
+      throw std::runtime_error(
+              hardware_command_enabled_ ?
+              "Failed to open RB10 command/data sockets from direct backend" :
+              "Failed to open RB10 read-only data socket from direct backend");
     }
 
-    if (!socket_client_.initialize_robot(simulation_mode_)) {
-      socket_client_.disconnect();
-      throw std::runtime_error("Failed to initialize RB10 from direct backend");
+    if (hardware_command_enabled_) {
+      if (!socket_client_.initialize_robot(simulation_mode_)) {
+        socket_client_.disconnect();
+        throw std::runtime_error("Failed to initialize RB10 from direct backend");
+      }
+    } else {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "RB10 READ-ONLY DRY-RUN: command socket, robot initialization, startup motion, "
+        "streaming commands, and shutdown commands are disabled");
     }
 
     if (use_synced_input_velocity_filter_) {
@@ -674,13 +1215,18 @@ public:
         synced_input_velocity_filter_alpha,
         synced_input_velocity_ratio_tolerance,
         filter_type,
-        synced_input_velocity_filter_beta);
+        synced_input_velocity_filter_beta,
+        synced_input_velocity_max_raw_rad_s,
+        synced_input_velocity_position_step_margin_rad,
+        synced_input_velocity_max_output_rad_s);
       RCLCPP_INFO(
         node_->get_logger(),
-        "Direct RB10 backend high-rate velocity sync filter enabled (%s, alpha=%.3f beta=%.3f): %.1f Hz input -> %d-sample synced velocity for %.1f Hz control",
+        "Direct RB10 backend high-rate velocity sync filter enabled (%s, alpha=%.3f beta=%.3f, raw limit=%.2f rad/s, output limit=%.2f rad/s): %.1f Hz input -> %d-sample synced velocity for %.1f Hz control",
         SynchronizedVelocityFilter::filter_type_to_string(filter_type),
         synced_input_velocity_filter_alpha,
         synced_input_velocity_filter_beta,
+        synced_input_velocity_max_raw_rad_s,
+        synced_input_velocity_max_output_rad_s,
         data_request_rate_hz,
         synced_input_velocity_filter_->sync_multiple(),
         control_rate_hz);
@@ -701,7 +1247,7 @@ public:
         node_->create_publisher<std_msgs::msg::Float64MultiArray>("/rb10/joint_tracking_error_deg", 10);
     }
 
-    if (startup_move_to_default_pose_) {
+    if (startup_move_to_default_pose_ && hardware_command_enabled_) {
       if (!socket_client_.send_movej_degrees(
           startup_home_joints_deg_, startup_movej_speed_, startup_movej_accel_))
       {
@@ -716,15 +1262,25 @@ public:
       RCLCPP_INFO(
         node_->get_logger(),
         "Direct RB10 backend commanded startup move_j; waiting to release the control loop until home is reached or timeout expires");
+    } else if (startup_move_to_default_pose_) {
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "Ignoring startup_move_to_default_pose because hardware commands are disabled");
     }
 
-    servo_command_thread_ = std::thread(&DirectRb10Backend::servo_command_loop, this);
+    if (hardware_command_enabled_) {
+      servo_command_thread_running_ = true;
+      servo_command_thread_ = std::thread(&DirectRb10Backend::servo_command_loop, this);
+    }
   }
 
   ~DirectRb10Backend() override
   {
     stop_servo_command_thread();
-    if (command_mode_ == CommandMode::kVelocity && socket_client_.is_connected()) {
+    if (
+      hardware_command_enabled_ && command_mode_ == CommandMode::kVelocity &&
+      socket_client_.is_connected())
+    {
       std::array<double, 6> zero_velocity_deg_s{};
       if (!socket_client_.send_speedj_degrees_per_sec(
           zero_velocity_deg_s, speedj_t1_, speedj_t2_, speedj_gain_, speedj_alpha_))
@@ -732,7 +1288,7 @@ public:
         RCLCPP_WARN(node_->get_logger(), "Direct RB10 backend failed to send zero move_speed_j on shutdown");
       }
     }
-    if (stop_on_shutdown_ && socket_client_.is_connected()) {
+    if (hardware_command_enabled_ && stop_on_shutdown_ && socket_client_.is_connected()) {
       const bool halt_first = shutdown_action_ != "pause";
       const bool stopped = socket_client_.send_shutdown_sequence(halt_first);
       if (stopped) {
@@ -756,11 +1312,79 @@ public:
            !startup_waiting_for_home_.load();
   }
 
+  BackendTimingSnapshot take_timing_snapshot() override
+  {
+    constexpr double kNanosecondsToSeconds = 1e-9;
+    BackendTimingSnapshot snapshot;
+    snapshot.state_interval_count =
+      state_interval_count_.load(std::memory_order_relaxed);
+    snapshot.state_interval_latest_sec =
+      static_cast<double>(state_interval_latest_ns_.load(std::memory_order_relaxed)) *
+      kNanosecondsToSeconds;
+    snapshot.state_interval_total_sec =
+      static_cast<double>(state_interval_total_ns_.load(std::memory_order_relaxed)) *
+      kNanosecondsToSeconds;
+    snapshot.state_interval_max_sec =
+      static_cast<double>(state_interval_max_ns_.load(std::memory_order_relaxed)) *
+      kNanosecondsToSeconds;
+    snapshot.state_interval_window_max_sec =
+      static_cast<double>(
+      state_interval_window_max_ns_.exchange(0, std::memory_order_relaxed)) *
+      kNanosecondsToSeconds;
+    snapshot.state_gap_over_5ms_count =
+      state_gap_over_5ms_count_.load(std::memory_order_relaxed);
+    snapshot.state_gap_over_20ms_count =
+      state_gap_over_20ms_count_.load(std::memory_order_relaxed);
+    snapshot.state_gap_over_100ms_count =
+      state_gap_over_100ms_count_.load(std::memory_order_relaxed);
+    snapshot.velocity_filter_update_count =
+      velocity_filter_update_count_.load(std::memory_order_relaxed);
+    snapshot.velocity_filter_input_reject_count =
+      velocity_filter_input_reject_count_.load(std::memory_order_relaxed);
+    snapshot.velocity_filter_output_reject_count =
+      velocity_filter_output_reject_count_.load(std::memory_order_relaxed);
+    snapshot.velocity_filter_synced_dt_window_max_sec =
+      static_cast<double>(
+      velocity_filter_synced_dt_window_max_ns_.exchange(0, std::memory_order_relaxed)) *
+      kNanosecondsToSeconds;
+    snapshot.controller_packet_time_used_count =
+      controller_packet_time_used_count_.load(std::memory_order_relaxed);
+    snapshot.controller_packet_time_fallback_count =
+      controller_packet_time_fallback_count_.load(std::memory_order_relaxed);
+    snapshot.controller_packet_time_duplicate_count =
+      controller_packet_time_duplicate_count_.load(std::memory_order_relaxed);
+    snapshot.controller_packet_time_reset_count =
+      controller_packet_time_reset_count_.load(std::memory_order_relaxed);
+    snapshot.controller_packet_time_dt_window_max_sec =
+      static_cast<double>(
+      controller_packet_time_dt_window_max_ns_.exchange(0, std::memory_order_relaxed)) *
+      kNanosecondsToSeconds;
+    for (int joint = 0; joint < 6; ++joint) {
+      snapshot.raw_position_step_abs_window_max[joint] =
+        static_cast<double>(
+        raw_position_step_abs_window_max_nano_[joint].exchange(
+          0, std::memory_order_relaxed)) * kNanosecondsToSeconds;
+      snapshot.raw_velocity_abs_window_max[joint] =
+        static_cast<double>(
+        raw_velocity_abs_window_max_nano_[joint].exchange(
+          0, std::memory_order_relaxed)) * kNanosecondsToSeconds;
+      snapshot.velocity_filter_residual_abs_window_max[joint] =
+        static_cast<double>(
+        velocity_filter_residual_abs_window_max_nano_[joint].exchange(
+          0, std::memory_order_relaxed)) * kNanosecondsToSeconds;
+      snapshot.filtered_velocity_abs_window_max[joint] =
+        static_cast<double>(
+        filtered_velocity_abs_window_max_nano_[joint].exchange(
+          0, std::memory_order_relaxed)) * kNanosecondsToSeconds;
+    }
+    return snapshot;
+  }
+
   void apply_command(
     const RobotState & command_state,
     const std::array<const char *, 6> &) override
   {
-    if (!ready()) {
+    if (!hardware_command_enabled_ || !ready()) {
       return;
     }
     if (command_blocked_due_to_safety_.load()) {
@@ -818,6 +1442,24 @@ private:
 
   void servo_command_loop()
   {
+    if (socket_realtime_enabled_) {
+      sched_param params{};
+      params.sched_priority = socket_realtime_priority_;
+      const int result = pthread_setschedparam(pthread_self(), SCHED_FIFO, &params);
+      if (result == 0) {
+        RCLCPP_INFO(
+          node_->get_logger(),
+          "Direct RB10 command sender running with SCHED_FIFO priority %d",
+          socket_realtime_priority_);
+      } else {
+        RCLCPP_WARN(
+          node_->get_logger(),
+          "Failed to switch direct RB10 command sender to SCHED_FIFO priority %d (error=%d)",
+          socket_realtime_priority_,
+          result);
+      }
+    }
+
     while (true) {
       std::array<double, 6> joint_deg{};
       {
@@ -854,6 +1496,9 @@ private:
   {
     RobotState next_state;
     const auto current_time = std::chrono::steady_clock::now();
+    if (collect_timing_debug_) {
+      record_state_interval(current_time);
+    }
     std::array<double, 6> reference_position_rad{};
     std::array<double, 6> measured_position_rad{};
     const auto & joint_source_deg = select_joint_source_deg(state);
@@ -863,24 +1508,72 @@ private:
       next_state.q[static_cast<int>(index)] = degrees_to_radians(joint_source_deg[index]);
     }
 
+    bool velocity_input_rejected = false;
+    bool velocity_output_rejected = false;
+    VelocityFilterDiagnostics velocity_diagnostics;
+    auto velocity_sample_time = current_time;
     if (use_synced_input_velocity_filter_ && synced_input_velocity_filter_) {
-      next_state.qd = synced_input_velocity_filter_->update(next_state.q, current_time);
+      const auto sample_clock_update =
+        controller_packet_sample_clock_.update(state.controller_time_sec, current_time);
+      velocity_sample_time = sample_clock_update.sample_time;
+      if (collect_timing_debug_) {
+        record_controller_packet_clock_diagnostics(sample_clock_update);
+      }
+
+      if (sample_clock_update.reset_filter) {
+        synced_input_velocity_filter_->reset(next_state.q, velocity_sample_time);
+        next_state.qd.setZero();
+      } else if (sample_clock_update.advanced) {
+        next_state.qd =
+          synced_input_velocity_filter_->update(next_state.q, velocity_sample_time);
+        velocity_diagnostics = synced_input_velocity_filter_->diagnostics();
+        velocity_input_rejected = velocity_diagnostics.input_rejected;
+        velocity_output_rejected = velocity_diagnostics.output_rejected;
+        if (collect_timing_debug_) {
+          record_velocity_filter_diagnostics(velocity_diagnostics);
+        }
+      } else {
+        next_state.qd = state_buffer_.readFromRT()->qd;
+      }
     }
 
-    state_buffer_.writeFromNonRT(next_state);
-    state_received_.store(true);
+    if (!velocity_input_rejected) {
+      state_buffer_.writeFromNonRT(next_state);
+      state_received_.store(true);
+    }
 
-    const bool command_blocked = command_blocked_by_robot_safety(state);
-    const bool was_command_blocked = command_blocked_due_to_safety_.exchange(command_blocked);
-    if (command_blocked && !was_command_blocked) {
-      clear_pending_servo_command();
-      RCLCPP_ERROR(
+    if (hardware_command_enabled_) {
+      const bool command_blocked = command_blocked_by_robot_safety(state);
+      const bool was_command_blocked = command_blocked_due_to_safety_.exchange(command_blocked);
+      if (command_blocked && !was_command_blocked) {
+        clear_pending_servo_command();
+        RCLCPP_ERROR(
+          node_->get_logger(),
+          "RB10 safety stop active; blocking %s commands (%s)",
+          rb10_stream_command_name(command_mode_),
+          robot_safety_summary(state).c_str());
+      } else if (!command_blocked && was_command_blocked) {
+        RCLCPP_INFO(node_->get_logger(), "RB10 safety stop cleared; servo commands may resume");
+      }
+    }
+
+    if (velocity_input_rejected) {
+      RCLCPP_ERROR_THROTTLE(
         node_->get_logger(),
-        "RB10 safety stop active; blocking %s commands (%s)",
-        rb10_stream_command_name(command_mode_),
-        robot_safety_summary(state).c_str());
-    } else if (!command_blocked && was_command_blocked) {
-      RCLCPP_INFO(node_->get_logger(), "RB10 safety stop cleared; servo commands may resume");
+        *node_->get_clock(),
+        1000,
+        "Rejected implausible RB10 joint-state step before velocity estimation (raw max=%.3f rad/s, step max=%.6f rad)",
+        velocity_diagnostics.raw_velocity.cwiseAbs().maxCoeff(),
+        velocity_diagnostics.position_step.cwiseAbs().maxCoeff());
+      return;
+    }
+    if (velocity_output_rejected) {
+      RCLCPP_ERROR_THROTTLE(
+        node_->get_logger(),
+        *node_->get_clock(),
+        1000,
+        "Reset velocity filter after implausible output (max=%.3f rad/s)",
+        velocity_diagnostics.filtered_velocity.cwiseAbs().maxCoeff());
     }
 
     if (publish_debug_joint_state_sources_) {
@@ -907,7 +1600,7 @@ private:
     if (home_reached || current_time >= startup_release_deadline_) {
       startup_waiting_for_home_.store(false);
       if (use_synced_input_velocity_filter_ && synced_input_velocity_filter_) {
-        synced_input_velocity_filter_->reset(next_state.q, current_time);
+        synced_input_velocity_filter_->reset(next_state.q, velocity_sample_time);
         next_state.qd.setZero();
         state_buffer_.writeFromNonRT(next_state);
       }
@@ -916,6 +1609,88 @@ private:
       } else {
         RCLCPP_WARN(node_->get_logger(), "Direct RB10 backend startup release timeout expired; enabling RMP commands");
       }
+    }
+  }
+
+  void record_state_interval(const std::chrono::steady_clock::time_point & current_time)
+  {
+    const auto current_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+      current_time.time_since_epoch()).count();
+    const std::int64_t previous_ns =
+      previous_state_time_ns_.exchange(current_ns, std::memory_order_relaxed);
+    if (previous_ns <= 0 || current_ns <= previous_ns) {
+      return;
+    }
+
+    const std::int64_t interval_ns = current_ns - previous_ns;
+    state_interval_latest_ns_.store(interval_ns, std::memory_order_relaxed);
+    state_interval_total_ns_.fetch_add(interval_ns, std::memory_order_relaxed);
+    state_interval_count_.fetch_add(1U, std::memory_order_relaxed);
+    update_atomic_max(state_interval_max_ns_, interval_ns);
+    update_atomic_max(state_interval_window_max_ns_, interval_ns);
+    if (interval_ns > 5'000'000) {
+      state_gap_over_5ms_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    if (interval_ns > 20'000'000) {
+      state_gap_over_20ms_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    if (interval_ns > 100'000'000) {
+      state_gap_over_100ms_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+  }
+
+  void record_velocity_filter_diagnostics(const VelocityFilterDiagnostics & diagnostics)
+  {
+    if (!diagnostics.valid_sample) {
+      return;
+    }
+    if (diagnostics.input_rejected) {
+      velocity_filter_input_reject_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    if (diagnostics.output_rejected) {
+      velocity_filter_output_reject_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    for (int joint = 0; joint < 6; ++joint) {
+      update_atomic_max(
+        raw_position_step_abs_window_max_nano_[joint],
+        diagnostic_value_to_nano(diagnostics.position_step[joint]));
+      update_atomic_max(
+        raw_velocity_abs_window_max_nano_[joint],
+        diagnostic_value_to_nano(diagnostics.raw_velocity[joint]));
+      update_atomic_max(
+        filtered_velocity_abs_window_max_nano_[joint],
+        diagnostic_value_to_nano(diagnostics.filtered_velocity[joint]));
+      if (diagnostics.output_updated) {
+        update_atomic_max(
+          velocity_filter_residual_abs_window_max_nano_[joint],
+          diagnostic_value_to_nano(diagnostics.residual[joint]));
+      }
+    }
+    if (diagnostics.output_updated) {
+      velocity_filter_update_count_.fetch_add(1U, std::memory_order_relaxed);
+      update_atomic_max(
+        velocity_filter_synced_dt_window_max_ns_,
+        diagnostic_value_to_nano(diagnostics.synced_dt_sec));
+    }
+  }
+
+  void record_controller_packet_clock_diagnostics(
+    const ControllerPacketSampleClock::Update & update)
+  {
+    if (update.used_controller_time) {
+      controller_packet_time_used_count_.fetch_add(1U, std::memory_order_relaxed);
+      update_atomic_max(
+        controller_packet_time_dt_window_max_ns_,
+        diagnostic_value_to_nano(update.controller_dt_sec));
+    }
+    if (update.used_fallback_time) {
+      controller_packet_time_fallback_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    if (update.duplicate_controller_time) {
+      controller_packet_time_duplicate_count_.fetch_add(1U, std::memory_order_relaxed);
+    }
+    if (update.controller_time_reset) {
+      controller_packet_time_reset_count_.fetch_add(1U, std::memory_order_relaxed);
     }
   }
 
@@ -986,6 +1761,11 @@ private:
   std::string real_joint_state_source_{"measured"};
   bool publish_debug_joint_state_sources_{false};
   CommandMode command_mode_{CommandMode::kPosition};
+  bool hardware_command_enabled_{true};
+  bool collect_timing_debug_{false};
+  ControllerPacketSampleClock controller_packet_sample_clock_;
+  bool socket_realtime_enabled_{false};
+  int socket_realtime_priority_{60};
   double servo_t1_{0.002};
   double servo_t2_{0.1};
   double servo_gain_{0.02};
@@ -1007,12 +1787,35 @@ private:
   std::string shutdown_action_{"halt"};
   std::atomic<bool> state_received_{false};
   std::atomic<bool> command_blocked_due_to_safety_{false};
+  std::atomic<std::int64_t> previous_state_time_ns_{0};
+  std::atomic<std::int64_t> state_interval_latest_ns_{0};
+  std::atomic<std::int64_t> state_interval_total_ns_{0};
+  std::atomic<std::int64_t> state_interval_max_ns_{0};
+  std::atomic<std::int64_t> state_interval_window_max_ns_{0};
+  std::atomic<std::uint64_t> state_interval_count_{0U};
+  std::atomic<std::uint64_t> state_gap_over_5ms_count_{0U};
+  std::atomic<std::uint64_t> state_gap_over_20ms_count_{0U};
+  std::atomic<std::uint64_t> state_gap_over_100ms_count_{0U};
+  std::atomic<std::uint64_t> velocity_filter_update_count_{0U};
+  std::atomic<std::uint64_t> velocity_filter_input_reject_count_{0U};
+  std::atomic<std::uint64_t> velocity_filter_output_reject_count_{0U};
+  std::atomic<std::int64_t> velocity_filter_synced_dt_window_max_ns_{0};
+  std::atomic<std::uint64_t> controller_packet_time_used_count_{0U};
+  std::atomic<std::uint64_t> controller_packet_time_fallback_count_{0U};
+  std::atomic<std::uint64_t> controller_packet_time_duplicate_count_{0U};
+  std::atomic<std::uint64_t> controller_packet_time_reset_count_{0U};
+  std::atomic<std::int64_t> controller_packet_time_dt_window_max_ns_{0};
+  std::array<std::atomic<std::int64_t>, 6> raw_position_step_abs_window_max_nano_{};
+  std::array<std::atomic<std::int64_t>, 6> raw_velocity_abs_window_max_nano_{};
+  std::array<std::atomic<std::int64_t>, 6>
+  velocity_filter_residual_abs_window_max_nano_{};
+  std::array<std::atomic<std::int64_t>, 6> filtered_velocity_abs_window_max_nano_{};
   realtime_tools::RealtimeBox<std::array<double, 6>> latest_servo_joint_deg_;
   std::mutex servo_command_wait_mutex_;
   std::condition_variable servo_command_cv_;
   std::thread servo_command_thread_;
   bool servo_command_pending_{false};
-  bool servo_command_thread_running_{true};
+  bool servo_command_thread_running_{false};
   std::unique_ptr<SynchronizedVelocityFilter> synced_input_velocity_filter_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr reference_joint_state_publisher_;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr measured_joint_state_publisher_;
@@ -1051,6 +1854,9 @@ public:
   : Node("rmpflow_controller"), running_(true)
   {
     declare_parameter("control_rate", 100.0);
+    declare_parameter("publish_control_timing_debug", false);
+    declare_parameter("control_timing_debug_topic", "/rmp_control_timing");
+    declare_parameter("control_timing_publish_rate", 10.0);
     declare_parameter("visualization_rate", 20.0);
     declare_parameter("goal_x", 0.6);
     declare_parameter("goal_y", -0.4);
@@ -1074,6 +1880,8 @@ public:
     declare_parameter("joint_limit_buffers", std::vector<double>{0.01, 0.01, 0.01, 0.01, 0.01, 0.01});
     declare_parameter("backend_mode", "simulation");
     declare_parameter("command_mode", "velocity");
+    declare_parameter("hardware_command_enabled", true);
+    declare_parameter("dry_run_command_topic", "/rmp_dry_run_command");
     declare_parameter("robot_ip", "192.168.111.50");
     declare_parameter("simulation_mode", false);
     declare_parameter("real_joint_state_source", "measured");
@@ -1084,6 +1892,9 @@ public:
     declare_parameter("synced_input_velocity_filter_beta", 0.02);
     declare_parameter("synced_input_velocity_filter_type", std::string("alpha-beta"));
     declare_parameter("synced_input_velocity_ratio_tolerance", 0.05);
+    declare_parameter("synced_input_velocity_max_raw_rad_s", 6.0);
+    declare_parameter("synced_input_velocity_position_step_margin_rad", 0.01);
+    declare_parameter("synced_input_velocity_max_output_rad_s", 2.0);
     declare_parameter("hardware_state_topic", "hardware_joint_states");
     declare_parameter("hardware_command_topic", "hardware_joint_command");
     declare_parameter("joint_state_topic", "joint_states");
@@ -1097,7 +1908,7 @@ public:
     declare_parameter("target_q_topic", "/target_q");
     declare_parameter("publish_target_metric", false);
     declare_parameter("target_metric_topic", "/target_metric");
-    declare_parameter("publish_rmp_accel_debug", true);
+    declare_parameter("publish_rmp_accel_debug", false);
     declare_parameter("rmp_joint_accel_topic", "/rmp_joint_accel");
     declare_parameter("rmp_tcp_accel_topic", "/rmp_tcp_accel");
     declare_parameter("publish_joint_states", true);
@@ -1175,6 +1986,9 @@ public:
     declare_parameter(
       "tangent_escape_rmp_risk_clearance_rate_filter_time_constant", 0.05);
     declare_parameter("tangent_escape_rmp_risk_tangent_damping_gain", 10.0);
+    declare_parameter("tangent_escape_rmp_risk_stuck_accel_floor", 0.20);
+    declare_parameter("tangent_escape_rmp_risk_stuck_dwell_time", 0.30);
+    declare_parameter("tangent_escape_rmp_risk_stuck_ramp_time", 0.30);
     declare_parameter("tangent_escape_rmp_safe_distance", 0.08);
     declare_parameter("tangent_escape_rmp_influence_distance", 0.20);
     declare_parameter("tangent_escape_rmp_candidate_lookahead", 0.08);
@@ -1183,7 +1997,7 @@ public:
     declare_parameter("tangent_escape_rmp_sector_risk_weight", 1.5);
     declare_parameter("tangent_escape_rmp_min_activation", 0.05);
     declare_parameter("tangent_escape_rmp_min_tangent_norm", 1e-4);
-    declare_parameter("publish_tangent_escape_rmp_data", true);
+    declare_parameter("publish_tangent_escape_rmp_data", false);
     declare_parameter("tangent_escape_rmp_data_topic", "/tangent_escape_rmp_data");
     declare_parameter("publish_tangent_escape_dual_solve_data", false);
     declare_parameter(
@@ -1195,7 +2009,7 @@ public:
     declare_parameter("tangent_escape_geometry_data_topic", "/tangent_escape_geometry_data");
     declare_parameter("tangent_escape_geometry_marker_topic", "tangent_escape_geometry_markers");
     declare_parameter("tangent_escape_geometry_marker_length", 0.12);
-    declare_parameter("publish_rmp_ee_pose", true);
+    declare_parameter("publish_rmp_ee_pose", false);
     declare_parameter("publish_goal_tf", true);
     declare_parameter("goal_tf_parent_frame", "base_link");
     declare_parameter("goal_tf_child_frame", "rmp_goal_target");
@@ -1224,9 +2038,12 @@ public:
     declare_parameter("lock_memory", false);
     declare_parameter("graph.node_names", default_rmp_graph_node_names());
     declare_parameter("root_solve_offset", 1e-3);
+    declare_parameter("solver_backend", "pinocchio_direct");
     declare_parameter("solve_method", "rmp2");
     declare_parameter("rmp_type", "canonical");
-    declare_parameter("pinocchio_urdf_path", "");
+    declare_parameter("casadi_rmp2_max_obstacles", 24);
+    declare_parameter("casadi_rmp2_jit", true);
+    declare_parameter("robot_urdf_path", "");
     declare_parameter(
       "external_rmp.topic_prefix",
       std::string("external_rmp"));
@@ -1264,6 +2081,8 @@ public:
     declare_parameter("target_rmp_accel_d_gain", 70.0);
     declare_parameter("command_guard_max_step_rad", 0.00436332313);
     declare_parameter("command_guard_max_velocity_rad_s", 0.436332313);
+    declare_parameter("command_guard_velocity_slew_enabled", true);
+    declare_parameter("command_guard_max_accel_rad_s2", 10.0);
     declare_parameter("predictive_joint_limit_guard", true);
     declare_parameter("target_rmp_accel_norm_eps", 0.075);
     declare_parameter("target_rmp_metric_alpha_length_scale", 0.05);
@@ -1316,7 +2135,8 @@ public:
     for (std::size_t index = 0; index < std::min<std::size_t>(initial_q.size(), 6); ++index) {
       state_.q[static_cast<int>(index)] = initial_q[index];
     }
-    const auto initial_context = RB10Model::forward_context(state_.q);
+    const auto initial_context = RB10Model::forward_context(
+      state_.q, ControlPointJacobianMode::kNone);
     GoalTarget initial_goal_target;
     initial_goal_target.position = Eigen::Vector3d(
       get_parameter("goal_x").as_double(),
@@ -1330,6 +2150,20 @@ public:
     min_link6_z_ = get_parameter("min_link6_z").as_double();
     min_tcp_z_ = get_parameter("min_tcp_z").as_double();
     control_rate_hz_ = get_parameter("control_rate").as_double();
+    if (!std::isfinite(control_rate_hz_) || control_rate_hz_ <= 0.0) {
+      throw std::invalid_argument("control_rate must be finite and greater than zero");
+    }
+    publish_control_timing_debug_enabled_ =
+      get_parameter("publish_control_timing_debug").as_bool();
+    control_timing_publish_rate_hz_ =
+      get_parameter("control_timing_publish_rate").as_double();
+    if (
+      !std::isfinite(control_timing_publish_rate_hz_) ||
+      control_timing_publish_rate_hz_ <= 0.0)
+    {
+      throw std::invalid_argument(
+              "control_timing_publish_rate must be finite and greater than zero");
+    }
     enable_realtime_ = get_parameter("enable_realtime").as_bool();
     realtime_priority_ = get_parameter("realtime_priority").as_int();
     lock_memory_ = get_parameter("lock_memory").as_bool();
@@ -1349,6 +2183,7 @@ public:
     preserve_joint_accel_direction_ =
       get_parameter("preserve_joint_accel_direction").as_bool();
     command_mode_ = parse_command_mode(get_parameter("command_mode").as_string());
+    hardware_command_enabled_ = get_parameter("hardware_command_enabled").as_bool();
     command_guard_max_step_rad_ = std::max(
       get_parameter("command_guard_max_step_rad").as_double(),
       1e-4);
@@ -1357,6 +2192,11 @@ public:
     command_guard_max_velocity_rad_s_ = std::max(
       configured_max_velocity,
       command_mode_ == CommandMode::kVelocity ? 1e-4 : command_guard_max_step_rad_ * control_rate_hz_);
+    command_guard_velocity_slew_enabled_ =
+      get_parameter("command_guard_velocity_slew_enabled").as_bool();
+    command_guard_max_accel_rad_s2_ = std::max(
+      get_parameter("command_guard_max_accel_rad_s2").as_double(),
+      1e-4);
     predictive_joint_limit_guard_ = get_parameter("predictive_joint_limit_guard").as_bool();
     joint_lower_limits_ = parse_joint_limit_degrees(
       "joint_lower_limits_deg",
@@ -1453,10 +2293,27 @@ public:
         10);
       rt_joint_state_pub_ = std::make_shared<JointStateRtPublisher>(joint_state_pub_);
     }
-    if (get_parameter("backend_mode").as_string() == "rb10_direct_api") {
+    const auto configured_backend_mode = get_parameter("backend_mode").as_string();
+    if (configured_backend_mode == "rb10_direct_api" && hardware_command_enabled_) {
       direct_command_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
         get_parameter("position_command_topic").as_string(), 10);
       rt_direct_command_pub_ = std::make_shared<Float64ArrayRtPublisher>(direct_command_pub_);
+    } else if (!hardware_command_enabled_) {
+      direct_command_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
+        get_parameter("dry_run_command_topic").as_string(), 10);
+      rt_direct_command_pub_ = std::make_shared<Float64ArrayRtPublisher>(direct_command_pub_);
+      if (configured_backend_mode == "simulation") {
+        RCLCPP_INFO(
+          get_logger(),
+          "LOCAL SIMULATION ONLY: calculated %s commands cannot reach RB10 hardware",
+          command_mode_to_string(command_mode_));
+      } else {
+        RCLCPP_WARN(
+          get_logger(),
+          "HARDWARE COMMANDS DISABLED: calculated %s commands are published only to %s",
+          command_mode_to_string(command_mode_),
+          get_parameter("dry_run_command_topic").as_string().c_str());
+      }
     }
     if (get_parameter("publish_position_command").as_bool()) {
       position_command_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
@@ -1481,6 +2338,12 @@ public:
       rmp_tcp_accel_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
         get_parameter("rmp_tcp_accel_topic").as_string(), 10);
       rt_rmp_tcp_accel_pub_ = std::make_shared<Float64ArrayRtPublisher>(rmp_tcp_accel_pub_);
+    }
+    if (publish_control_timing_debug_enabled_) {
+      control_timing_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
+        get_parameter("control_timing_debug_topic").as_string(), 10);
+      rt_control_timing_pub_ =
+        std::make_shared<Float64ArrayRtPublisher>(control_timing_pub_);
     }
     if (publish_tangent_escape_rmp_data_enabled_) {
       tangent_escape_rmp_data_pub_ =
@@ -1582,6 +2445,15 @@ public:
       std::bind(&RmpflowControllerNode::on_obstacles, this, std::placeholders::_1));
 
     const auto backend_mode = get_parameter("backend_mode").as_string();
+    const bool controller_box_simulation = get_parameter("simulation_mode").as_bool();
+    if (backend_mode == "rb10_direct_api" && controller_box_simulation) {
+      RCLCPP_WARN(
+        get_logger(),
+        "CONTROLLER BOX SIMULATION via direct C++ backend: RB10 network sockets are open, "
+        "but initialization explicitly requests PG_MODE.SIMULATION");
+    }
+    backend_command_application_enabled_ =
+      hardware_command_enabled_ || backend_mode == "simulation";
     if (backend_mode == "hardware_bridge") {
       backend_ = std::make_unique<HardwareBridgeBackend>(
         this,
@@ -1598,6 +2470,8 @@ public:
         get_parameter("real_joint_state_source").as_string(),
         get_parameter("publish_debug_joint_state_sources").as_bool(),
         command_mode_,
+        hardware_command_enabled_,
+        publish_control_timing_debug_enabled_,
         get_parameter("hardware_data_request_rate").as_double(),
         get_parameter("control_rate").as_double(),
         get_parameter("servo_t1").as_double(),
@@ -1613,6 +2487,9 @@ public:
         get_parameter("synced_input_velocity_filter_beta").as_double(),
         get_parameter("synced_input_velocity_filter_type").as_string(),
         get_parameter("synced_input_velocity_ratio_tolerance").as_double(),
+        get_parameter("synced_input_velocity_max_raw_rad_s").as_double(),
+        get_parameter("synced_input_velocity_position_step_margin_rad").as_double(),
+        get_parameter("synced_input_velocity_max_output_rad_s").as_double(),
         get_parameter("startup_move_to_default_pose").as_bool(),
         get_parameter("startup_home_joints_deg").as_double_array(),
         get_parameter("startup_movej_speed").as_double(),
@@ -1625,26 +2502,50 @@ public:
         get_parameter("shutdown_action").as_string());
       RCLCPP_INFO(
         get_logger(),
-        "Using direct RB10 API backend (%s, state source: %s, command_mode=%s)",
+        "Using direct RB10 API backend (%s, state source: %s, command_mode=%s, commands=%s)",
         get_parameter("robot_ip").as_string().c_str(),
         get_parameter("real_joint_state_source").as_string().c_str(),
-        command_mode_to_string(command_mode_));
+        command_mode_to_string(command_mode_),
+        hardware_command_enabled_ ? "enabled" : "DISABLED (read-only dry-run)");
+      if (command_mode_ == CommandMode::kVelocity) {
+        RCLCPP_INFO(
+          get_logger(),
+          "Direct RB10 SpeedJ profile: t1=%.4f s, t2=%.4f s, gain=%.4f, alpha=%.4f",
+          get_parameter("speedj_t1").as_double(),
+          get_parameter("speedj_t2").as_double(),
+          get_parameter("speedj_gain").as_double(),
+          get_parameter("speedj_alpha").as_double());
+      }
     } else if (backend_mode == "joint_command_topics") {
       backend_ = std::make_unique<JointCommandTopicsBackend>(
         this,
         state_.q,
         get_parameter("joint_state_topic").as_string(),
         get_parameter("position_command_topic").as_string(),
-        command_mode_);
+        command_mode_,
+        publish_control_timing_debug_enabled_,
+        get_parameter("hardware_data_request_rate").as_double(),
+        get_parameter("control_rate").as_double(),
+        get_parameter("use_synced_input_velocity_filter").as_bool(),
+        get_parameter("synced_input_velocity_filter_alpha").as_double(),
+        get_parameter("synced_input_velocity_filter_beta").as_double(),
+        get_parameter("synced_input_velocity_filter_type").as_string(),
+        get_parameter("synced_input_velocity_ratio_tolerance").as_double(),
+        get_parameter("synced_input_velocity_max_raw_rad_s").as_double(),
+        get_parameter("synced_input_velocity_position_step_margin_rad").as_double(),
+        get_parameter("synced_input_velocity_max_output_rad_s").as_double());
       RCLCPP_INFO(
         get_logger(),
-        "Using joint command topic backend (%s -> %s, command_mode=%s)",
+        "Using joint command topic backend (%s -> %s, command_mode=%s, velocity_filter=%s)",
         get_parameter("joint_state_topic").as_string().c_str(),
         get_parameter("position_command_topic").as_string().c_str(),
-        command_mode_to_string(command_mode_));
-    } else {
+        command_mode_to_string(command_mode_),
+        get_parameter("use_synced_input_velocity_filter").as_bool() ? "enabled" : "disabled");
+    } else if (backend_mode == "simulation") {
       backend_ = std::make_unique<SimulationBackend>(state_.q);
       RCLCPP_INFO(get_logger(), "Using simulation backend");
+    } else {
+      throw std::runtime_error("Unsupported backend_mode: " + backend_mode);
     }
 
     if (publish_joint_states_enabled_ && backend_->ready()) {
@@ -1840,11 +2741,23 @@ private:
     config.graph_nodes = parse_graph_nodes();
     config.max_joint_accel = max_joint_accel_;
     config.preserve_joint_accel_direction = preserve_joint_accel_direction_;
+    config.enable_tangent_escape_dual_solve_diagnostics =
+      get_parameter("publish_tangent_escape_dual_solve_data").as_bool();
+    config.enable_tangent_escape_diagnostics =
+      get_parameter("publish_tangent_escape_rmp_data").as_bool() ||
+      config.enable_tangent_escape_dual_solve_diagnostics ||
+      get_parameter("publish_tangent_escape_geometry_debug").as_bool();
     config.enable_leaf_ablation_diagnostics =
       get_parameter("publish_leaf_ablation_data").as_bool();
+    config.enable_stability_certificate_diagnostics =
+      get_parameter("publish_stability_certificate_data").as_bool() ||
+      get_parameter("escape_stability_guard_enabled").as_bool();
     config.solve_offset = get_parameter("root_solve_offset").as_double();
     config.solve_method = get_parameter("solve_method").as_string();
     config.rmp_type = get_parameter("rmp_type").as_string();
+    config.casadi_rmp2_max_obstacles = static_cast<int>(
+      get_parameter("casadi_rmp2_max_obstacles").as_int());
+    config.casadi_rmp2_jit = get_parameter("casadi_rmp2_jit").as_bool();
     config.body_obstacles = parse_body_obstacles();
 
     const auto default_q = get_parameter("default_q").as_double_array();
@@ -2080,6 +2993,12 @@ private:
       "tangent_escape_rmp_risk_clearance_rate_filter_time_constant").as_double();
     config.tangent_escape.risk_tangent_damping_gain =
       get_parameter("tangent_escape_rmp_risk_tangent_damping_gain").as_double();
+    config.tangent_escape.risk_stuck_accel_floor =
+      get_parameter("tangent_escape_rmp_risk_stuck_accel_floor").as_double();
+    config.tangent_escape.risk_stuck_dwell_time =
+      get_parameter("tangent_escape_rmp_risk_stuck_dwell_time").as_double();
+    config.tangent_escape.risk_stuck_ramp_time =
+      get_parameter("tangent_escape_rmp_risk_stuck_ramp_time").as_double();
 
     config.escape_energy_certificate.enabled =
       get_parameter("escape_stability_guard_enabled").as_bool();
@@ -2133,12 +3052,26 @@ private:
 
   std::unique_ptr<RmpSolverInterface> build_solver(const EigenRmpConfig & config) const
   {
-    return std::make_unique<PinocchioDirectRmpSolver>(config, resolve_pinocchio_urdf_path());
+    const std::string backend = get_parameter("solver_backend").as_string();
+    const std::string urdf_path = resolve_robot_urdf_path();
+    if (backend == "pinocchio_direct") {
+      RCLCPP_INFO(get_logger(), "Using Pinocchio explicit RMP2 solver backend");
+      return std::make_unique<PinocchioDirectRmpSolver>(config, urdf_path);
+    }
+    if (backend == "casadi_rmp2") {
+      RCLCPP_INFO(
+        get_logger(),
+        "Using CasADi Algorithm-3 RMP2 solver backend (jit=%s)",
+        config.casadi_rmp2_jit ? "true" : "false");
+      return std::make_unique<CasadiRmp2Solver>(config, urdf_path);
+    }
+    throw std::invalid_argument(
+            "solver_backend must be pinocchio_direct or casadi_rmp2, got: " + backend);
   }
 
-  std::string resolve_pinocchio_urdf_path() const
+  std::string resolve_robot_urdf_path() const
   {
-    const auto configured = get_parameter("pinocchio_urdf_path").as_string();
+    const auto configured = get_parameter("robot_urdf_path").as_string();
     if (!configured.empty()) {
       return configured;
     }
@@ -3697,11 +4630,19 @@ private:
 
     RobotState hold_state = measured_state;
     hold_state.qd.setZero();
-    backend_->apply_command(hold_state, RB10Model::joint_names);
+    previous_velocity_command_.setZero();
+    previous_velocity_command_initialized_ = true;
+    if (backend_command_application_enabled_) {
+      backend_->apply_command(hold_state, RB10Model::joint_names);
+    }
     publish_position_command(hold_state);
     publish_direct_command(hold_state);
-    virtual_velocity_state_ = hold_state;
-    virtual_velocity_state_initialized_ = true;
+    if (backend_command_application_enabled_) {
+      virtual_velocity_state_ = hold_state;
+      virtual_velocity_state_initialized_ = true;
+    } else {
+      virtual_velocity_state_initialized_ = false;
+    }
   }
 
   void reset_controller_velocity_estimator()
@@ -3709,19 +4650,29 @@ private:
     controller_velocity_estimator_initialized_ = false;
     controller_velocity_previous_q_.setZero();
     controller_velocity_estimate_.setZero();
+    controller_velocity_previous_time_ = std::chrono::steady_clock::time_point{};
   }
 
   JointVector estimate_controller_velocity(
     const JointVector & q,
-    double dt)
+    const std::chrono::steady_clock::time_point & sample_time)
   {
-    if (!controller_velocity_estimator_initialized_ || dt <= std::numeric_limits<double>::epsilon()) {
+    if (!controller_velocity_estimator_initialized_) {
       controller_velocity_previous_q_ = q;
       controller_velocity_estimate_.setZero();
+      controller_velocity_previous_time_ = sample_time;
       controller_velocity_estimator_initialized_ = true;
       return controller_velocity_estimate_;
     }
 
+    const double dt = std::chrono::duration<double>(
+      sample_time - controller_velocity_previous_time_).count();
+    controller_velocity_previous_time_ = sample_time;
+    if (dt <= std::numeric_limits<double>::epsilon() || dt > 0.25) {
+      controller_velocity_previous_q_ = q;
+      controller_velocity_estimate_.setZero();
+      return controller_velocity_estimate_;
+    }
     const JointVector raw_qd = (q - controller_velocity_previous_q_) / dt;
     controller_velocity_previous_q_ = q;
     controller_velocity_estimate_ =
@@ -3755,13 +4706,14 @@ private:
     rmp_eef_pose_pub_->publish(pose);
   }
 
-  void publish_target_metric(const RobotState & state, const Eigen::Vector3d & goal)
+  void publish_target_metric(
+    const KinematicsContext & context,
+    const Eigen::Vector3d & goal)
   {
     if (!target_metric_pub_) {
       return;
     }
 
-    const auto context = RB10Model::forward_context(state.q);
     const Eigen::Vector3d delta = goal - context.tcp_position;
     const double delta_norm = delta.norm();
     const double soft_delta_norm =
@@ -3849,20 +4801,51 @@ private:
       context.link_positions[RB10Model::TCP_GRIPPER].z() < min_tcp_z_;
   }
 
-  bool apply_command_guard(
+  void reset_velocity_command_guard()
+  {
+    previous_velocity_command_.setZero();
+    previous_velocity_command_initialized_ = false;
+  }
+
+  CommandGuardDiagnostics apply_command_guard(
     const RobotState & measured_state,
     RobotState & command_state,
-    double dt) const
+    double dt)
   {
-    bool clamped = false;
+    CommandGuardDiagnostics diagnostics;
+    diagnostics.pre_guard_command =
+      command_mode_ == CommandMode::kVelocity ? command_state.qd : command_state.q;
     if (command_mode_ == CommandMode::kVelocity) {
       const double safe_dt = std::max(dt, 1e-6);
+      if (!previous_velocity_command_initialized_) {
+        previous_velocity_command_.setZero();
+        previous_velocity_command_initialized_ = true;
+      }
+      const JointVector previous_command = previous_velocity_command_;
+      const double max_velocity_step =
+        command_guard_velocity_slew_enabled_ ?
+        command_guard_max_accel_rad_s2_ * safe_dt :
+        std::numeric_limits<double>::infinity();
       for (int index = 0; index < command_state.q.size(); ++index) {
         const auto limit_index = static_cast<std::size_t>(index);
         double limited_velocity = std::clamp(
           command_state.qd[index],
           -command_guard_max_velocity_rad_s_,
           command_guard_max_velocity_rad_s_);
+        if (std::abs(limited_velocity - command_state.qd[index]) > 1e-9) {
+          diagnostics.clamped = true;
+        }
+        if (command_guard_velocity_slew_enabled_) {
+          const double slew_limited_velocity = std::clamp(
+            limited_velocity,
+            previous_command[index] - max_velocity_step,
+            previous_command[index] + max_velocity_step);
+          if (std::abs(slew_limited_velocity - limited_velocity) > 1e-9) {
+            diagnostics.clamped = true;
+            diagnostics.velocity_slew_clamped = true;
+          }
+          limited_velocity = slew_limited_velocity;
+        }
         double guarded_lower = joint_lower_limits_[limit_index];
         double guarded_upper = joint_upper_limits_[limit_index];
 
@@ -3893,7 +4876,7 @@ private:
           limited_velocity = 0.0;
         }
         if (std::abs(limited_velocity - command_state.qd[index]) > 1e-9) {
-          clamped = true;
+          diagnostics.clamped = true;
         }
         command_state.qd[index] = limited_velocity;
         command_state.q[index] = measured_state.q[index] + command_state.qd[index] * dt;
@@ -3902,7 +4885,12 @@ private:
         }
       }
       command_state.q = clamp_joint_positions(command_state.q);
-      return clamped;
+      diagnostics.command_step = command_state.qd - previous_command;
+      previous_velocity_command_ = command_state.qd;
+      if (diagnostics.velocity_slew_clamped) {
+        ++velocity_slew_clamp_count_;
+      }
+      return diagnostics;
     }
 
     const double max_step_rad =
@@ -3912,7 +4900,7 @@ private:
       const double delta = command_state.q[index] - measured_state.q[index];
       const double limited_delta = std::clamp(delta, -max_step_rad, max_step_rad);
       if (std::abs(limited_delta - delta) > 1e-9) {
-        clamped = true;
+        diagnostics.clamped = true;
       }
       command_state.q[index] = measured_state.q[index] + limited_delta;
 
@@ -3921,7 +4909,7 @@ private:
         -command_guard_max_velocity_rad_s_,
         command_guard_max_velocity_rad_s_);
       if (std::abs(limited_velocity - command_state.qd[index]) > 1e-9) {
-        clamped = true;
+        diagnostics.clamped = true;
       }
       command_state.qd[index] = limited_velocity;
     }
@@ -3929,10 +4917,217 @@ private:
     const JointVector unclamped_q = command_state.q;
     command_state.q = clamp_joint_positions(command_state.q);
     if ((command_state.q - unclamped_q).cwiseAbs().maxCoeff() > 1e-9) {
-      clamped = true;
+      diagnostics.clamped = true;
     }
 
-    return clamped;
+    diagnostics.command_step = command_state.q - measured_state.q;
+    return diagnostics;
+  }
+
+  void record_and_publish_control_timing(
+    const std::chrono::steady_clock::time_point & cycle_start,
+    const std::chrono::steady_clock::time_point & scheduled_start,
+    const std::chrono::steady_clock::time_point & deadline,
+    const std::chrono::steady_clock::time_point & work_end,
+    double pre_solve_duration_sec,
+    double solve_duration_sec,
+    double post_solve_duration_sec,
+    const RobotState & measured_state,
+    const JointVector & qdd,
+    const RobotState & command_state,
+    const CommandGuardDiagnostics & command_guard_diagnostics)
+  {
+    auto & timing = control_timing_accumulator_;
+    ++timing.active_cycle_count;
+
+    if (timing.previous_active_cycle_valid) {
+      timing.cycle_interval_latest_sec =
+        std::chrono::duration<double>(
+        cycle_start - timing.previous_active_cycle_start).count();
+      timing.cycle_interval_total_sec += timing.cycle_interval_latest_sec;
+      timing.cycle_interval_max_sec = std::max(
+        timing.cycle_interval_max_sec, timing.cycle_interval_latest_sec);
+      timing.cycle_interval_window_max_sec = std::max(
+        timing.cycle_interval_window_max_sec, timing.cycle_interval_latest_sec);
+    }
+    timing.previous_active_cycle_start = cycle_start;
+    timing.previous_active_cycle_valid = true;
+
+    timing.solve_latest_sec = std::max(solve_duration_sec, 0.0);
+    timing.solve_total_sec += timing.solve_latest_sec;
+    timing.solve_max_sec = std::max(timing.solve_max_sec, timing.solve_latest_sec);
+    timing.solve_window_max_sec = std::max(
+      timing.solve_window_max_sec, timing.solve_latest_sec);
+    const double pre_solve_sec = std::max(pre_solve_duration_sec, 0.0);
+    const double post_solve_sec = std::max(post_solve_duration_sec, 0.0);
+    timing.pre_solve_total_sec += pre_solve_sec;
+    timing.pre_solve_window_max_sec = std::max(
+      timing.pre_solve_window_max_sec, pre_solve_sec);
+    timing.post_solve_total_sec += post_solve_sec;
+    timing.post_solve_window_max_sec = std::max(
+      timing.post_solve_window_max_sec, post_solve_sec);
+
+    timing.work_latest_sec = std::max(
+      std::chrono::duration<double>(work_end - cycle_start).count(), 0.0);
+    timing.work_total_sec += timing.work_latest_sec;
+    timing.work_max_sec = std::max(timing.work_max_sec, timing.work_latest_sec);
+    timing.work_window_max_sec = std::max(
+      timing.work_window_max_sec, timing.work_latest_sec);
+
+    timing.start_lateness_latest_sec = std::max(
+      std::chrono::duration<double>(cycle_start - scheduled_start).count(), 0.0);
+    timing.start_lateness_total_sec += timing.start_lateness_latest_sec;
+    timing.start_lateness_max_sec = std::max(
+      timing.start_lateness_max_sec, timing.start_lateness_latest_sec);
+    timing.start_lateness_window_max_sec = std::max(
+      timing.start_lateness_window_max_sec, timing.start_lateness_latest_sec);
+    if (work_end > deadline) {
+      ++timing.deadline_miss_count;
+    }
+
+    const double measured_qd_norm = measured_state.qd.norm();
+    const double measured_qd_max_abs = measured_state.qd.cwiseAbs().maxCoeff();
+    const double qdd_norm = qdd.norm();
+    const double qdd_max_abs = qdd.cwiseAbs().maxCoeff();
+    const JointVector & command_vector =
+      command_mode_ == CommandMode::kVelocity ? command_state.qd : command_state.q;
+    const double command_norm = command_vector.norm();
+    const double command_max_abs = command_vector.cwiseAbs().maxCoeff();
+    timing.measured_qd_norm_max = std::max(timing.measured_qd_norm_max, measured_qd_norm);
+    timing.measured_qd_max_abs_max = std::max(
+      timing.measured_qd_max_abs_max, measured_qd_max_abs);
+    timing.qdd_norm_max = std::max(timing.qdd_norm_max, qdd_norm);
+    timing.qdd_max_abs_max = std::max(timing.qdd_max_abs_max, qdd_max_abs);
+    timing.command_norm_max = std::max(timing.command_norm_max, command_norm);
+    timing.command_max_abs_max = std::max(
+      timing.command_max_abs_max, command_max_abs);
+
+    const double publish_period_sec = 1.0 / control_timing_publish_rate_hz_;
+    if (
+      timing.last_publish_time.time_since_epoch().count() != 0 &&
+      std::chrono::duration<double>(work_end - timing.last_publish_time).count() <
+      publish_period_sec)
+    {
+      return;
+    }
+    timing.last_publish_time = work_end;
+
+    const BackendTimingSnapshot backend_timing = backend_->take_timing_snapshot();
+    std_msgs::msg::Float64MultiArray message;
+    // Schema 1 contains cumulative counters/totals so a recorder can calculate
+    // statistics for only its own observation window without high-rate logging.
+    // The vectors appended after the original 45 fields preserve schema-1
+    // compatibility while allowing event-level q/qd/qdd/command correlation.
+    message.data.reserve(116U);
+    message.data = {
+      1.0,
+      control_rate_hz_,
+      1.0 / control_rate_hz_,
+      static_cast<double>(timing.active_cycle_count),
+      timing.cycle_interval_latest_sec,
+      timing.cycle_interval_total_sec,
+      timing.cycle_interval_max_sec,
+      timing.solve_latest_sec,
+      timing.solve_total_sec,
+      timing.solve_max_sec,
+      timing.work_latest_sec,
+      timing.work_total_sec,
+      timing.work_max_sec,
+      timing.start_lateness_latest_sec,
+      timing.start_lateness_total_sec,
+      timing.start_lateness_max_sec,
+      static_cast<double>(timing.deadline_miss_count),
+      static_cast<double>(backend_timing.state_interval_count),
+      backend_timing.state_interval_latest_sec,
+      backend_timing.state_interval_total_sec,
+      backend_timing.state_interval_max_sec,
+      static_cast<double>(backend_timing.state_gap_over_5ms_count),
+      static_cast<double>(backend_timing.state_gap_over_20ms_count),
+      static_cast<double>(backend_timing.state_gap_over_100ms_count),
+      measured_qd_norm,
+      timing.measured_qd_norm_max,
+      measured_qd_max_abs,
+      timing.measured_qd_max_abs_max,
+      qdd_norm,
+      timing.qdd_norm_max,
+      qdd_max_abs,
+      timing.qdd_max_abs_max,
+      command_norm,
+      timing.command_norm_max,
+      command_max_abs,
+      timing.command_max_abs_max,
+      timing.cycle_interval_window_max_sec,
+      timing.solve_window_max_sec,
+      timing.work_window_max_sec,
+      timing.start_lateness_window_max_sec,
+      backend_timing.state_interval_window_max_sec,
+      timing.pre_solve_total_sec,
+      timing.pre_solve_window_max_sec,
+      timing.post_solve_total_sec,
+      timing.post_solve_window_max_sec,
+    };
+    for (int joint = 0; joint < 6; ++joint) {
+      message.data.push_back(measured_state.q[joint]);
+    }
+    for (int joint = 0; joint < 6; ++joint) {
+      message.data.push_back(measured_state.qd[joint]);
+    }
+    for (int joint = 0; joint < 6; ++joint) {
+      message.data.push_back(qdd[joint]);
+    }
+    for (int joint = 0; joint < 6; ++joint) {
+      message.data.push_back(command_vector[joint]);
+    }
+    message.data.push_back(static_cast<double>(backend_timing.velocity_filter_update_count));
+    message.data.push_back(backend_timing.velocity_filter_synced_dt_window_max_sec);
+    for (int joint = 0; joint < 6; ++joint) {
+      message.data.push_back(backend_timing.raw_position_step_abs_window_max[joint]);
+    }
+    for (int joint = 0; joint < 6; ++joint) {
+      message.data.push_back(backend_timing.raw_velocity_abs_window_max[joint]);
+    }
+    for (int joint = 0; joint < 6; ++joint) {
+      message.data.push_back(
+        backend_timing.velocity_filter_residual_abs_window_max[joint]);
+    }
+    for (int joint = 0; joint < 6; ++joint) {
+      message.data.push_back(backend_timing.filtered_velocity_abs_window_max[joint]);
+    }
+    message.data.push_back(
+      static_cast<double>(backend_timing.velocity_filter_input_reject_count));
+    message.data.push_back(
+      static_cast<double>(backend_timing.velocity_filter_output_reject_count));
+    for (int joint = 0; joint < 6; ++joint) {
+      message.data.push_back(command_guard_diagnostics.pre_guard_command[joint]);
+    }
+    for (int joint = 0; joint < 6; ++joint) {
+      message.data.push_back(command_guard_diagnostics.command_step[joint]);
+    }
+    message.data.push_back(static_cast<double>(velocity_slew_clamp_count_));
+    message.data.push_back(
+      command_guard_diagnostics.velocity_slew_clamped ? 1.0 : 0.0);
+    message.data.push_back(
+      static_cast<double>(backend_timing.controller_packet_time_used_count));
+    message.data.push_back(
+      static_cast<double>(backend_timing.controller_packet_time_fallback_count));
+    message.data.push_back(
+      static_cast<double>(backend_timing.controller_packet_time_duplicate_count));
+    message.data.push_back(
+      static_cast<double>(backend_timing.controller_packet_time_reset_count));
+    message.data.push_back(backend_timing.controller_packet_time_dt_window_max_sec);
+    timing.cycle_interval_window_max_sec = 0.0;
+    timing.solve_window_max_sec = 0.0;
+    timing.work_window_max_sec = 0.0;
+    timing.start_lateness_window_max_sec = 0.0;
+    timing.pre_solve_window_max_sec = 0.0;
+    timing.post_solve_window_max_sec = 0.0;
+    if (rt_control_timing_pub_) {
+      rt_control_timing_pub_->tryPublish(message);
+      return;
+    }
+    if (control_timing_pub_) {
+      control_timing_pub_->publish(message);
+    }
   }
 
   void control_loop()
@@ -3944,14 +5139,19 @@ private:
       lock_memory_);
 
     const auto period = std::chrono::duration<double>(1.0 / control_rate_hz_);
+    const auto period_duration =
+      std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
     auto next_tick = std::chrono::steady_clock::now();
 
     while (rclcpp::ok() && running_.load()) {
-      next_tick += std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
+      const auto scheduled_start = next_tick;
+      next_tick += period_duration;
+      const auto cycle_start = std::chrono::steady_clock::now();
 
       if (!backend_->ready()) {
         virtual_velocity_state_initialized_ = false;
         last_safe_command_state_initialized_ = false;
+        reset_velocity_command_guard();
         clear_tcp_accel_visualization_sample();
         reset_controller_velocity_estimator();
         RCLCPP_INFO_THROTTLE(
@@ -3969,12 +5169,14 @@ private:
         // Estimate qd on the controller's configured control timeline so the
         // solver sees a velocity signal aligned with the solve loop instead
         // of an asynchronously sampled derivative from the bridge.
-        measured_state.qd = estimate_controller_velocity(measured_state.q, period.count());
+        measured_state.qd = estimate_controller_velocity(measured_state.q, cycle_start);
       }
-      const auto measured_context = RB10Model::forward_context(measured_state.q);
+      const auto measured_context = RB10Model::forward_context(
+        measured_state.q, ControlPointJacobianMode::kNone);
       if (rmp_flag_gate_enabled_ && !rmp_active_.load()) {
         virtual_velocity_state_initialized_ = false;
         last_safe_command_state_initialized_ = false;
+        reset_velocity_command_guard();
         clear_tcp_accel_visualization_sample();
         state_ = measured_state;
         if (estimate_velocity_in_controller_) {
@@ -3986,7 +5188,7 @@ private:
         publish_rmp_ee_pose(measured_context);
         GoalTarget goal_target;
         goal_target_box_.get(goal_target);
-        publish_target_metric(measured_state, goal_target.position);
+        publish_target_metric(measured_context, goal_target.position);
         send_velocity_hold_command(measured_state);
         RCLCPP_INFO_THROTTLE(
           get_logger(),
@@ -4000,6 +5202,7 @@ private:
       if (rmp_flag_gate_enabled_ && !external_goal_received_.load()) {
         virtual_velocity_state_initialized_ = false;
         last_safe_command_state_initialized_ = false;
+        reset_velocity_command_guard();
         clear_tcp_accel_visualization_sample();
         state_ = measured_state;
         if (estimate_velocity_in_controller_) {
@@ -4011,7 +5214,7 @@ private:
         publish_rmp_ee_pose(measured_context);
         GoalTarget goal_target;
         goal_target_box_.get(goal_target);
-        publish_target_metric(measured_state, goal_target.position);
+        publish_target_metric(measured_context, goal_target.position);
         send_velocity_hold_command(measured_state);
         RCLCPP_INFO_THROTTLE(
           get_logger(),
@@ -4079,22 +5282,27 @@ private:
       proximity_sensor_obstacles_box_.get(proximity_sensor_obstacles);
 
       JointVector qdd = JointVector::Zero();
-      std::vector<double> tangent_escape_rmp_data{0.0};
-      std::vector<double> tangent_escape_dual_solve_data{0.0};
-      std::vector<double> leaf_ablation_data{0.0};
-      std::vector<double> stability_certificate_data{0.0};
+      std::vector<double> tangent_escape_rmp_data;
+      std::vector<double> tangent_escape_dual_solve_data;
+      std::vector<double> leaf_ablation_data;
+      std::vector<double> stability_certificate_data;
       last_min_z_safety_triggered_.store(false);
       bool solve_ok = false;
+      const auto solve_start = std::chrono::steady_clock::now();
       try {
         qdd = compute_acceleration(
           control_state,
           goal,
           goal_orientation,
           obstacles,
-          &tangent_escape_rmp_data,
-          &tangent_escape_dual_solve_data,
-          &leaf_ablation_data,
-          &stability_certificate_data);
+          (publish_tangent_escape_rmp_data_enabled_ ||
+          publish_tangent_escape_geometry_debug_enabled_) ?
+          &tangent_escape_rmp_data : nullptr,
+          publish_tangent_escape_dual_solve_data_enabled_ ?
+          &tangent_escape_dual_solve_data : nullptr,
+          publish_leaf_ablation_data_enabled_ ? &leaf_ablation_data : nullptr,
+          publish_stability_certificate_data_enabled_ ?
+          &stability_certificate_data : nullptr);
         solve_ok = true;
       } catch (const std::exception & error) {
         RCLCPP_ERROR_THROTTLE(
@@ -4104,25 +5312,47 @@ private:
           "RMP solve failed, holding command at zero acceleration: %s",
           error.what());
       }
-      tangent_escape_visualization_box_.set(
-        solve_ok ? tangent_escape_rmp_data : std::vector<double>{0.0});
-      tangent_escape_dual_visualization_box_.set(
-        solve_ok ? tangent_escape_dual_solve_data : std::vector<double>{0.0});
+      const auto solve_end = std::chrono::steady_clock::now();
+      const double solve_duration_sec = std::chrono::duration<double>(
+        solve_end - solve_start).count();
+      if (publish_tangent_escape_geometry_debug_enabled_) {
+        tangent_escape_visualization_box_.set(
+          solve_ok ? tangent_escape_rmp_data : std::vector<double>{});
+        if (publish_tangent_escape_dual_solve_data_enabled_) {
+          tangent_escape_dual_visualization_box_.set(
+            solve_ok ? tangent_escape_dual_solve_data : std::vector<double>{});
+        }
+      }
       if (solve_ok) {
-        publish_tangent_escape_rmp_data(tangent_escape_rmp_data);
-        publish_tangent_escape_dual_solve_data(
-          tangent_escape_dual_solve_data);
-        publish_leaf_ablation_data(leaf_ablation_data);
-        publish_stability_certificate_data(stability_certificate_data);
+        if (publish_tangent_escape_rmp_data_enabled_) {
+          publish_tangent_escape_rmp_data(tangent_escape_rmp_data);
+        }
+        if (publish_tangent_escape_dual_solve_data_enabled_) {
+          publish_tangent_escape_dual_solve_data(tangent_escape_dual_solve_data);
+        }
+        if (publish_leaf_ablation_data_enabled_) {
+          publish_leaf_ablation_data(leaf_ablation_data);
+        }
+        if (publish_stability_certificate_data_enabled_) {
+          publish_stability_certificate_data(stability_certificate_data);
+        }
       }
 
       std::optional<KinematicsContext> control_context_storage;
+      const auto control_context_jacobian_mode =
+        publish_tangent_escape_geometry_debug_enabled_ ?
+        ControlPointJacobianMode::kAnalytic :
+        ControlPointJacobianMode::kNone;
       auto control_context = [&]() -> const KinematicsContext & {
-          if ((control_state.q - measured_state.q).cwiseAbs().maxCoeff() <= 1e-12) {
+          if (
+            control_context_jacobian_mode == ControlPointJacobianMode::kNone &&
+            (control_state.q - measured_state.q).cwiseAbs().maxCoeff() <= 1e-12)
+          {
             return measured_context;
           }
           if (!control_context_storage.has_value()) {
-            control_context_storage.emplace(RB10Model::forward_context(control_state.q));
+            control_context_storage.emplace(RB10Model::forward_context(
+                control_state.q, control_context_jacobian_mode));
           }
           return control_context_storage.value();
         };
@@ -4143,7 +5373,8 @@ private:
       }
       publish_rmp_accel_debug(qdd, tcp_accel_ptr);
       RobotState predicted_state = integrate_command(control_state, qdd, period.count());
-      const auto predicted_context = RB10Model::forward_context(predicted_state.q);
+      const auto predicted_context = RB10Model::forward_context(
+        predicted_state.q, ControlPointJacobianMode::kNone);
       RobotState command_state = predicted_state;
       const bool predicted_state_violates_min_z = violates_min_z_safety(predicted_context);
       const KinematicsContext * command_context = &predicted_context;
@@ -4152,9 +5383,11 @@ private:
       const bool min_z_safety_triggered =
         measured_state_violates_min_z || predicted_state_violates_min_z;
       if (min_z_safety_triggered) {
+        reset_velocity_command_guard();
         if (last_safe_command_state_initialized_) {
           command_state = last_safe_command_state_;
-          safe_command_context.emplace(RB10Model::forward_context(command_state.q));
+          safe_command_context.emplace(RB10Model::forward_context(
+              command_state.q, ControlPointJacobianMode::kNone));
           command_context = &safe_command_context.value();
         } else {
           command_state = measured_state;
@@ -4169,10 +5402,11 @@ private:
         }
       }
 
-      const bool command_guard_triggered =
+      const CommandGuardDiagnostics command_guard_diagnostics =
         apply_command_guard(measured_state, command_state, period.count());
-      if (command_guard_triggered) {
-        safe_command_context.emplace(RB10Model::forward_context(command_state.q));
+      if (command_guard_diagnostics.clamped) {
+        safe_command_context.emplace(RB10Model::forward_context(
+            command_state.q, ControlPointJacobianMode::kNone));
         command_context = &safe_command_context.value();
         RCLCPP_WARN_THROTTLE(
           get_logger(),
@@ -4191,19 +5425,43 @@ private:
         last_safe_command_state_initialized_ = true;
       }
       publish_rmp_ee_pose(*command_context);
-      publish_target_metric(control_state, goal);
+      if (target_metric_pub_) {
+        publish_target_metric(control_context(), goal);
+      }
       publish_target_q(command_state);
       publish_position_command(command_state);
-      backend_->apply_command(command_state, RB10Model::joint_names);
+      if (backend_command_application_enabled_) {
+        backend_->apply_command(command_state, RB10Model::joint_names);
+      }
       publish_direct_command(command_state);
-      virtual_velocity_state_ = command_state;
-      virtual_velocity_state_initialized_ = true;
+      if (backend_command_application_enabled_) {
+        virtual_velocity_state_ = command_state;
+        virtual_velocity_state_initialized_ = true;
+      } else {
+        virtual_velocity_state_initialized_ = false;
+      }
       state_ = backend_->read_state();
       if (estimate_velocity_in_controller_) {
         state_.qd = measured_state.qd;
       }
       if (publish_joint_states_enabled_) {
         publish_joint_states(state_);
+      }
+
+      if (publish_control_timing_debug_enabled_) {
+        const auto work_end = std::chrono::steady_clock::now();
+        record_and_publish_control_timing(
+          cycle_start,
+          scheduled_start,
+          next_tick,
+          work_end,
+          std::chrono::duration<double>(solve_start - cycle_start).count(),
+          solve_duration_sec,
+          std::chrono::duration<double>(work_end - solve_end).count(),
+          measured_state,
+          qdd,
+          command_state,
+          command_guard_diagnostics);
       }
 
       std::this_thread::sleep_until(next_tick);
@@ -4340,7 +5598,8 @@ private:
     }
 
     const auto state = backend_->read_state();
-    const auto context = RB10Model::forward_context(state.q);
+    const auto context = RB10Model::forward_context(
+      state.q, ControlPointJacobianMode::kAnalytic);
 
     if (debug_state_pub_) {
       publish_debug_state(state, context);
@@ -4510,11 +5769,14 @@ private:
   RobotState last_safe_command_state_;
   JointVector controller_velocity_previous_q_{JointVector::Zero()};
   JointVector controller_velocity_estimate_{JointVector::Zero()};
+  std::chrono::steady_clock::time_point controller_velocity_previous_time_{};
   bool virtual_velocity_state_initialized_{false};
   bool last_safe_command_state_initialized_{false};
   bool controller_velocity_estimator_initialized_{false};
   Eigen::Vector3d body_goal_;
   CommandMode command_mode_{CommandMode::kPosition};
+  bool hardware_command_enabled_{true};
+  bool backend_command_application_enabled_{true};
   TargetRmpParams target_metric_params_;
   CollisionRmpParams collision_metric_params_;
   realtime_tools::RealtimeBox<GoalTarget> goal_target_box_;
@@ -4554,6 +5816,9 @@ private:
   double min_link6_z_{0.03};
   double min_tcp_z_{0.05};
   double control_rate_hz_{100.0};
+  bool publish_control_timing_debug_enabled_{false};
+  double control_timing_publish_rate_hz_{10.0};
+  ControlTimingAccumulator control_timing_accumulator_;
   bool enable_realtime_{false};
   int realtime_priority_{80};
   bool lock_memory_{false};
@@ -4566,6 +5831,11 @@ private:
   bool preserve_joint_accel_direction_{true};
   double command_guard_max_step_rad_{0.00436332313};
   double command_guard_max_velocity_rad_s_{0.436332313};
+  bool command_guard_velocity_slew_enabled_{true};
+  double command_guard_max_accel_rad_s2_{10.0};
+  JointVector previous_velocity_command_{JointVector::Zero()};
+  bool previous_velocity_command_initialized_{false};
+  std::uint64_t velocity_slew_clamp_count_{0U};
   bool predictive_joint_limit_guard_{true};
   std::array<double, 6> joint_lower_limits_ = RB10Model::joint_lower_limits;
   std::array<double, 6> joint_upper_limits_ = RB10Model::joint_upper_limits;
@@ -4591,6 +5861,7 @@ private:
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr target_metric_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr rmp_joint_accel_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr rmp_tcp_accel_pub_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr control_timing_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr tangent_escape_rmp_data_pub_;
   rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr
     tangent_escape_dual_solve_data_pub_;
@@ -4618,6 +5889,7 @@ private:
   std::shared_ptr<Float64ArrayRtPublisher> rt_target_metric_pub_;
   std::shared_ptr<Float64ArrayRtPublisher> rt_rmp_joint_accel_pub_;
   std::shared_ptr<Float64ArrayRtPublisher> rt_rmp_tcp_accel_pub_;
+  std::shared_ptr<Float64ArrayRtPublisher> rt_control_timing_pub_;
   std::shared_ptr<Float64ArrayRtPublisher> rt_tangent_escape_rmp_data_pub_;
   std::shared_ptr<Float64ArrayRtPublisher>
     rt_tangent_escape_dual_solve_data_pub_;

@@ -89,7 +89,8 @@ bool Rb10SocketClient::connect(
   StateCallback state_callback,
   LogCallback log_callback,
   bool enable_realtime_threads,
-  int realtime_priority)
+  int realtime_priority,
+  bool enable_command_channel)
 {
   disconnect();
 
@@ -99,10 +100,13 @@ bool Rb10SocketClient::connect(
   log_callback_ = std::move(log_callback);
   realtime_threads_enabled_ = enable_realtime_threads;
   realtime_priority_ = std::max(realtime_priority, 1);
+  command_channel_enabled_ = enable_command_channel;
 
-  if (!open_socket(robot_ip_, kCmdPort, cmd_sock_)) {
-    set_disconnected();
-    return false;
+  if (command_channel_enabled_) {
+    if (!open_socket(robot_ip_, kCmdPort, cmd_sock_)) {
+      set_disconnected();
+      return false;
+    }
   }
   if (!open_socket(robot_ip_, kDataPort, data_sock_)) {
     set_disconnected();
@@ -262,7 +266,7 @@ bool Rb10SocketClient::send_speedj_degrees_per_sec(
 
 bool Rb10SocketClient::send_text_command(const std::string & command_text)
 {
-  if (!is_connected()) {
+  if (!is_connected() || !command_channel_enabled_ || cmd_sock_ < 0) {
     return false;
   }
 
@@ -341,7 +345,9 @@ void Rb10SocketClient::start_threads()
 {
   data_request_thread_ = std::thread(&Rb10SocketClient::request_data_loop, this);
   data_read_thread_ = std::thread(&Rb10SocketClient::read_data_loop, this);
-  cmd_read_thread_ = std::thread(&Rb10SocketClient::read_cmd_loop, this);
+  if (command_channel_enabled_) {
+    cmd_read_thread_ = std::thread(&Rb10SocketClient::read_cmd_loop, this);
+  }
 
   configure_thread_realtime(
     data_request_thread_,
@@ -355,12 +361,14 @@ void Rb10SocketClient::start_threads()
     realtime_priority_,
     "data_read",
     log_callback_);
-  configure_thread_realtime(
-    cmd_read_thread_,
-    realtime_threads_enabled_,
-    realtime_priority_,
-    "cmd_read",
-    log_callback_);
+  if (command_channel_enabled_) {
+    configure_thread_realtime(
+      cmd_read_thread_,
+      realtime_threads_enabled_,
+      realtime_priority_,
+      "cmd_read",
+      log_callback_);
+  }
 }
 
 void Rb10SocketClient::stop_threads()

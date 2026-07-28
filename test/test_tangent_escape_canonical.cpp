@@ -16,19 +16,19 @@
 #include <Eigen/Dense>
 #include <Eigen/Eigenvalues>
 
+#include "rb10_rmpflow_rviz/casadi_rb10_kinematics.hpp"
+#include "rb10_rmpflow_rviz/casadi_rmp2_solver.hpp"
 #include "rb10_rmpflow_rviz/joint_acceleration_limiter.hpp"
-#include "rb10_rmpflow_rviz/pinocchio_direct_solver.hpp"
-#include "rb10_rmpflow_rviz/pinocchio_model.hpp"
 
 namespace
 {
 
+using rb10_rmpflow_rviz::CasadiRb10Kinematics;
+using rb10_rmpflow_rviz::CasadiRmp2Solver;
 using rb10_rmpflow_rviz::EigenRmpConfig;
 using rb10_rmpflow_rviz::KinematicsContext;
 using rb10_rmpflow_rviz::JointAccelerationVector;
 using rb10_rmpflow_rviz::ObstacleSphere;
-using rb10_rmpflow_rviz::PinocchioDirectRmpSolver;
-using rb10_rmpflow_rviz::PinocchioModel;
 using rb10_rmpflow_rviz::RB10Model;
 using rb10_rmpflow_rviz::RmpSolveResult;
 
@@ -38,6 +38,7 @@ using Matrix6 = Eigen::Matrix<double, 6, 6>;
 constexpr std::size_t kDebugActive = 0;
 constexpr std::size_t kDebugControlPoint = 1;
 constexpr std::size_t kDebugClearance = 2;
+constexpr std::size_t kDebugBeta = 3;
 constexpr std::size_t kDebugAlphaDistance = 4;
 constexpr std::size_t kDebugAlphaBlocking = 5;
 constexpr std::size_t kDebugActivation = 6;
@@ -47,11 +48,17 @@ constexpr std::size_t kDebugOutwardNormal = 17;
 constexpr std::size_t kDebugTangent = 20;
 constexpr std::size_t kDebugLeafMode = 26;
 constexpr std::size_t kDebugObstacleEpisode = 31;
+constexpr std::size_t kDebugHandoffReason = 32;
 constexpr std::size_t kDebugHandoffPhase = 33;
 constexpr std::size_t kDebugCandidateCount = 37;
+constexpr std::size_t kDebugAlphaStuck = 44;
 constexpr std::size_t kDebugLambda = 45;
 constexpr std::size_t kDebugHighLevelState = 47;
+constexpr std::size_t kDebugRiskStuckAcceleration = 49;
 constexpr std::size_t kDebugRawActivation = 50;
+constexpr std::size_t kDebugNominalSpeed = 52;
+constexpr std::size_t kDebugMaxBlockage = 54;
+constexpr std::size_t kDebugHandoffGeneration = 55;
 constexpr std::size_t kDebugFilteredClearanceRate = 61;
 constexpr std::size_t kDebugClosingSpeed = 62;
 constexpr std::size_t kDebugRiskDistanceAcceleration = 63;
@@ -101,6 +108,8 @@ EigenRmpConfig make_test_config(bool escape_enabled)
   config.solve_method = "rmp2";
   config.rmp_type = "canonical";
   config.solve_offset = 1e-4;
+  config.enable_tangent_escape_diagnostics = true;
+  config.enable_tangent_escape_dual_solve_diagnostics = true;
 
   std::size_t tangent_node_count = 0;
   for (auto & node : config.graph_nodes) {
@@ -217,6 +226,7 @@ EigenRmpConfig make_risk_damped_test_config(bool escape_enabled)
   escape.risk_velocity_gate_scale = 0.03;
   escape.risk_clearance_rate_filter_time_constant = 0.01;
   escape.risk_tangent_damping_gain = 4.0;
+  escape.risk_stuck_accel_floor = 0.0;
   return config;
 }
 
@@ -257,7 +267,7 @@ struct NominalScenario
 };
 
 NominalScenario find_strongest_nominal_scenario(
-  PinocchioDirectRmpSolver & disabled_solver,
+  CasadiRmp2Solver & disabled_solver,
   const KinematicsContext & context,
   const JointVector & q,
   const JointVector & qd,
@@ -377,14 +387,14 @@ void run_test(const std::string & urdf_path)
   const JointVector q = JointVector::Zero();
   const JointVector qd = JointVector::Zero();
 
-  PinocchioModel model(urdf_path);
+  CasadiRb10Kinematics model(urdf_path);
   const KinematicsContext context = model.forward_context(q, qd);
   require(
     context.control_points.size() == RB10Model::sensor_control_points.size(),
-    "Pinocchio model did not produce all sensor control points");
+    "CasADi model did not produce all sensor control points");
 
   EigenRmpConfig disabled_config = make_test_config(false);
-  PinocchioDirectRmpSolver disabled_solver(disabled_config, urdf_path);
+  CasadiRmp2Solver disabled_solver(disabled_config, urdf_path);
   const NominalScenario nominal = find_strongest_nominal_scenario(
     disabled_solver,
     context,
@@ -411,7 +421,7 @@ void run_test(const std::string & urdf_path)
 
   EigenRmpConfig enabled_config = disabled_config;
   enabled_config.tangent_escape.enabled = true;
-  PinocchioDirectRmpSolver enabled_solver(enabled_config, urdf_path);
+  CasadiRmp2Solver enabled_solver(enabled_config, urdf_path);
 
   bool saw_active = false;
   bool saw_nonzero_contribution = false;
@@ -573,7 +583,7 @@ void run_test(const std::string & urdf_path)
   ObstacleSphere generic_obstacle = obstacle;
   generic_obstacle.proximity_control_point_index = -1;
   generic_obstacle.source_id = 102;
-  PinocchioDirectRmpSolver generic_obstacle_solver(enabled_config, urdf_path);
+  CasadiRmp2Solver generic_obstacle_solver(enabled_config, urdf_path);
   bool generic_obstacle_became_active = false;
   for (int cycle = 0; cycle < kCycles; ++cycle) {
     const auto generic_result =
@@ -662,7 +672,7 @@ void run_test(const std::string & urdf_path)
 
   EigenRmpConfig handoff_config = enabled_config;
   handoff_config.tangent_escape.pair_switch_margin = 0.05;
-  PinocchioDirectRmpSolver handoff_solver(handoff_config, urdf_path);
+  CasadiRmp2Solver handoff_solver(handoff_config, urdf_path);
   const double first_clearance = 0.25;
   ObstacleSphere first_episode{
     selected_cp.position +
@@ -775,12 +785,13 @@ void run_test(const std::string & urdf_path)
   proof_config.target.proximity_metric_boost_scalar = 1.0;
   proof_config.axis_target.proximity_metric_boost_scalar = 1.0;
   proof_config.damping.metric_scalar = 0.0;
+  proof_config.enable_stability_certificate_diagnostics = true;
   for (auto & node : proof_config.graph_nodes) {
     if (node.name == "joint_velocity_cap") {
       node.enabled = false;
     }
   }
-  PinocchioDirectRmpSolver proof_solver(proof_config, urdf_path);
+  CasadiRmp2Solver proof_solver(proof_config, urdf_path);
   (void)proof_solver.solve(q, qd, targets, obstacles);
   const auto proof_result = proof_solver.solve(q, qd, targets, obstacles);
   const auto & certificate = proof_result.stability_certificate_data;
@@ -802,7 +813,7 @@ void run_test(const std::string & urdf_path)
 
   EigenRmpConfig regularized_config = proof_config;
   regularized_config.solve_offset = 1e-13;
-  PinocchioDirectRmpSolver regularized_solver(regularized_config, urdf_path);
+  CasadiRmp2Solver regularized_solver(regularized_config, urdf_path);
   const auto regularized_result =
     regularized_solver.solve(q, qd, targets, obstacles);
   require(
@@ -814,7 +825,7 @@ void run_test(const std::string & urdf_path)
   EigenRmpConfig diagnostic_config = make_test_config(false);
   diagnostic_config.enable_leaf_ablation_diagnostics = true;
   diagnostic_config.max_joint_accel = 1e-3;
-  PinocchioDirectRmpSolver diagnostic_solver(diagnostic_config, urdf_path);
+  CasadiRmp2Solver diagnostic_solver(diagnostic_config, urdf_path);
   const auto diagnostic_result =
     diagnostic_solver.solve(q, qd, targets, obstacles);
   const auto & ablation = diagnostic_result.leaf_ablation_data;
@@ -837,7 +848,7 @@ void run_test(const std::string & urdf_path)
   }
   EigenRmpConfig reference_config = diagnostic_config;
   reference_config.enable_leaf_ablation_diagnostics = false;
-  PinocchioDirectRmpSolver reference_solver(reference_config, urdf_path);
+  CasadiRmp2Solver reference_solver(reference_config, urdf_path);
   const auto reference_result = reference_solver.solve(q, qd, targets, obstacles);
   require(
     (diagnostic_result.qdd - reference_result.qdd).norm() <= 1e-10 &&
@@ -859,11 +870,11 @@ void run_risk_damped_test(const std::string & urdf_path)
   const JointVector q = JointVector::Zero();
   const JointVector qd = JointVector::Zero();
 
-  PinocchioModel model(urdf_path);
+  CasadiRb10Kinematics model(urdf_path);
   const KinematicsContext context = model.forward_context(q, qd);
 
   EigenRmpConfig disabled_config = make_risk_damped_test_config(false);
-  PinocchioDirectRmpSolver disabled_solver(disabled_config, urdf_path);
+  CasadiRmp2Solver disabled_solver(disabled_config, urdf_path);
   const NominalScenario nominal = find_strongest_nominal_scenario(
     disabled_solver,
     context,
@@ -893,7 +904,38 @@ void run_risk_damped_test(const std::string & urdf_path)
 
   EigenRmpConfig risk_config = disabled_config;
   risk_config.tangent_escape.enabled = true;
-  PinocchioDirectRmpSolver risk_solver(risk_config, urdf_path);
+
+  ObstacleSphere nonblocking_obstacle{
+    selected_cp.position -
+    (selected_cp.radius + obstacle_radius + initial_clearance) * approach_direction,
+    obstacle_radius,
+    static_cast<int>(nominal.control_point_index)};
+  nonblocking_obstacle.source_id = 700;
+  CasadiRmp2Solver inactive_diagnostic_solver(risk_config, urdf_path);
+  const RmpSolveResult inactive_diagnostic_result =
+    inactive_diagnostic_solver.solve(
+    q, qd, targets, {nonblocking_obstacle});
+  require(
+    finite_result(inactive_diagnostic_result),
+    "risk-damped inactive diagnostic solve is not finite");
+  const auto & inactive_debug =
+    inactive_diagnostic_result.tangent_escape_rmp_data;
+  require(
+    inactive_debug.size() >= kRequiredRiskDebugSize &&
+    inactive_debug[kDebugActive] <= 0.5 &&
+    approximately_integer(inactive_debug[kDebugLeafMode], 7),
+    "risk-damped inactive pair did not publish schema-7 diagnostics");
+  require(
+    inactive_debug[kDebugAlphaDistance] > 0.0 &&
+    inactive_debug[kDebugBeta] < 0.0 &&
+    std::abs(inactive_debug[kDebugAlphaBlocking]) <= 1e-12,
+    "risk-damped inactive diagnostics do not expose the blocking gate");
+  require(
+    inactive_debug[kDebugNominalSpeed] > 0.0 &&
+    std::abs(inactive_debug[kDebugMaxBlockage]) <= 1e-12,
+    "risk-damped inactive diagnostics do not expose nominal speed/max blockage");
+
+  CasadiRmp2Solver risk_solver(risk_config, urdf_path);
   const RmpSolveResult initial_result =
     risk_solver.solve(q, qd, targets, {initial_obstacle});
   require(finite_result(initial_result), "risk-damped first solve is not finite");
@@ -962,11 +1004,54 @@ void run_risk_damped_test(const std::string & urdf_path)
     initial_debug[kDebugRiskAccelerationInput] > 0.0,
     "risk-damped zero-speed acceleration components are inconsistent");
 
+  EigenRmpConfig stuck_floor_config = risk_config;
+  stuck_floor_config.tangent_escape.risk_stuck_accel_floor = 0.20;
+  stuck_floor_config.tangent_escape.risk_stuck_dwell_time = 0.02;
+  stuck_floor_config.tangent_escape.risk_stuck_ramp_time = 0.02;
+  CasadiRmp2Solver stuck_floor_solver(stuck_floor_config, urdf_path);
+  CasadiRmp2Solver no_stuck_floor_solver(risk_config, urdf_path);
+  std::vector<double> first_floor_debug;
+  std::vector<double> settled_floor_debug;
+  std::vector<double> settled_no_floor_debug;
+  for (int cycle = 0; cycle < 8; ++cycle) {
+    const auto floor_result =
+      stuck_floor_solver.solve(q, qd, targets, {initial_obstacle});
+    const auto no_floor_result =
+      no_stuck_floor_solver.solve(q, qd, targets, {initial_obstacle});
+    require(
+      finite_result(floor_result) && finite_result(no_floor_result),
+      "risk-damped stuck-floor comparison is not finite");
+    if (cycle == 0) {
+      first_floor_debug = floor_result.tangent_escape_rmp_data;
+    }
+    settled_floor_debug = floor_result.tangent_escape_rmp_data;
+    settled_no_floor_debug = no_floor_result.tangent_escape_rmp_data;
+  }
+  require(
+    first_floor_debug.size() >= kRequiredRiskDebugSize &&
+    std::abs(first_floor_debug[kDebugRiskStuckAcceleration]) <= 1e-12,
+    "risk-damped stuck floor did not respect its dwell time");
+  require(
+    settled_floor_debug.size() >= kRequiredRiskDebugSize &&
+    settled_no_floor_debug.size() >= kRequiredRiskDebugSize &&
+    settled_floor_debug[kDebugAlphaStuck] > 0.9 &&
+    settled_floor_debug[kDebugActivation] > 0.0,
+    "risk-damped stuck-floor test did not remain blocked and stuck");
+  require(
+    settled_floor_debug[kDebugRiskStuckAcceleration] > 0.19 &&
+    settled_floor_debug[kDebugRiskAcceleration] >
+    settled_no_floor_debug[kDebugRiskAcceleration] + 1e-3,
+    "risk-damped stuck floor did not increase sustained tangent drive");
+  require(
+    std::abs(settled_floor_debug[kDebugScalarAcceleration]) <=
+    stuck_floor_config.tangent_escape.max_accel + 1e-12,
+    "risk-damped stuck floor bypassed the tangent acceleration limit");
+
   // Escape clearance must use its own numeric margin, not collision.margin.
   EigenRmpConfig independent_margin_config = risk_config;
   independent_margin_config.collision.margin = 0.02;
   independent_margin_config.tangent_escape.clearance_margin = 0.01;
-  PinocchioDirectRmpSolver independent_margin_solver(
+  CasadiRmp2Solver independent_margin_solver(
     independent_margin_config,
     urdf_path);
   const RmpSolveResult independent_margin_result =
@@ -990,6 +1075,63 @@ void run_risk_damped_test(const std::string & urdf_path)
   require(
     initial_contribution.numerical_rank == 1 && initial_contribution.norm > 1e-8,
     "risk-damped active contribution is not a nonzero PSD rank-one leaf");
+
+  // Candidate feasibility must be evaluated using the same acceleration-limited
+  // command that reaches the controller. Raw root acceleration saturation is a
+  // reason to monitor a direction, not a reason to discard every tangent and
+  // turn Escape off while the blocking condition remains.
+  EigenRmpConfig limited_candidate_config = risk_config;
+  limited_candidate_config.max_joint_accel = 0.01;
+  limited_candidate_config.preserve_joint_accel_direction = true;
+  limited_candidate_config.tangent_escape.candidate_min_displacement = 0.0;
+  limited_candidate_config.tangent_escape.minimum_drive_duration = 0.02;
+  limited_candidate_config.tangent_escape.command_test_distance = 1e-6;
+  limited_candidate_config.tangent_escape.minimum_move_ratio = 0.95;
+  limited_candidate_config.tangent_escape.handoff_duration = 0.02;
+  CasadiRmp2Solver limited_candidate_solver(
+    limited_candidate_config,
+    urdf_path);
+  bool saw_raw_acceleration_saturation = false;
+  bool saw_failure_reselection = false;
+  bool saw_reselected_episode = false;
+  bool dropped_while_blocked = false;
+  for (int cycle = 0; cycle < 40; ++cycle) {
+    const auto result =
+      limited_candidate_solver.solve(q, qd, targets, {initial_obstacle});
+    require(
+      finite_result(result),
+      "acceleration-limited candidate solve is not finite");
+    saw_raw_acceleration_saturation =
+      saw_raw_acceleration_saturation ||
+      result.qdd.cwiseAbs().maxCoeff() >
+      limited_candidate_config.max_joint_accel + 1e-9;
+
+    const auto & debug = result.tangent_escape_rmp_data;
+    require(
+      debug.size() >= kRequiredRiskDebugSize,
+      "acceleration-limited candidate diagnostics are missing");
+    if (debug[kDebugMaxBlockage] > 0.5 && debug[kDebugActive] <= 0.5) {
+      dropped_while_blocked = true;
+    }
+    saw_failure_reselection =
+      saw_failure_reselection ||
+      approximately_integer(debug[kDebugHandoffReason], 5);
+    saw_reselected_episode =
+      saw_reselected_episode ||
+      debug[kDebugHandoffGeneration] >= 2.0;
+  }
+  require(
+    saw_raw_acceleration_saturation,
+    "limited-candidate test did not exercise raw root acceleration saturation");
+  require(
+    saw_failure_reselection,
+    "limited-candidate test did not exercise failure-triggered reselection");
+  require(
+    saw_reselected_episode,
+    "failure-triggered reselection did not activate a replacement direction");
+  require(
+    !dropped_while_blocked,
+    "raw acceleration saturation discarded every tangent and disabled Escape");
 
   const ObstacleSphere closer_obstacle = obstacle_at_clearance(0.01);
   const RmpSolveResult approach_result =
@@ -1033,7 +1175,7 @@ void run_risk_damped_test(const std::string & urdf_path)
     finite_result(disabled_clear) && finite_result(removed_result),
     "risk-damped no-obstacle residual-speed solve is not finite");
   require(
-    removed_result.tangent_escape_rmp_data.size() == 1 &&
+    !removed_result.tangent_escape_rmp_data.empty() &&
     removed_result.tangent_escape_rmp_data.front() <= 0.5,
     "risk-damped branch remained active after same-cycle obstacle removal");
   require(
@@ -1066,6 +1208,113 @@ void run_risk_damped_test(const std::string & urdf_path)
   require(
     !approximately_integer(reappearance_debug[kDebugHighLevelState], 3),
     "risk-damped reappearance incorrectly used legacy RELEASE");
+
+  EigenRmpConfig handoff_config = risk_config;
+  handoff_config.tangent_escape.pair_switch_margin = 0.05;
+  handoff_config.tangent_escape.handoff_duration = 0.02;
+  CasadiRmp2Solver handoff_solver(handoff_config, urdf_path);
+  ObstacleSphere first_episode = obstacle_at_clearance(0.25);
+  first_episode.source_id = 801;
+  ObstacleSphere second_episode = obstacle_at_clearance(0.01);
+  second_episode.source_id = 802;
+
+  bool first_episode_active = false;
+  for (int cycle = 0; cycle < 8; ++cycle) {
+    const auto result =
+      handoff_solver.solve(q, qd, targets, {first_episode});
+    require(
+      finite_result(result),
+      "risk-damped initial handoff episode solve is not finite");
+    const auto & debug = result.tangent_escape_rmp_data;
+    if (
+      debug.size() >= kRequiredRiskDebugSize &&
+      debug[kDebugActive] > 0.5 &&
+      static_cast<std::int64_t>(
+        std::llround(debug[kDebugObstacleEpisode])) ==
+      first_episode.source_id)
+    {
+      first_episode_active = true;
+    }
+  }
+  require(
+    first_episode_active,
+    "risk-damped handoff test did not activate the first obstacle episode");
+
+  bool saw_lambda_down = false;
+  bool switched_episode = false;
+  bool switched_at_zero_effect = false;
+  for (int cycle = 0; cycle < 20; ++cycle) {
+    const auto result =
+      handoff_solver.solve(
+      q, qd, targets, {first_episode, second_episode});
+    require(
+      finite_result(result),
+      "risk-damped pair handoff solve is not finite");
+    const auto & debug = result.tangent_escape_rmp_data;
+    if (
+      debug.size() < kRequiredRiskDebugSize ||
+      debug[kDebugActive] <= 0.5)
+    {
+      continue;
+    }
+    saw_lambda_down =
+      saw_lambda_down ||
+      approximately_integer(debug[kDebugHandoffPhase], 8);
+    const auto episode_id =
+      static_cast<std::int64_t>(
+      std::llround(debug[kDebugObstacleEpisode]));
+    if (episode_id != second_episode.source_id) {
+      continue;
+    }
+
+    switched_episode = true;
+    const auto no_escape_result =
+      disabled_solver.solve(
+      q, qd, targets, {first_episode, second_episode});
+    require(
+      finite_result(no_escape_result),
+      "risk-damped handoff no-Escape reference is not finite");
+    switched_at_zero_effect =
+      debug[kDebugLambda] <= 1e-10 &&
+      approximately_integer(debug[kDebugHandoffPhase], 1) &&
+      (result.metric - no_escape_result.metric).norm() <= 1e-7 &&
+      (result.force - no_escape_result.force).norm() <= 1e-7;
+    break;
+  }
+  require(
+    saw_lambda_down,
+    "risk-damped handoff did not ramp the old pair lambda down");
+  require(
+    switched_episode,
+    "risk-damped handoff did not select the stronger obstacle pair");
+  require(
+    switched_at_zero_effect,
+    "risk-damped obstacle pair changed before metric and force reached zero");
+
+  bool new_episode_ramped_in = false;
+  for (int cycle = 0; cycle < 8; ++cycle) {
+    const auto result =
+      handoff_solver.solve(
+      q, qd, targets, {first_episode, second_episode});
+    require(
+      finite_result(result),
+      "risk-damped new handoff episode solve is not finite");
+    const auto & debug = result.tangent_escape_rmp_data;
+    if (
+      debug.size() >= kRequiredRiskDebugSize &&
+      static_cast<std::int64_t>(
+        std::llround(debug[kDebugObstacleEpisode])) ==
+      second_episode.source_id &&
+      debug[kDebugLambda] > 1e-6 &&
+      debug[kDebugEffectiveMetric] > 1e-8)
+    {
+      new_episode_ramped_in = true;
+      break;
+    }
+  }
+  require(
+    new_episode_ramped_in,
+    "risk-damped new obstacle pair did not ramp in after zero-effect handoff");
 
   std::cout
     << "risk-damped tangent Escape integration test passed"

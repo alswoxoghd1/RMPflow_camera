@@ -60,6 +60,7 @@ def generate_launch_description():
             "max_joint_accel": LaunchConfiguration("max_joint_accel"),
             "command_guard_max_step_rad": "10.0",
             "command_guard_max_velocity_rad_s": "100.0",
+            "command_guard_velocity_slew_enabled": "false",
             "predictive_joint_limit_guard": "false",
         }.items(),
     )

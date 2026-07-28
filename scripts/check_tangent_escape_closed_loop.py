@@ -32,6 +32,11 @@ SENSOR_NAMES = [
     "tof2_N",
 ]
 
+SUPPORTED_SCHEMA_IDS = {
+    6: "canonical_velocity",
+    7: "risk_damped",
+}
+
 REQUIRED_COLUMNS = [
     "time_ros_s",
     "tangent_escape_rmp_active",
@@ -365,7 +370,7 @@ def make_report(
         if math.isfinite(mode):
             mode_id = int(round(mode))
             mode_counts[mode_id] += 1
-            if mode_id != 6:
+            if mode_id not in SUPPORTED_SCHEMA_IDS:
                 invalid_mode_rows.append(source_index)
         else:
             invalid_mode_rows.append(source_index)
@@ -374,7 +379,7 @@ def make_report(
         interval_duration(rows, start, end)
         for start, end in intervals
     )
-    print("Canonical Tangent Escape RMP:")
+    print("Tangent Escape RMP:")
     print(f"  active rows: {len(active_rows)}")
     print(f"  active intervals: {len(intervals)}")
     print(f"  active duration: {fmt(total_active_duration)} s")
@@ -394,7 +399,7 @@ def make_report(
     print(
         "  wire schema ids: " +
         ", ".join(
-            f"{mode}:{count}"
+            f"{mode}({SUPPORTED_SCHEMA_IDS.get(mode, 'unsupported')}):{count}"
             for mode, count in sorted(mode_counts.items())
         )
     )
@@ -406,12 +411,13 @@ def make_report(
         print("Result:")
         print("  STRUCTURE_OK: no")
         print(
-            "  ERROR: active records must use canonical wire schema ID 6; "
+            "  ERROR: active records must use a supported wire schema "
+            f"{sorted(SUPPORTED_SCHEMA_IDS)}; "
             f"invalid rows: {preview}{suffix}"
         )
         return 1
 
-    print("Canonical Velocity Tracking:")
+    print("Escape Tracking:")
     for label, field in [
         ("activation", "tangent_escape_rmp_activation"),
         ("raw_activation", "tangent_escape_rmp_raw_activation"),
@@ -474,6 +480,32 @@ def make_report(
     if logged_normal_dot:
         print("  logged_normal_dot_tangent: " + fmt_range(logged_normal_dot))
     print("")
+
+    if 7 in mode_counts:
+        print("Risk-Damped Drive:")
+        for label, field in [
+            ("clearance_rate_m_s", "tangent_escape_rmp_clearance_rate_m_s"),
+            ("closing_speed_m_s", "tangent_escape_rmp_closing_speed_m_s"),
+            (
+                "distance_drive_accel_m_s2",
+                "tangent_escape_rmp_risk_distance_accel_m_s2",
+            ),
+            (
+                "approach_drive_accel_m_s2",
+                "tangent_escape_rmp_risk_approach_accel_m_s2",
+            ),
+            ("risk_drive_accel_m_s2", "tangent_escape_rmp_risk_accel_m_s2"),
+            (
+                "tangent_damping_accel_m_s2",
+                "tangent_escape_rmp_tangent_damping_accel_m_s2",
+            ),
+            ("accel_input_m_s2", "tangent_escape_rmp_accel_input_m_s2"),
+        ]:
+            print(
+                f"  {label}: " +
+                fmt_range([parse_float(row, field) for row in active_rows])
+            )
+        print("")
 
     candidate_count = finite_values(
         parse_float(row, "tangent_escape_rmp_candidate_count")
@@ -655,6 +687,8 @@ def make_report(
     handoff_changes = 0
     handoff_violations: List[int] = []
     handoff_unobservable: List[int] = []
+    generation_observed_changes = 0
+    same_generation_changes = 0
     for previous_index, current_index in zip(active_indices, active_indices[1:]):
         if current_index != previous_index + 1:
             continue
@@ -692,6 +726,26 @@ def make_report(
         if not cp_changed and not tangent_changed:
             continue
         handoff_changes += 1
+        previous_generation = parse_float(
+            previous,
+            "tangent_escape_rmp_handoff_generation",
+        )
+        current_generation = parse_float(
+            current,
+            "tangent_escape_rmp_handoff_generation",
+        )
+        generation_available = (
+            math.isfinite(previous_generation) and
+            math.isfinite(current_generation)
+        )
+        generation_changed = (
+            generation_available and
+            int(round(previous_generation)) != int(round(current_generation))
+        )
+        if generation_changed:
+            generation_observed_changes += 1
+        elif generation_available:
+            same_generation_changes += 1
         previous_time = row_time(previous)
         current_time = row_time(current)
         if (
@@ -724,20 +778,54 @@ def make_report(
         if current_zero_effect:
             continue
 
-        # A logger running no faster than the controller can miss the exact
-        # switch cycle and first observe the new branch after its ENGAGE ramp
-        # has begun.  Without a controller-cycle sequence/switch flag this is
-        # unobservable, not evidence that the controller switched at nonzero
-        # effect.
+        # activate_pair() increments generation in the exact zero-effect
+        # cycle. A logger running slower than the controller can first observe
+        # that generation after ENGAGE has already ramped in; this is
+        # unobservable, not evidence of a nonzero-effect switch.
+        if generation_changed:
+            handoff_unobservable.append(current_index)
+            continue
+
+        # When generation is present and unchanged, state.tangent should be
+        # latched. A CP/tangent mutation in that same generation is therefore
+        # an actual contract violation rather than a sampling ambiguity.
+        if generation_available:
+            handoff_violations.append(current_index)
+            continue
+
+        # Backward-compatible handling for older CSVs without generation.
         current_phase = parse_float(
             current,
             "tangent_escape_rmp_handoff_phase_id",
         )
         if math.isfinite(current_phase) and int(round(current_phase)) == 1:
             handoff_unobservable.append(current_index)
+        elif (
+            int(round(parse_float(
+                previous,
+                "tangent_escape_rmp_handoff_phase_id",
+            ))) == 2 and
+            math.isfinite(current_phase) and
+            int(round(current_phase)) == 2 and
+            int(round(parse_float(
+                previous,
+                "tangent_escape_rmp_handoff_reason_id",
+            ))) == 0 and
+            int(round(parse_float(
+                current,
+                "tangent_escape_rmp_handoff_reason_id",
+            ))) == 0
+        ):
+            # The logger can miss an OFF/re-entry between two DRIVE samples.
+            handoff_unobservable.append(current_index)
         else:
             handoff_violations.append(current_index)
     print(f"  detected CP/tangent changes: {handoff_changes}")
+    print(
+        "  generation-observed changes: "
+        f"{generation_observed_changes} "
+        f"(same-generation={same_generation_changes})"
+    )
     print(f"  zero-effect handoff violations: {len(handoff_violations)}")
     print(
         "  zero-effect handoffs unobservable at logger rate: "

@@ -538,7 +538,8 @@ PinocchioDirectRmpSolver::PinocchioDirectRmpSolver(
   EigenRmpConfig config,
   std::string urdf_path)
 : config_(std::move(config)),
-  model_(std::make_shared<PinocchioModel>(urdf_path))
+  model_(std::make_shared<PinocchioModel>(urdf_path)),
+  tangent_escape_supervisor_(config_)
 {
   if (
     config_.collision.policy != "repulsive" &&
@@ -687,7 +688,7 @@ RmpSolveResult PinocchioDirectRmpSolver::solve(
       external_rmps);
     nominal_qdd_ptr = &nominal_qdd;
   }
-  std::vector<double> tangent_escape_debug_data{0.0};
+  std::vector<double> tangent_escape_debug_data;
 
   struct LeafRootContribution
   {
@@ -722,32 +723,32 @@ RmpSolveResult PinocchioDirectRmpSolver::solve(
   for (const auto index : impl.topo_indices) {
     const auto & node = config_.graph_nodes[index];
     const auto & geometry = cache.at(node.name);
-      const auto accumulate_base_leaf = [&](const std::string & leaf_type) {
-        if (is_tangent_escape_leaf(leaf_type)) {
-          return;
-        }
-        const Matrix6 metric_before = metric;
-        const JointVector force_before = force;
-        accumulate_leaf_type(
-          leaf_type,
-          node,
-          geometry,
-          qd,
-          cache,
-          context,
-          vector_targets,
-          obstacles,
-          external_rmps,
-          nominal_qdd_ptr,
-          metric,
-          force,
-          &tangent_escape_debug_data);
-        record_leaf_contribution(
-          node,
-          leaf_type,
-          metric_before,
-          force_before);
-      };
+    const auto accumulate_base_leaf = [&](const std::string & leaf_type) {
+      if (is_tangent_escape_leaf(leaf_type)) {
+        return;
+      }
+      const Matrix6 metric_before = metric;
+      const JointVector force_before = force;
+      accumulate_leaf_type(
+        leaf_type,
+        node,
+        geometry,
+        qd,
+        cache,
+        context,
+        vector_targets,
+        obstacles,
+        external_rmps,
+        nominal_qdd_ptr,
+        metric,
+        force,
+        &tangent_escape_debug_data);
+      record_leaf_contribution(
+        node,
+        leaf_type,
+        metric_before,
+        force_before);
+    };
     accumulate_base_leaf(node.leaf_rmp_type);
     accumulate_base_leaf(node.handcrafted_leaf_rmp_type);
   }
@@ -808,6 +809,15 @@ RmpSolveResult PinocchioDirectRmpSolver::solve(
     double clamp_power{0.0};
   };
 
+  const auto & energy_params = config_.escape_energy_certificate;
+  const bool certificate_enabled =
+    config_.enable_stability_certificate_diagnostics || energy_params.enabled;
+  const bool dual_solve_enabled =
+    config_.enable_tangent_escape_dual_solve_diagnostics;
+  const bool limited_solve_needed =
+    dual_solve_enabled || certificate_enabled ||
+    config_.enable_leaf_ablation_diagnostics;
+
   const auto solve_scaled_escape =
     [&](double scale) {
       ScaledEscapeSolve sample;
@@ -821,22 +831,26 @@ RmpSolveResult PinocchioDirectRmpSolver::solve(
       sample.raw_qdd = use_rmp2 ?
         resolve_root_rmp2(sample.metric, sample.force, config_.solve_offset) :
         resolve_root_direct(sample.metric, sample.force, config_.solve_offset);
-      sample.command_qdd = limit_joint_acceleration(
-        sample.raw_qdd,
-        config_.max_joint_accel,
-        config_.preserve_joint_accel_direction);
-      sample.escape_power =
-        qd.dot(escape_force - escape_metric * sample.command_qdd);
-      sample.solve_power =
-        qd.dot(sample.metric * sample.raw_qdd - sample.force);
-      sample.clamp_power =
-        qd.dot(sample.metric * (sample.command_qdd - sample.raw_qdd));
+      sample.command_qdd = sample.raw_qdd;
+      if (limited_solve_needed) {
+        sample.command_qdd = limit_joint_acceleration(
+          sample.raw_qdd,
+          config_.max_joint_accel,
+          config_.preserve_joint_accel_direction);
+      }
+      if (certificate_enabled) {
+        sample.escape_power =
+          qd.dot(escape_force - escape_metric * sample.command_qdd);
+        sample.solve_power =
+          qd.dot(sample.metric * sample.raw_qdd - sample.force);
+        sample.clamp_power =
+          qd.dot(sample.metric * (sample.command_qdd - sample.raw_qdd));
+      }
       return sample;
     };
 
   auto & energy_state = escape_energy_certificate_state_;
-  const auto & energy_params = config_.escape_energy_certificate;
-  if (!energy_state.initialized) {
+  if (certificate_enabled && !energy_state.initialized) {
     energy_state.initialized = true;
     energy_state.tank_energy =
       std::clamp(
@@ -845,17 +859,20 @@ RmpSolveResult PinocchioDirectRmpSolver::solve(
       energy_params.tank_capacity);
   }
 
-  const bool environment_static =
-    energy_state.previous_environment_valid &&
-    external_rmps.empty() &&
-    same_environment(
-    energy_state.previous_vector_targets,
-    vector_targets,
-    energy_state.previous_obstacles,
-    obstacles);
-  energy_state.previous_vector_targets = vector_targets;
-  energy_state.previous_obstacles = obstacles;
-  energy_state.previous_environment_valid = true;
+  bool environment_static = false;
+  if (certificate_enabled) {
+    environment_static =
+      energy_state.previous_environment_valid &&
+      external_rmps.empty() &&
+      same_environment(
+      energy_state.previous_vector_targets,
+      vector_targets,
+      energy_state.previous_obstacles,
+      obstacles);
+    energy_state.previous_vector_targets = vector_targets;
+    energy_state.previous_obstacles = obstacles;
+    energy_state.previous_environment_valid = true;
+  }
 
   const ScaledEscapeSolve requested_solve = solve_scaled_escape(1.0);
   double escape_scale = 1.0;
@@ -918,270 +935,279 @@ RmpSolveResult PinocchioDirectRmpSolver::solve(
     }
   }
 
-  const double dt = energy_params.control_dt;
-  const double positive_escape_energy =
-    dt * std::max(final_solve.escape_power, 0.0);
-  const double negative_escape_energy =
-    dt * std::max(-final_solve.escape_power, 0.0);
-  if (energy_params.enabled) {
-    energy_state.tank_energy = std::clamp(
-      energy_state.tank_energy - positive_escape_energy,
-      0.0,
-      energy_params.tank_capacity);
+  ScaledEscapeSolve no_escape_solve;
+  if (dual_solve_enabled || certificate_enabled) {
+    no_escape_solve = solve_scaled_escape(0.0);
   }
-  energy_state.positive_energy_integral += positive_escape_energy;
-  energy_state.negative_energy_integral += negative_escape_energy;
-  energy_state.net_energy_integral += dt * final_solve.escape_power;
-  ++energy_state.sample_count;
 
-  const ScaledEscapeSolve no_escape_solve = solve_scaled_escape(0.0);
-  bool base_domain_valid =
-    q.allFinite() &&
-    qd.allFinite() &&
-    base_metric.allFinite() &&
-    base_force.allFinite();
-  for (const auto & target : vector_targets) {
-    base_domain_valid =
-      base_domain_valid && target.second.allFinite();
-  }
-  for (const auto & obstacle : obstacles) {
-    base_domain_valid =
-      base_domain_valid &&
-      obstacle.center.allFinite() &&
-      std::isfinite(obstacle.radius) &&
-      obstacle.radius >= 0.0;
-  }
-  for (const auto & entry : cache) {
-    const auto & geometry = entry.second;
-    base_domain_valid =
-      base_domain_valid &&
-      geometry.x.allFinite() &&
-      geometry.jacobian.allFinite() &&
-      geometry.velocity.allFinite() &&
-      geometry.curvature.allFinite();
-  }
-  if (config_.collision.policy == "paper_gds") {
-    for (const auto & point : context.control_points) {
-      for (const auto & obstacle : obstacles) {
-        if ((point.position - obstacle.center).norm() <= 1e-9) {
-          base_domain_valid = false;
+  std::vector<double> stability_certificate_data;
+  if (certificate_enabled) {
+    const double dt = energy_params.control_dt;
+    const double positive_escape_energy =
+      dt * std::max(final_solve.escape_power, 0.0);
+    const double negative_escape_energy =
+      dt * std::max(-final_solve.escape_power, 0.0);
+    if (energy_params.enabled) {
+      energy_state.tank_energy = std::clamp(
+        energy_state.tank_energy - positive_escape_energy,
+        0.0,
+        energy_params.tank_capacity);
+    }
+    energy_state.positive_energy_integral += positive_escape_energy;
+    energy_state.negative_energy_integral += negative_escape_energy;
+    energy_state.net_energy_integral += dt * final_solve.escape_power;
+    ++energy_state.sample_count;
+
+    bool base_domain_valid =
+      q.allFinite() &&
+      qd.allFinite() &&
+      base_metric.allFinite() &&
+      base_force.allFinite();
+    for (const auto & target : vector_targets) {
+      base_domain_valid =
+        base_domain_valid && target.second.allFinite();
+    }
+    for (const auto & obstacle : obstacles) {
+      base_domain_valid =
+        base_domain_valid &&
+        obstacle.center.allFinite() &&
+        std::isfinite(obstacle.radius) &&
+        obstacle.radius >= 0.0;
+    }
+    for (const auto & entry : cache) {
+      const auto & geometry = entry.second;
+      base_domain_valid =
+        base_domain_valid &&
+        geometry.x.allFinite() &&
+        geometry.jacobian.allFinite() &&
+        geometry.velocity.allFinite() &&
+        geometry.curvature.allFinite();
+    }
+    if (config_.collision.policy == "paper_gds") {
+      for (const auto & point : context.control_points) {
+        for (const auto & obstacle : obstacles) {
+          if ((point.position - obstacle.center).norm() <= 1e-9) {
+            base_domain_valid = false;
+          }
         }
       }
     }
-  }
-  for (const auto & node : config_.graph_nodes) {
-    if (
-      !node.enabled ||
+    for (const auto & node : config_.graph_nodes) {
+      if (
+        !node.enabled ||
+        (
+          node.leaf_rmp_type != "axis_target" &&
+          node.handcrafted_leaf_rmp_type != "axis_target"))
+      {
+        continue;
+      }
+      const auto geometry = cache.find(node.name);
+      const auto target = vector_targets.find(node.target_key);
+      if (
+        geometry == cache.end() ||
+        geometry->second.x.norm() <= 1e-9 ||
+        target == vector_targets.end() ||
+        target->second.norm() <= 1e-9)
+      {
+        base_domain_valid = false;
+      }
+    }
+    const Matrix6 symmetric_base_metric =
+      0.5 * (base_metric + base_metric.transpose());
+    Eigen::SelfAdjointEigenSolver<Matrix6> base_metric_eigensolver;
+    if (symmetric_base_metric.allFinite()) {
+      base_metric_eigensolver.compute(
+        symmetric_base_metric,
+        Eigen::EigenvaluesOnly);
+    }
+    const bool base_metric_spd =
+      base_metric.allFinite() &&
+      base_metric.isApprox(base_metric.transpose(), 1e-10) &&
+      base_metric_eigensolver.info() == Eigen::Success &&
+      base_metric_eigensolver.eigenvalues().minCoeff() >
+      1e-12 * std::max(
+      1.0,
+      base_metric_eigensolver.eigenvalues().maxCoeff());
+    const double base_solve_residual =
+      (base_metric * no_escape_solve.raw_qdd - base_force).norm();
+    const bool base_solve_valid =
+      no_escape_solve.raw_qdd.allFinite() &&
+      std::isfinite(base_solve_residual) &&
+      base_solve_residual <= 1e-8 * (1.0 + base_force.norm());
+    const bool base_config_profile_valid =
+      base_graph_has_structured_gds_form(config_);
+    const bool base_gds_structural =
+      base_config_profile_valid &&
+      base_domain_valid &&
+      base_metric_spd &&
+      base_solve_valid;
+    const double numerical_power =
+      final_solve.solve_power + final_solve.clamp_power;
+    // When the tank is enabled, its update cancels positive Escape power in
+    // the composite storage.  Without the tank, retain the uncovered positive
+    // part explicitly instead of silently spending the numerical tolerance
+    // twice.
+    const double conditional_nonincrease_upper_bound =
+      numerical_power +
       (
-        node.leaf_rmp_type != "axis_target" &&
-        node.handcrafted_leaf_rmp_type != "axis_target"))
-    {
-      continue;
-    }
-    const auto geometry = cache.find(node.name);
-    const auto target = vector_targets.find(node.target_key);
-    if (
-      geometry == cache.end() ||
-      geometry->second.x.norm() <= 1e-9 ||
-      target == vector_targets.end() ||
-      target->second.norm() <= 1e-9)
-    {
-      base_domain_valid = false;
-    }
-  }
-  const Matrix6 symmetric_base_metric =
-    0.5 * (base_metric + base_metric.transpose());
-  Eigen::SelfAdjointEigenSolver<Matrix6> base_metric_eigensolver;
-  if (symmetric_base_metric.allFinite()) {
-    base_metric_eigensolver.compute(
-      symmetric_base_metric,
-      Eigen::EigenvaluesOnly);
-  }
-  const bool base_metric_spd =
-    base_metric.allFinite() &&
-    base_metric.isApprox(base_metric.transpose(), 1e-10) &&
-    base_metric_eigensolver.info() == Eigen::Success &&
-    base_metric_eigensolver.eigenvalues().minCoeff() >
-    1e-12 * std::max(
-    1.0,
-    base_metric_eigensolver.eigenvalues().maxCoeff());
-  const double base_solve_residual =
-    (base_metric * no_escape_solve.raw_qdd - base_force).norm();
-  const bool base_solve_valid =
-    no_escape_solve.raw_qdd.allFinite() &&
-    std::isfinite(base_solve_residual) &&
-    base_solve_residual <= 1e-8 * (1.0 + base_force.norm());
-  const bool base_config_profile_valid =
-    base_graph_has_structured_gds_form(config_);
-  const bool base_gds_structural =
-    base_config_profile_valid &&
-    base_domain_valid &&
-    base_metric_spd &&
-    base_solve_valid;
-  const double numerical_power =
-    final_solve.solve_power + final_solve.clamp_power;
-  // When the tank is enabled, its update cancels positive Escape power in
-  // the composite storage.  Without the tank, retain the uncovered positive
-  // part explicitly instead of silently spending the numerical tolerance
-  // twice.
-  const double conditional_nonincrease_upper_bound =
-    numerical_power +
-    (
+        energy_params.enabled ?
+        0.0 :
+        std::max(final_solve.escape_power, 0.0));
+    const bool conditional_nonincrease_certificate =
+      base_gds_structural &&
+      environment_static &&
+      external_rmps.empty() &&
+      conditional_nonincrease_upper_bound <= energy_params.power_tolerance;
+    const bool clamp_active =
+      (final_solve.command_qdd - final_solve.raw_qdd).norm() > 1e-12;
+    const double tank_spent =
+      energy_params.initial_energy - energy_state.tank_energy;
+    const double guarded_energy_residual =
       energy_params.enabled ?
-      0.0 :
-      std::max(final_solve.escape_power, 0.0));
-  const bool conditional_nonincrease_certificate =
-    base_gds_structural &&
-    environment_static &&
-    external_rmps.empty() &&
-    conditional_nonincrease_upper_bound <= energy_params.power_tolerance;
-  const bool clamp_active =
-    (final_solve.command_qdd - final_solve.raw_qdd).norm() > 1e-12;
-  const double tank_spent =
-    energy_params.initial_energy - energy_state.tank_energy;
-  const double guarded_energy_residual =
-    energy_params.enabled ?
-    tank_spent - energy_state.positive_energy_integral :
-    0.0;
-  const double guarded_energy_violation =
-    energy_params.enabled ?
-    std::max(
-      energy_state.positive_energy_integral -
-      energy_params.initial_energy,
-      0.0) :
-    0.0;
+      tank_spent - energy_state.positive_energy_integral :
+      0.0;
+    const double guarded_energy_violation =
+      energy_params.enabled ?
+      std::max(
+        energy_state.positive_energy_integral -
+        energy_params.initial_energy,
+        0.0) :
+      0.0;
 
-  // Schema v1.  The accompanying proof document gives the exact field map.
-  const std::vector<double> stability_certificate_data{
-    1.0,
-    base_gds_structural ? 1.0 : 0.0,
-    environment_static ? 1.0 : 0.0,
-    external_rmps.empty() ? 1.0 : 0.0,
-    energy_params.enabled ? 1.0 : 0.0,
-    conditional_nonincrease_certificate ? 1.0 : 0.0,
-    escape_scale,
-    energy_state.tank_energy,
-    energy_params.tank_capacity,
-    requested_solve.escape_power,
-    final_solve.escape_power,
-    final_solve.solve_power,
-    final_solve.clamp_power,
-    numerical_power,
-    energy_state.positive_energy_integral,
-    energy_state.negative_energy_integral,
-    energy_state.net_energy_integral,
-    static_cast<double>(energy_state.sample_count),
-    requested_escape_metric.trace(),
-    (escape_scale * requested_escape_metric).trace(),
-    requested_escape_force.norm(),
-    (escape_scale * requested_escape_force).norm(),
-    final_solve.raw_qdd.norm(),
-    final_solve.command_qdd.norm(),
-    clamp_active ? 1.0 : 0.0,
-    config_.solve_offset,
-    requested_escape_metric.norm() > 1e-12 ? 1.0 : 0.0,
-    guarded_energy_residual,
-    guarded_energy_violation,
-    conditional_nonincrease_upper_bound,
-    energy_params.initial_energy,
-    base_config_profile_valid ? 1.0 : 0.0,
-    base_domain_valid ? 1.0 : 0.0,
-    base_metric_spd ? 1.0 : 0.0,
-    base_solve_valid ? 1.0 : 0.0
-  };
+    // Schema v1.  The accompanying proof document gives the exact field map.
+    stability_certificate_data = {
+      1.0,
+      base_gds_structural ? 1.0 : 0.0,
+      environment_static ? 1.0 : 0.0,
+      external_rmps.empty() ? 1.0 : 0.0,
+      energy_params.enabled ? 1.0 : 0.0,
+      conditional_nonincrease_certificate ? 1.0 : 0.0,
+      escape_scale,
+      energy_state.tank_energy,
+      energy_params.tank_capacity,
+      requested_solve.escape_power,
+      final_solve.escape_power,
+      final_solve.solve_power,
+      final_solve.clamp_power,
+      numerical_power,
+      energy_state.positive_energy_integral,
+      energy_state.negative_energy_integral,
+      energy_state.net_energy_integral,
+      static_cast<double>(energy_state.sample_count),
+      requested_escape_metric.trace(),
+      (escape_scale * requested_escape_metric).trace(),
+      requested_escape_force.norm(),
+      (escape_scale * requested_escape_force).norm(),
+      final_solve.raw_qdd.norm(),
+      final_solve.command_qdd.norm(),
+      clamp_active ? 1.0 : 0.0,
+      config_.solve_offset,
+      requested_escape_metric.norm() > 1e-12 ? 1.0 : 0.0,
+      guarded_energy_residual,
+      guarded_energy_violation,
+      conditional_nonincrease_upper_bound,
+      energy_params.initial_energy,
+      base_config_profile_valid ? 1.0 : 0.0,
+      base_domain_valid ? 1.0 : 0.0,
+      base_metric_spd ? 1.0 : 0.0,
+      base_solve_valid ? 1.0 : 0.0
+    };
+  }
 
   // Same-state counterfactual data.  This is computed from the already-built
   // base M0/f0, so it does not repeat FK, graph pushforward, or leaf
   // evaluation and it does not advance the hybrid Escape supervisor.
-  std::vector<double> tangent_escape_dual_solve_data(43, 0.0);
-  const bool escape_contribution_active =
-    requested_escape_metric.norm() > 1e-12 ||
-    requested_escape_force.norm() > 1e-12;
-  tangent_escape_dual_solve_data[0] =
-    escape_contribution_active ? 1.0 : 0.0;
-  for (int index = 0; index < 6; ++index) {
-    tangent_escape_dual_solve_data[1 + index] =
-      final_solve.command_qdd[index];
-    tangent_escape_dual_solve_data[7 + index] =
-      no_escape_solve.command_qdd[index];
-    tangent_escape_dual_solve_data[13 + index] =
-      final_solve.command_qdd[index] - no_escape_solve.command_qdd[index];
-  }
+  std::vector<double> tangent_escape_dual_solve_data;
+  if (dual_solve_enabled) {
+    tangent_escape_dual_solve_data.assign(43, 0.0);
+    const bool escape_contribution_active =
+      requested_escape_metric.norm() > 1e-12 ||
+      requested_escape_force.norm() > 1e-12;
+    tangent_escape_dual_solve_data[0] =
+      escape_contribution_active ? 1.0 : 0.0;
+    for (int index = 0; index < 6; ++index) {
+      tangent_escape_dual_solve_data[1 + index] =
+        final_solve.command_qdd[index];
+      tangent_escape_dual_solve_data[7 + index] =
+        no_escape_solve.command_qdd[index];
+      tangent_escape_dual_solve_data[13 + index] =
+        final_solve.command_qdd[index] - no_escape_solve.command_qdd[index];
+    }
 
-  const Eigen::Vector3d tcp_accel_with =
-    context.tcp_jacobian * final_solve.command_qdd + context.tcp_curvature;
-  const Eigen::Vector3d tcp_accel_without =
-    context.tcp_jacobian * no_escape_solve.command_qdd + context.tcp_curvature;
-  const Eigen::Vector3d delta_tcp_accel =
-    tcp_accel_with - tcp_accel_without;
-  for (int axis = 0; axis < 3; ++axis) {
-    tangent_escape_dual_solve_data[19 + axis] = tcp_accel_with[axis];
-    tangent_escape_dual_solve_data[22 + axis] = tcp_accel_without[axis];
-    tangent_escape_dual_solve_data[25 + axis] = delta_tcp_accel[axis];
-  }
+    const Eigen::Vector3d tcp_accel_with =
+      context.tcp_jacobian * final_solve.command_qdd + context.tcp_curvature;
+    const Eigen::Vector3d tcp_accel_without =
+      context.tcp_jacobian * no_escape_solve.command_qdd + context.tcp_curvature;
+    const Eigen::Vector3d delta_tcp_accel =
+      tcp_accel_with - tcp_accel_without;
+    for (int axis = 0; axis < 3; ++axis) {
+      tangent_escape_dual_solve_data[19 + axis] = tcp_accel_with[axis];
+      tangent_escape_dual_solve_data[22 + axis] = tcp_accel_without[axis];
+      tangent_escape_dual_solve_data[25 + axis] = delta_tcp_accel[axis];
+    }
 
-  if (tangent_escape_debug_data.size() >= 23) {
-    const int point_index = static_cast<int>(
-      std::llround(tangent_escape_debug_data[1]));
-    Eigen::Vector3d normal{
-      tangent_escape_debug_data[17],
-      tangent_escape_debug_data[18],
-      tangent_escape_debug_data[19]};
-    Eigen::Vector3d tangent{
-      tangent_escape_debug_data[20],
-      tangent_escape_debug_data[21],
-      tangent_escape_debug_data[22]};
-    if (normal.norm() > 1e-12) {
-      normal.normalize();
-    }
-    if (tangent.norm() > 1e-12) {
-      tangent.normalize();
-    }
-    tangent_escape_dual_solve_data[28] = delta_tcp_accel.dot(tangent);
-    tangent_escape_dual_solve_data[29] = delta_tcp_accel.dot(normal);
-    if (tangent_escape_debug_data.size() > 10) {
-      tangent_escape_dual_solve_data[30] = tangent_escape_debug_data[6];
-      tangent_escape_dual_solve_data[31] =
-        escape_scale * tangent_escape_debug_data[10];
-    }
-    if (
-      point_index >= 0 &&
-      static_cast<std::size_t>(point_index) <
-      context.control_point_jacobians.size() &&
-      static_cast<std::size_t>(point_index) <
-      context.control_point_curvatures.size())
-    {
-      const auto cp_index = static_cast<std::size_t>(point_index);
-      const Eigen::Vector3d cp_accel_with =
-        context.control_point_jacobians[cp_index] *
-        final_solve.command_qdd +
-        context.control_point_curvatures[cp_index];
-      const Eigen::Vector3d cp_accel_without =
-        context.control_point_jacobians[cp_index] *
-        no_escape_solve.command_qdd +
-        context.control_point_curvatures[cp_index];
-      const Eigen::Vector3d delta_cp_accel =
-        cp_accel_with - cp_accel_without;
-      for (int axis = 0; axis < 3; ++axis) {
-        tangent_escape_dual_solve_data[32 + axis] = cp_accel_with[axis];
-        tangent_escape_dual_solve_data[35 + axis] = cp_accel_without[axis];
-        tangent_escape_dual_solve_data[38 + axis] = delta_cp_accel[axis];
+    if (tangent_escape_debug_data.size() >= 23) {
+      const int point_index = static_cast<int>(
+        std::llround(tangent_escape_debug_data[1]));
+      Eigen::Vector3d normal{
+        tangent_escape_debug_data[17],
+        tangent_escape_debug_data[18],
+        tangent_escape_debug_data[19]};
+      Eigen::Vector3d tangent{
+        tangent_escape_debug_data[20],
+        tangent_escape_debug_data[21],
+        tangent_escape_debug_data[22]};
+      if (normal.norm() > 1e-12) {
+        normal.normalize();
       }
-      tangent_escape_dual_solve_data[41] = delta_cp_accel.dot(tangent);
-      tangent_escape_dual_solve_data[42] = delta_cp_accel.dot(normal);
+      if (tangent.norm() > 1e-12) {
+        tangent.normalize();
+      }
+      tangent_escape_dual_solve_data[28] = delta_tcp_accel.dot(tangent);
+      tangent_escape_dual_solve_data[29] = delta_tcp_accel.dot(normal);
+      if (tangent_escape_debug_data.size() > 10) {
+        tangent_escape_dual_solve_data[30] = tangent_escape_debug_data[6];
+        tangent_escape_dual_solve_data[31] =
+          escape_scale * tangent_escape_debug_data[10];
+      }
+      if (
+        point_index >= 0 &&
+        static_cast<std::size_t>(point_index) <
+        context.control_point_jacobians.size() &&
+        static_cast<std::size_t>(point_index) <
+        context.control_point_curvatures.size())
+      {
+        const auto cp_index = static_cast<std::size_t>(point_index);
+        const Eigen::Vector3d cp_accel_with =
+          context.control_point_jacobians[cp_index] *
+          final_solve.command_qdd +
+          context.control_point_curvatures[cp_index];
+        const Eigen::Vector3d cp_accel_without =
+          context.control_point_jacobians[cp_index] *
+          no_escape_solve.command_qdd +
+          context.control_point_curvatures[cp_index];
+        const Eigen::Vector3d delta_cp_accel =
+          cp_accel_with - cp_accel_without;
+        for (int axis = 0; axis < 3; ++axis) {
+          tangent_escape_dual_solve_data[32 + axis] = cp_accel_with[axis];
+          tangent_escape_dual_solve_data[35 + axis] = cp_accel_without[axis];
+          tangent_escape_dual_solve_data[38 + axis] = delta_cp_accel[axis];
+        }
+        tangent_escape_dual_solve_data[41] = delta_cp_accel.dot(tangent);
+        tangent_escape_dual_solve_data[42] = delta_cp_accel.dot(normal);
+      }
     }
   }
 
   if (config_.tangent_escape.enabled) {
-    auto & escape_state =
-      config_.tangent_escape.acceleration_model == "risk_damped" ?
-      tangent_escape_risk_damped_state_ :
-      tangent_escape_canonical_state_;
-    escape_state.previous_qdd = qdd;
-    escape_state.previous_qdd_valid = true;
+    tangent_escape_supervisor_.set_previous_qdd(
+      limit_joint_acceleration(
+        qdd,
+        config_.max_joint_accel,
+        config_.preserve_joint_accel_direction));
   }
 
-  std::vector<double> leaf_ablation_data{0.0};
+  std::vector<double> leaf_ablation_data;
   if (config_.enable_leaf_ablation_diagnostics) {
     // Schema v1 header (25 values): version, record count, acceleration
     // limit, raw/command norms, direction cosine, saturation count, then
@@ -1282,16 +1308,13 @@ RmpSolveResult PinocchioDirectRmpSolver::solve(
 std::vector<RmpSolveResult> PinocchioDirectRmpSolver::solve_batch(
   const std::vector<RmpBatchInput> & batch_inputs) const
 {
-  const auto canonical_snapshot = tangent_escape_canonical_state_;
-  const auto risk_damped_snapshot = tangent_escape_risk_damped_state_;
+  const auto supervisor_snapshot = tangent_escape_supervisor_;
   const auto energy_snapshot = escape_energy_certificate_state_;
   const auto restore_state = [
       this,
-      &canonical_snapshot,
-      &risk_damped_snapshot,
+      &supervisor_snapshot,
       &energy_snapshot]() {
-      tangent_escape_canonical_state_ = canonical_snapshot;
-      tangent_escape_risk_damped_state_ = risk_damped_snapshot;
+      tangent_escape_supervisor_ = supervisor_snapshot;
       escape_energy_certificate_state_ = energy_snapshot;
     };
 
@@ -2575,43 +2598,23 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape(
   JointVector & force,
   std::vector<double> * debug_data) const
 {
+  (void)geometry;
   const Matrix6 base_metric = metric;
   const JointVector base_force = force;
-  if (config_.tangent_escape.acceleration_model == "risk_damped") {
-    accumulate_tangent_escape_risk_damped(
-      q,
-      context,
-      geometry,
-      qd,
-      goal,
-      obstacles,
-      nominal_qdd,
-      base_metric,
-      base_force,
-      metric,
-      force,
-      debug_data);
-    return;
+  const TangentEscapeCommand command = tangent_escape_supervisor_.evaluate(
+    q,
+    context,
+    qd,
+    goal,
+    obstacles,
+    nominal_qdd,
+    base_metric,
+    base_force);
+  metric += command.metric_contribution;
+  force += command.force_contribution;
+  if (debug_data != nullptr) {
+    *debug_data = command.debug_data;
   }
-  if (config_.tangent_escape.acceleration_model == "canonical_velocity") {
-    accumulate_tangent_escape_canonical(
-      q,
-      context,
-      geometry,
-      qd,
-      goal,
-      obstacles,
-      nominal_qdd,
-      base_metric,
-      base_force,
-      metric,
-      force,
-      debug_data);
-    return;
-  }
-  throw std::runtime_error(
-          "Unsupported tangent Escape acceleration model: " +
-          config_.tangent_escape.acceleration_model);
 }
 
 void PinocchioDirectRmpSolver::accumulate_joint_damping(

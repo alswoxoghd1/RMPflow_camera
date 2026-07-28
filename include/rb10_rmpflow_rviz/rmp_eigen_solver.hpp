@@ -191,6 +191,9 @@ struct TangentEscapeRmpParams
   double risk_velocity_gate_scale{0.03};
   double risk_clearance_rate_filter_time_constant{0.05};
   double risk_tangent_damping_gain{10.0};
+  double risk_stuck_accel_floor{0.20};
+  double risk_stuck_dwell_time{0.30};
+  double risk_stuck_ramp_time{0.30};
 };
 
 struct EscapeEnergyCertificateParams
@@ -350,10 +353,15 @@ struct EigenRmpConfig
   std::array<double, 6> joint_limit_buffers{0.01, 0.01, 0.01, 0.01, 0.01, 0.01};
   double max_joint_accel{20.0};
   bool preserve_joint_accel_direction{true};
+  bool enable_tangent_escape_diagnostics{false};
+  bool enable_tangent_escape_dual_solve_diagnostics{false};
   bool enable_leaf_ablation_diagnostics{false};
+  bool enable_stability_certificate_diagnostics{false};
   double solve_offset{1e-3};
   std::string solve_method{"rmp2"};
   std::string rmp_type{"canonical"};
+  int casadi_rmp2_max_obstacles{24};
+  bool casadi_rmp2_jit{false};
   CSpaceTargetParams cspace_target{};
   JointLimitParams joint_limit{};
   JointVelocityCapParams joint_velocity_cap{};
@@ -373,15 +381,15 @@ struct RmpSolveResult
   RB10Model::JointVector qdd{RB10Model::JointVector::Zero()};
   Eigen::Matrix<double, 6, 6> metric{Eigen::Matrix<double, 6, 6>::Zero()};
   RB10Model::JointVector force{RB10Model::JointVector::Zero()};
-  std::vector<double> tangent_escape_rmp_data{0.0};
+  std::vector<double> tangent_escape_rmp_data;
   // Same-state counterfactual solve used only for validation/visualization:
   // final guarded Escape solve versus the identical root solve with the
   // Escape rank-one metric and force removed.
-  std::vector<double> tangent_escape_dual_solve_data{0.0};
+  std::vector<double> tangent_escape_dual_solve_data;
   // Frozen-policy, same-state leaf removal solves for saturation diagnosis.
   // This data is observational only and never feeds the commanded qdd.
-  std::vector<double> leaf_ablation_data{0.0};
-  std::vector<double> stability_certificate_data{0.0};
+  std::vector<double> leaf_ablation_data;
+  std::vector<double> stability_certificate_data;
 };
 
 class EigenRmpSolver

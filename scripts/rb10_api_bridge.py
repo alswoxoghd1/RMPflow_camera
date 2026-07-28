@@ -41,6 +41,10 @@ class RB10APIBridge(Node):
         self.declare_parameter('command_mode', 'velocity')
         self.declare_parameter('command_topic', '/position_controllers/commands')
         self.declare_parameter('joint_state_topic', '/joint_states')
+        self.declare_parameter(
+            'state_diagnostics_topic',
+            '/rb10_bridge_state_diagnostics',
+        )
         self.declare_parameter('real_joint_state_source', 'measured')
         self.declare_parameter('publish_rate', 100.0)
         self.declare_parameter('servo_t1', 0.002)
@@ -54,6 +58,9 @@ class RB10APIBridge(Node):
         self.declare_parameter('max_command_step_deg', 0.25)
         self.declare_parameter('max_command_velocity_deg_s', 25.0)
         self.declare_parameter('large_command_jump_warn_deg', 2.0)
+        self.declare_parameter('publish_only_new_state_packets', True)
+        self.declare_parameter('state_max_raw_velocity_rad_s', 6.0)
+        self.declare_parameter('state_position_step_margin_rad', 0.01)
         self.declare_parameter('stop_on_shutdown', True)
         self.declare_parameter('shutdown_action', 'halt')
 
@@ -62,6 +69,9 @@ class RB10APIBridge(Node):
         self.command_mode = _normalize_command_mode(self.get_parameter('command_mode').value)
         self.command_topic = self.get_parameter('command_topic').value
         self.joint_state_topic = self.get_parameter('joint_state_topic').value
+        self.state_diagnostics_topic = self.get_parameter(
+            'state_diagnostics_topic'
+        ).value
         self.real_joint_state_source = str(
             self.get_parameter('real_joint_state_source').value
         ).strip().lower()
@@ -83,25 +93,52 @@ class RB10APIBridge(Node):
             float(self.get_parameter('large_command_jump_warn_deg').value),
             self.max_command_step_deg,
         )
+        self.publish_only_new_state_packets = _as_bool(
+            self.get_parameter('publish_only_new_state_packets').value
+        )
+        self.state_max_raw_velocity_rad_s = max(
+            float(self.get_parameter('state_max_raw_velocity_rad_s').value),
+            1e-3,
+        )
+        self.state_position_step_margin_rad = max(
+            float(self.get_parameter('state_position_step_margin_rad').value),
+            0.0,
+        )
         self.stop_on_shutdown = _as_bool(self.get_parameter('stop_on_shutdown').value)
         self.shutdown_action = str(self.get_parameter('shutdown_action').value).strip().lower()
 
         self.api = self._load_api()
         self.connected = False
         self.prev_joint_positions = None
-        self.prev_timestamp = None
+        self.prev_packet_time = None
+        self.packet_stamp_offset_ns = None
         self._last_error = 0.0
         self._last_conn_warn = 0.0
         self._last_guard_warn = 0.0
+        self._last_state_reject_warn = 0.0
+        self._last_state_wait_warn = 0.0
+        self._first_state_packet_received = False
         self._stop_requested = False
         self._signal_handled = False
 
         self._connect_robot()
 
+        if self.simulation_mode:
+            self.get_logger().warn(
+                'CONTROLLER BOX SIMULATION: real RB10 data/command sockets are open; '
+                'motion commands are being sent after PG_MODE.SIMULATION is requested'
+            )
+
         self.joint_state_pub = self.create_publisher(JointState, self.joint_state_topic, 10)
+        self.state_diagnostics_pub = self.create_publisher(
+            Float64MultiArray,
+            self.state_diagnostics_topic,
+            10,
+        )
 
         self.create_subscription(Float64MultiArray, self.command_topic, self._command_cb, 10)
         self.create_timer(1.0 / max(self.publish_rate, 1.0), self._publish_joint_states)
+        self.create_timer(1.0, self._publish_state_diagnostics)
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
 
@@ -124,8 +161,8 @@ class RB10APIBridge(Node):
                 PG_MODE,
                 IsDataSockConnect,
                 IsCommandSockConnect,
-                GetCurrentSplitedJoint,
-                GetCurrentMeasuredSplitedJoint,
+                GetCurrentJointStateSnapshot,
+                GetDataStreamDiagnostics,
                 IsPause,
                 SendCOMMAND,
                 CMD_TYPE,
@@ -148,8 +185,8 @@ class RB10APIBridge(Node):
             'PG_MODE': PG_MODE,
             'IsDataSockConnect': IsDataSockConnect,
             'IsCommandSockConnect': IsCommandSockConnect,
-            'GetCurrentSplitedJoint': GetCurrentSplitedJoint,
-            'GetCurrentMeasuredSplitedJoint': GetCurrentMeasuredSplitedJoint,
+            'GetCurrentJointStateSnapshot': GetCurrentJointStateSnapshot,
+            'GetDataStreamDiagnostics': GetDataStreamDiagnostics,
             'IsPause': IsPause,
             'SendCOMMAND': SendCOMMAND,
             'CMD_TYPE': CMD_TYPE,
@@ -163,18 +200,33 @@ class RB10APIBridge(Node):
     def _connect_robot(self):
         self.get_logger().info(f'Connecting to RB10 at {self.robot_ip}')
         try:
-            self.api['ToCB'](self.robot_ip)
-            self.api['CobotInit']()
+            if not self.api['ToCB'](self.robot_ip):
+                raise RuntimeError('command/data socket connection failed')
+            if not self.api['CobotInit']():
+                raise RuntimeError('CobotInit command failed')
             mode = self.api['PG_MODE'].SIMULATION if self.simulation_mode else self.api['PG_MODE'].REAL
-            self.api['SetProgramMode'](mode)
+            if not self.api['SetProgramMode'](mode):
+                raise RuntimeError(f'SetProgramMode({mode.name}) command failed')
             self.connected = True
         except Exception as exc:
             raise RuntimeError(f'Failed to connect via api.cobot: {exc}')
 
-    def _get_current_joint_source(self):
-        if self.real_joint_state_source == 'measured':
-            return self.api['GetCurrentMeasuredSplitedJoint']()
-        return self.api['GetCurrentSplitedJoint']()
+    def _get_current_joint_snapshot(self):
+        snapshot = self.api['GetCurrentJointStateSnapshot']()
+        if not snapshot or len(snapshot) != 3:
+            return ()
+        packet_time, reference_joints, measured_joints = snapshot
+        if self.simulation_mode or self.real_joint_state_source != 'measured':
+            joints = reference_joints
+        else:
+            joints = measured_joints
+        return float(packet_time), joints
+
+    def _publish_state_diagnostics(self):
+        diagnostics = self.api['GetDataStreamDiagnostics']()
+        msg = Float64MultiArray()
+        msg.data = [float(value) for value in diagnostics]
+        self.state_diagnostics_pub.publish(msg)
 
     def _command_cb(self, msg):
         if not self.connected:
@@ -220,7 +272,10 @@ class RB10APIBridge(Node):
                 self.api['SendCOMMAND'](cmd, self.api['CMD_TYPE'].MOVE)
                 return
 
-            current_joints_deg = self._get_current_joint_source()
+            current_snapshot = self._get_current_joint_snapshot()
+            if not current_snapshot:
+                return
+            _, current_joints_deg = current_snapshot
             if not current_joints_deg or len(current_joints_deg) < 6:
                 return
             if any(j is None for j in current_joints_deg[:6]):
@@ -346,30 +401,89 @@ class RB10APIBridge(Node):
             return
         try:
             if not self.api['IsDataSockConnect']():
+                if time.time() - self._last_state_wait_warn > 2.0:
+                    self.get_logger().error(
+                        'RB10 data socket is not connected; no JointState can be published'
+                    )
+                    self._last_state_wait_warn = time.time()
                 return
-            jnts = self._get_current_joint_source()
-            if not jnts or len(jnts) < 6:
+            snapshot = self._get_current_joint_snapshot()
+            if not snapshot:
+                if time.time() - self._last_state_wait_warn > 2.0:
+                    self.get_logger().warn(
+                        'Waiting for the first decoded RB10 state packet'
+                    )
+                    self._last_state_wait_warn = time.time()
+                return
+            packet_time, jnts = snapshot
+            if not math.isfinite(packet_time) or not jnts or len(jnts) < 6:
                 return
             if any(j is None for j in jnts[:6]):
                 return
+            if (
+                self.publish_only_new_state_packets and
+                self.prev_packet_time is not None and
+                packet_time == self.prev_packet_time
+            ):
+                return
             current_timestamp = self.get_clock().now()
             positions = [math.radians(float(j)) for j in jnts[:6]]
+            if not all(math.isfinite(position) for position in positions):
+                return
             velocities = [0.0] * 6
-            if self.prev_joint_positions is not None and self.prev_timestamp is not None:
-                dt = (current_timestamp - self.prev_timestamp).nanoseconds / 1e9
-                if 0.001 < dt < 1.0:
-                    velocities = [
-                        (positions[i] - self.prev_joint_positions[i]) / dt
-                        for i in range(6)
-                    ]
+            if self.prev_joint_positions is not None and self.prev_packet_time is not None:
+                dt = packet_time - self.prev_packet_time
+                if not 1e-6 < dt < 1.0:
+                    self.prev_joint_positions = positions.copy()
+                    self.prev_packet_time = packet_time
+                    self.packet_stamp_offset_ns = (
+                        current_timestamp.nanoseconds -
+                        int(round(packet_time * 1e9))
+                    )
+                    return
+                position_steps = [
+                    positions[i] - self.prev_joint_positions[i]
+                    for i in range(6)
+                ]
+                max_allowed_step = (
+                    self.state_max_raw_velocity_rad_s * dt +
+                    self.state_position_step_margin_rad
+                )
+                if max(abs(step) for step in position_steps) > max_allowed_step:
+                    if time.time() - self._last_state_reject_warn > 1.0:
+                        self.get_logger().warn(
+                            'Rejected RB10 joint-state packet: position step exceeds '
+                            f'{max_allowed_step:.4f} rad for packet dt={dt:.6f} s'
+                        )
+                        self._last_state_reject_warn = time.time()
+                    return
+                velocities = [step / dt for step in position_steps]
             self.prev_joint_positions = positions.copy()
-            self.prev_timestamp = current_timestamp
+            self.prev_packet_time = packet_time
+            packet_time_ns = int(round(packet_time * 1e9))
+            if self.packet_stamp_offset_ns is None:
+                self.packet_stamp_offset_ns = (
+                    current_timestamp.nanoseconds - packet_time_ns
+                )
+            packet_stamp_ns = self.packet_stamp_offset_ns + packet_time_ns
+            if abs(packet_stamp_ns - current_timestamp.nanoseconds) > int(1e9):
+                self.packet_stamp_offset_ns = (
+                    current_timestamp.nanoseconds - packet_time_ns
+                )
+                packet_stamp_ns = current_timestamp.nanoseconds
             msg = JointState()
-            msg.header.stamp = current_timestamp.to_msg()
+            msg.header.stamp.sec = packet_stamp_ns // int(1e9)
+            msg.header.stamp.nanosec = packet_stamp_ns % int(1e9)
             msg.name = JOINT_NAMES
             msg.position = positions
             msg.velocity = velocities
             self.joint_state_pub.publish(msg)
+            if not self._first_state_packet_received:
+                self._first_state_packet_received = True
+                self.get_logger().info(
+                    f'Received first RB10 state packet at controller time '
+                    f'{packet_time:.6f} s; publishing JointState'
+                )
         except Exception as exc:
             if time.time() - self._last_error > 1.0:
                 self.get_logger().error(f'Error publishing joint state: {exc}')

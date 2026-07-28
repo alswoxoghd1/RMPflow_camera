@@ -635,11 +635,13 @@ class RmpflowTraceLogger(Node):
             ("tangent_escape_rmp_release_velocity_gate", 46),
             ("tangent_escape_rmp_state_mode_id", 47),
             ("tangent_escape_rmp_drive_ramp", 48),
-            ("tangent_escape_rmp_release_brake", 49),
             ("tangent_escape_rmp_raw_activation", 50),
             ("tangent_escape_rmp_goal_progress_m_s", 51),
+            ("tangent_escape_rmp_nominal_speed_m_s", 52),
             ("tangent_escape_rmp_stuck_active", 53),
-            ("tangent_escape_rmp_z", 54),
+            ("tangent_escape_rmp_z", 6),
+            ("tangent_escape_rmp_max_blockage", 54),
+            ("tangent_escape_rmp_handoff_generation", 55),
             ("tangent_escape_rmp_selected_blocked_penalty", 56),
             ("tangent_escape_rmp_max_blocked_memory", 57),
             ("tangent_escape_rmp_command_distance_m", 58),
@@ -649,6 +651,10 @@ class RmpflowTraceLogger(Node):
         for field, index in scalar_fields:
             row[field] = self._fmt(values[index])
         if schema == 7:
+            row["tangent_escape_rmp_release_brake"] = self._fmt(0.0)
+            row["tangent_escape_rmp_risk_stuck_accel_m_s2"] = self._fmt(
+                values[49]
+            )
             risk_fields = [
                 ("tangent_escape_rmp_clearance_rate_m_s", 61),
                 ("tangent_escape_rmp_closing_speed_m_s", 62),
@@ -660,6 +666,8 @@ class RmpflowTraceLogger(Node):
             ]
             for field, index in risk_fields:
                 row[field] = self._fmt(values[index])
+        else:
+            row["tangent_escape_rmp_release_brake"] = self._fmt(values[49])
         self._fill_xyz_from_array(row, values, 11, "tangent_escape_rmp_control_point", "m")
         self._fill_xyz_from_array(row, values, 14, "tangent_escape_rmp_obstacle", "m")
         self._fill_xyz_from_array(row, values, 17, "tangent_escape_rmp_normal")
@@ -1160,6 +1168,7 @@ class RmpflowTraceLogger(Node):
                 "tangent_escape_rmp_closing_speed_m_s",
                 "tangent_escape_rmp_risk_distance_accel_m_s2",
                 "tangent_escape_rmp_risk_approach_accel_m_s2",
+                "tangent_escape_rmp_risk_stuck_accel_m_s2",
                 "tangent_escape_rmp_risk_accel_m_s2",
                 "tangent_escape_rmp_tangent_damping_accel_m_s2",
                 "tangent_escape_rmp_accel_input_m_s2",
@@ -1169,6 +1178,7 @@ class RmpflowTraceLogger(Node):
                 "tangent_escape_rmp_obstacle_episode_id",
                 "tangent_escape_rmp_handoff_reason_id",
                 "tangent_escape_rmp_handoff_phase_id",
+                "tangent_escape_rmp_handoff_generation",
                 "tangent_escape_rmp_selected_candidate_feasible",
                 "tangent_escape_rmp_selected_sector_risk",
                 "tangent_escape_rmp_alpha_stuck",
@@ -1179,7 +1189,9 @@ class RmpflowTraceLogger(Node):
                 "tangent_escape_rmp_release_brake",
                 "tangent_escape_rmp_raw_activation",
                 "tangent_escape_rmp_goal_progress_m_s",
+                "tangent_escape_rmp_nominal_speed_m_s",
                 "tangent_escape_rmp_z",
+                "tangent_escape_rmp_max_blockage",
                 "tangent_escape_rmp_command_distance_m",
                 "tangent_escape_rmp_actual_distance_m",
                 "tangent_escape_rmp_move_ratio",

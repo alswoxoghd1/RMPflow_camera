@@ -150,8 +150,21 @@ moveCmdFlag = False
 # DATASock = socket(AF_INET, SOCK_STREAM)
 moveCmdCnt = 0
 cmd_send_flag = 0  # read cmd에서 사용하기 위한 flag
+data_request_count = 0
+data_packet_count = 0
+data_state_packet_count = 0
+data_parse_error_count = 0
+command_response_count = 0
+last_data_payload_size = 0
+last_data_packet_type = -1
 
 __RB_VERSION__ = 'a-0.1'
+_SYSTEM_STAT_FORMAT = (
+    'fffffffffffffffffffffffffffffffffffffff'
+    'iiiiiiiiiiiiiiiiiiiiiiiiiiiiiiii'
+    'ffffffiiiififiiffffffiiiiiiiiiiiffiiiifiiiiiiiiiiiffffff'
+)
+_SYSTEM_STAT_PAYLOAD_SIZE = struct.calcsize(_SYSTEM_STAT_FORMAT)
 
 
 def ConnectToCB(ip):
@@ -249,6 +262,40 @@ def GetCurrentMeasuredSplitedJoint():
         return current_joint_
     current_joint_ = ()
     return current_joint_
+
+
+def GetCurrentJointStateSnapshot():
+    if (
+        not data_connect or
+        systemstat_global.time is None or
+        systemstat_global.jnt_ref is None or
+        systemstat_global.jnt_ang is None or
+        len(systemstat_global.jnt_ref) < 6 or
+        len(systemstat_global.jnt_ang) < 6
+    ):
+        return ()
+    return (
+        float(systemstat_global.time),
+        tuple(systemstat_global.jnt_ref[:6]),
+        tuple(systemstat_global.jnt_ang[:6]),
+    )
+
+
+def GetDataStreamDiagnostics():
+    return (
+        bool(cmd_connect),
+        bool(data_connect),
+        int(data_request_count),
+        int(data_packet_count),
+        int(data_state_packet_count),
+        int(data_parse_error_count),
+        int(command_response_count),
+        int(last_data_payload_size),
+        int(last_data_packet_type),
+        systemstat_global.time is not None,
+        systemstat_global.jnt_ref is not None,
+        systemstat_global.jnt_ang is not None,
+    )
 
 
 def GetCurrentTCP():
@@ -670,11 +717,13 @@ def ManualScript(ex_msg):
 def ReqDataStart(sock):
     global cmd_connect
     global data_connect
+    global data_request_count
     while cmd_connect and data_connect:
         try:
-            msg = 'reqdata'
-            sock.send(msg.encode('utf-8'))
-        except Exception:
+            sock.sendall(b'reqdata')
+            data_request_count += 1
+        except OSError as exc:
+            print(f'RB10 data request socket failed: {exc}', flush=True)
             cmd_connect = False
             data_connect = False
             break
@@ -687,69 +736,117 @@ def ReadCMD(sock):
     global cmd_send_flag
     global bReadCmd
     global moveCmdFlag, moveCmdCnt
+    global command_response_count
 
     while cmd_connect and data_connect:
-        time.sleep(0.01)
         try:
-            if cmd_send_flag == 1:
-                msg_recv = sock.recv(26)
-                if not msg_recv:
-                    cmd_connect = False
-                    data_connect = False
-                    break
-                if msg_recv.decode('utf-8') == 'The command was executed\n':
-                    cmd_send_flag = 0
-                    bReadCmd = True
+            msg_recv = sock.recv(256)
+            if not msg_recv:
+                cmd_connect = False
+                data_connect = False
+                break
+            response = msg_recv.decode('utf-8', errors='replace')
+            command_response_count += 1
+            if 'The command was executed' in response:
+                cmd_send_flag = 0
+                bReadCmd = True
 
-                    if moveCmdFlag:
-                        moveCmdCnt = 3
-                        systemstat_global.robot_state = 3
-                        moveCmdFlag = False
+                if moveCmdFlag:
+                    moveCmdCnt = 3
+                    systemstat_global.robot_state = 3
+                    moveCmdFlag = False
 
-                    bReadCmd = False
-        except Exception:
+                bReadCmd = False
+        except OSError as exc:
+            print(f'RB10 command response socket failed: {exc}', flush=True)
             cmd_connect = False
             data_connect = False
             break
+
+
+def _recv_exact(sock, length):
+    received = bytearray()
+    while len(received) < length:
+        chunk = sock.recv(length - len(received))
+        if not chunk:
+            return None
+        received.extend(chunk)
+    return bytes(received)
 
 
 def ReadDATA(sock):
     global cmd_connect
     global data_connect
     global systemstat_global
+    global data_packet_count
+    global data_state_packet_count
+    global data_parse_error_count
+    global last_data_payload_size
+    global last_data_packet_type
 
     while cmd_connect and data_connect:
         try:
-            msg_recv = sock.recv(580)
-            if not msg_recv:
+            start_byte = _recv_exact(sock, 1)
+            if start_byte is None:
                 cmd_connect = False
                 data_connect = False
                 break
+            if start_byte[0] != 0x24:
+                continue
 
-            if msg_recv[0] == 0x24:
-                size = int((msg_recv[2] << 8) | msg_recv[1])
-                if size <= len(msg_recv) - 4:
-                    if msg_recv[3] == 3:
-                        msg_recv_split = msg_recv[4:512]
-                        result = struct.unpack(
-                            'fffffffffffffffffffffffffffffffffffffffiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiiffffffiiiififiiffffffiiiiiiiiiiiffiiiifiiiiiiiiiiiffffff',
-                            msg_recv_split)
-                        systemstat = systemSTAT(result[0], result[1:7], result[7:13], result[13:19], result[19:25],
-                                                result[25:31], result[31:35], result[35:39], result[39:55], result[55:71]
-                                                , result[71:77], result[77], result[78], result[79], result[80], result[81],
-                                                result[82], result[83], result[84], result[85], result[86:92]
-                                                , result[92:98], result[98], result[99], result[100], result[101],
-                                                result[102],
-                                                result[103:105], result[105:107], result[107:109], result[109]
-                                                , result[110], result[111], result[112], result[113], result[114],
-                                                result[115:117], result[117:119], result[119:121], result[121], result[122]
-                                                , result[123], result[124], result[125], result[126])
-                        systemstat_global = systemstat
-                    elif msg_recv[3] == 4:
-                        print('config')
-                    elif msg_recv[10] == 10:
-                        print('popup')
-        except Exception:
+            header = _recv_exact(sock, 3)
+            if header is None:
+                cmd_connect = False
+                data_connect = False
+                break
+            payload_size = int(header[0] | (header[1] << 8))
+            packet_type = header[2]
+            last_data_payload_size = payload_size
+            last_data_packet_type = packet_type
+            if payload_size <= 0 or payload_size > 4096:
+                print(
+                    f'Ignoring invalid RB10 data payload size: {payload_size}',
+                    flush=True,
+                )
+                continue
+
+            payload = _recv_exact(sock, payload_size)
+            if payload is None:
+                cmd_connect = False
+                data_connect = False
+                break
+            data_packet_count += 1
+            if packet_type != 3:
+                continue
+            if len(payload) < _SYSTEM_STAT_PAYLOAD_SIZE:
+                print(
+                    'Ignoring short RB10 state payload: '
+                    f'{len(payload)} < {_SYSTEM_STAT_PAYLOAD_SIZE}',
+                    flush=True,
+                )
+                continue
+
+            result = struct.unpack(
+                _SYSTEM_STAT_FORMAT,
+                payload[:_SYSTEM_STAT_PAYLOAD_SIZE],
+            )
+            systemstat_global = systemSTAT(
+                result[0], result[1:7], result[7:13], result[13:19],
+                result[19:25], result[25:31], result[31:35], result[35:39],
+                result[39:55], result[55:71], result[71:77], result[77],
+                result[78], result[79], result[80], result[81], result[82],
+                result[83], result[84], result[85], result[86:92],
+                result[92:98], result[98], result[99], result[100],
+                result[101], result[102], result[103:105], result[105:107],
+                result[107:109], result[109], result[110], result[111],
+                result[112], result[113], result[114], result[115:117],
+                result[117:119], result[119:121], result[121], result[122],
+                result[123], result[124], result[125], result[126],
+            )
+            data_state_packet_count += 1
+        except (OSError, struct.error, ValueError) as exc:
+            data_parse_error_count += 1
+            print(f'RB10 data socket/parser failed: {exc}', flush=True)
             cmd_connect = False
             data_connect = False
             break
@@ -758,6 +855,7 @@ def ReadDATA(sock):
 def SendCOMMAND(str, cmd_type):
     global cmd_send_flag
     global bReadCmd, moveCmdFlag
+    global cmd_connect, data_connect
 
     if not cmd_connect:
         return False
@@ -765,14 +863,26 @@ def SendCOMMAND(str, cmd_type):
     str_space = str + ' '
 
     if 'move_servo_j' in str or 'move_speed_j' in str:  # Allow streaming joint commands to be sent freely
-        CMDSock.send(str_space.encode('utf-8'))
-        return True
+        try:
+            CMDSock.sendall(str_space.encode('utf-8'))
+            return True
+        except OSError as exc:
+            print(f'RB10 streaming command socket failed: {exc}', flush=True)
+            cmd_connect = False
+            data_connect = False
+            return False
 
     if cmd_type == CMD_TYPE.MOVE:
         while True:
             time.sleep(0.03)
             if IsIdle() & (bReadCmd == False):
-                CMDSock.send(str_space.encode('utf-8'))
+                try:
+                    CMDSock.sendall(str_space.encode('utf-8'))
+                except OSError as exc:
+                    print(f'RB10 motion command socket failed: {exc}', flush=True)
+                    cmd_connect = False
+                    data_connect = False
+                    return False
                 moveCmdFlag = True
                 cmd_send_flag = 1
                 systemstat_global.robot_state = 3
@@ -782,7 +892,13 @@ def SendCOMMAND(str, cmd_type):
             else:
                 pass
     else:
-        CMDSock.send(str_space.encode('utf-8'))
+        try:
+            CMDSock.sendall(str_space.encode('utf-8'))
+        except OSError as exc:
+            print(f'RB10 command socket failed: {exc}', flush=True)
+            cmd_connect = False
+            data_connect = False
+            return False
         cmd_send_flag = 1
         return True
 

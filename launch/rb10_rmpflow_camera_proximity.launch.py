@@ -31,6 +31,7 @@ def generate_launch_description():
     camera_cloud_stride = LaunchConfiguration("camera_cloud_stride")
     camera_stale_timeout_sec = LaunchConfiguration("camera_stale_timeout_sec")
     proximity_raw_obstacle_topic = LaunchConfiguration("proximity_raw_obstacle_topic")
+    solver_backend = LaunchConfiguration("solver_backend")
 
     base_test_launch = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(test_launch_path),
@@ -41,6 +42,7 @@ def generate_launch_description():
             "proximity_collision_obstacle_topic": proximity_raw_obstacle_topic,
             "proximity_visualization_obstacle_topic": camera_rviz_output_topic,
             "rviz_config": camera_rviz_config_path,
+            "solver_backend": solver_backend,
         }.items(),
     )
 
@@ -68,6 +70,14 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument(
+            "solver_backend",
+            default_value="pinocchio_direct",
+            description=(
+                "Runtime RMP solver: pinocchio_direct (real-time default) or "
+                "casadi_rmp2 (reference/equivalence backend)."
+            ),
+        ),
         DeclareLaunchArgument(
             "use_camera_obstacles",
             default_value="true",

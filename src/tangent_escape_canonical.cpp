@@ -1,4 +1,4 @@
-#include "rb10_rmpflow_rviz/pinocchio_direct_solver.hpp"
+#include "rb10_rmpflow_rviz/tangent_escape_supervisor.hpp"
 
 #include <algorithm>
 #include <array>
@@ -8,6 +8,8 @@
 #include <optional>
 #include <utility>
 #include <vector>
+
+#include "rb10_rmpflow_rviz/joint_acceleration_limiter.hpp"
 
 namespace rb10_rmpflow_rviz
 {
@@ -24,9 +26,9 @@ constexpr double kTangentOrthogonalityTolerance = 1e-5;
 constexpr double kMinimumScalarJacobianNorm = 1e-8;
 constexpr double kMinimumPredictedTangentDisplacement = 1e-10;
 
-using JointVector = PinocchioDirectRmpSolver::JointVector;
-using Matrix6 = PinocchioDirectRmpSolver::Matrix6;
-using RowVector6 = PinocchioDirectRmpSolver::RowVector6;
+using JointVector = TangentEscapeSupervisor::JointVector;
+using Matrix6 = TangentEscapeSupervisor::Matrix6;
+using RowVector6 = TangentEscapeSupervisor::RowVector6;
 
 double clamp01(double value)
 {
@@ -126,6 +128,7 @@ struct SensorPairEvaluation
   double closing_speed{0.0};
   double risk_distance_acceleration{0.0};
   double risk_approach_acceleration{0.0};
+  double risk_stuck_acceleration{0.0};
   double risk_acceleration{0.0};
 };
 
@@ -193,26 +196,44 @@ void append_candidate_record(
 
 }  // namespace
 
-void PinocchioDirectRmpSolver::accumulate_tangent_escape_canonical(
+TangentEscapeSupervisor::TangentEscapeSupervisor(EigenRmpConfig config)
+: config_(std::move(config))
+{}
+
+TangentEscapeCommand TangentEscapeSupervisor::evaluate(
   const JointVector & q,
   const KinematicsContext & context,
-  const NodeGeometry & geometry,
   const JointVector & qd,
   const Eigen::Vector3d & goal,
   const std::vector<ObstacleSphere> & obstacles,
   const JointVector & nominal_qdd,
   const Matrix6 & base_metric,
-  const JointVector & base_force,
-  Matrix6 & metric,
-  JointVector & force,
-  std::vector<double> * debug_data) const
+  const JointVector & base_force) const
 {
-  accumulate_tangent_escape_impl(
-    tangent_escape_canonical_state_,
-    false,
+  Matrix6 metric = base_metric;
+  JointVector force = base_force;
+  TangentEscapeCommand command;
+  std::vector<double> debug_data;
+  std::vector<double> * debug_data_ptr =
+    (config_.enable_tangent_escape_diagnostics ||
+    config_.enable_tangent_escape_dual_solve_diagnostics) ?
+    &debug_data : nullptr;
+  const bool risk_damped_mode =
+    config_.tangent_escape.acceleration_model == "risk_damped";
+  if (
+    !risk_damped_mode &&
+    config_.tangent_escape.acceleration_model != "canonical_velocity")
+  {
+    throw std::runtime_error(
+            "Unsupported tangent Escape acceleration model: " +
+            config_.tangent_escape.acceleration_model);
+  }
+  auto & state = risk_damped_mode ? risk_damped_state_ : canonical_state_;
+  evaluate_impl(
+    state,
+    risk_damped_mode,
     q,
     context,
-    geometry,
     qd,
     goal,
     obstacles,
@@ -221,46 +242,30 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_canonical(
     base_force,
     metric,
     force,
-    debug_data);
+    command,
+    debug_data_ptr);
+
+  command.metric_contribution = metric - base_metric;
+  command.force_contribution = force - base_force;
+  if (debug_data_ptr != nullptr) {
+    command.debug_data = std::move(debug_data);
+  }
+  return command;
 }
 
-void PinocchioDirectRmpSolver::accumulate_tangent_escape_risk_damped(
-  const JointVector & q,
-  const KinematicsContext & context,
-  const NodeGeometry & geometry,
-  const JointVector & qd,
-  const Eigen::Vector3d & goal,
-  const std::vector<ObstacleSphere> & obstacles,
-  const JointVector & nominal_qdd,
-  const Matrix6 & base_metric,
-  const JointVector & base_force,
-  Matrix6 & metric,
-  JointVector & force,
-  std::vector<double> * debug_data) const
+void TangentEscapeSupervisor::set_previous_qdd(const JointVector & qdd) const
 {
-  accumulate_tangent_escape_impl(
-    tangent_escape_risk_damped_state_,
-    true,
-    q,
-    context,
-    geometry,
-    qd,
-    goal,
-    obstacles,
-    nominal_qdd,
-    base_metric,
-    base_force,
-    metric,
-    force,
-    debug_data);
+  auto & state = config_.tangent_escape.acceleration_model == "risk_damped" ?
+    risk_damped_state_ : canonical_state_;
+  state.previous_qdd = qdd;
+  state.previous_qdd_valid = qdd.allFinite();
 }
 
-void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
-  TangentEscapeCanonicalState & state,
+void TangentEscapeSupervisor::evaluate_impl(
+  CanonicalState & state,
   bool risk_damped_mode,
   const JointVector & q,
   const KinematicsContext & context,
-  const NodeGeometry & geometry,
   const JointVector & qd,
   const Eigen::Vector3d & goal,
   const std::vector<ObstacleSphere> & obstacles,
@@ -269,28 +274,28 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
   const JointVector & base_force,
   Matrix6 & metric,
   JointVector & force,
+  TangentEscapeCommand & command,
   std::vector<double> * debug_data) const
 {
   const auto & params = config_.tangent_escape;
 
-  const auto publish_inactive = [&debug_data]() {
+  const auto publish_empty_inactive = [&debug_data]() {
       if (debug_data != nullptr) {
         *debug_data = std::vector<double>{0.0};
       }
     };
   const auto reset_all_state = [&state]() {
-      state = TangentEscapeCanonicalState{};
+      state = CanonicalState{};
     };
   const auto clear_failure_memory = [&state]() {
       for (auto & memory : state.failure_memory) {
-        memory = TangentEscapeFailureMemory{};
+        memory = FailureMemory{};
       }
       state.failure_memory_cursor = 0;
     };
 
   const std::size_t point_count = std::min(
     {
-      static_cast<std::size_t>(std::max<Eigen::Index>(geometry.x.size() / 3, 0)),
       context.control_points.size(),
       context.control_point_jacobians.size(),
       context.control_point_velocities.size(),
@@ -300,12 +305,10 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
   if (
     !params.enabled ||
     params.metric_scalar <= 0.0 ||
-    geometry.x.size() % 3 != 0 ||
-    geometry.jacobian.cols() != 6 ||
     point_count == 0)
   {
     reset_all_state();
-    publish_inactive();
+    publish_empty_inactive();
     return;
   }
 
@@ -342,6 +345,12 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
     std::max(params.risk_clearance_rate_filter_time_constant, 0.0);
   const double risk_tangent_damping_gain =
     std::max(params.risk_tangent_damping_gain, 0.0);
+  const double risk_stuck_accel_floor =
+    std::max(params.risk_stuck_accel_floor, 0.0);
+  const double risk_stuck_dwell_time =
+    std::max(params.risk_stuck_dwell_time, 0.0);
+  const double risk_stuck_ramp_time =
+    std::max(params.risk_stuck_ramp_time, 0.0);
 
   const double goal_error = (context.tcp_position - goal).norm();
   const bool goal_changed =
@@ -407,7 +416,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
       ++control_point_index)
     {
       const Eigen::Vector3d control_point =
-        geometry.x.segment<3>(static_cast<Eigen::Index>(3 * control_point_index));
+        context.control_points[control_point_index].position;
       const Eigen::Vector3d delta = control_point - obstacle.center;
       const double center_distance = delta.norm();
       if (center_distance <= 1e-9) {
@@ -504,7 +513,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
             candidate.obstacle_key == pair.obstacle_key;
         });
       if (rate_state == state.clearance_rate_states.end()) {
-        TangentEscapeClearanceRateState initial;
+        ClearanceRateState initial;
         initial.control_point_index = pair.control_point_index;
         initial.obstacle_key = pair.obstacle_key;
         initial.previous_clearance = pair.clearance;
@@ -549,9 +558,18 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
         (
           positive_clearance / risk_approach_distance_scale +
           risk_approach_epsilon);
-      pair.risk_acceleration = std::max(
+      const double base_risk_acceleration = std::max(
         pair.risk_distance_acceleration + pair.risk_approach_acceleration,
         0.0);
+      const double stuck_dwell_activation = smooth_gate_up(
+        state.active_age_s,
+        risk_stuck_dwell_time,
+        risk_stuck_dwell_time + risk_stuck_ramp_time);
+      pair.risk_stuck_acceleration =
+        risk_stuck_accel_floor * pair.alpha_stuck * stuck_dwell_activation;
+      pair.risk_acceleration = std::hypot(
+        base_risk_acceleration,
+        pair.risk_stuck_acceleration);
       if (maximum_tangent_speed > 0.0 && risk_tangent_damping_gain > 0.0) {
         pair.risk_acceleration = std::min(
           pair.risk_acceleration,
@@ -590,19 +608,90 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
     };
 
   const SensorPairEvaluation * best_pair = nullptr;
+  const SensorPairEvaluation * diagnostic_pair = nullptr;
   for (const auto & pair : pairs) {
     if (best_pair == nullptr || pair.blockage > best_pair->blockage) {
       best_pair = &pair;
+    }
+    if (
+      diagnostic_pair == nullptr ||
+      pair.blockage > diagnostic_pair->blockage + 1e-12 ||
+      (
+        std::abs(pair.blockage - diagnostic_pair->blockage) <= 1e-12 &&
+        pair.alpha_distance > diagnostic_pair->alpha_distance + 1e-12)
+    )
+    {
+      diagnostic_pair = &pair;
     }
   }
   const SensorPairEvaluation * current_pair = state.active_pair_valid ?
     find_pair(state.control_point_index, state.obstacle_key) :
     nullptr;
 
+  const auto publish_inactive_diagnostics = [
+      &debug_data,
+      &state,
+      best_pair,
+      diagnostic_pair,
+      risk_damped_mode]()
+    {
+      if (debug_data == nullptr) {
+        return;
+      }
+      if (diagnostic_pair == nullptr) {
+        *debug_data = std::vector<double>{0.0};
+        return;
+      }
+
+      const auto & pair = *diagnostic_pair;
+      std::vector<double> values(
+        risk_damped_mode ? kRiskDampedDebugSize : kCanonicalDebugSize,
+        0.0);
+      values[0] = 0.0;
+      values[1] = static_cast<double>(pair.control_point_index);
+      values[2] = pair.clearance;
+      values[3] = pair.beta;
+      values[4] = pair.alpha_distance;
+      values[5] = pair.alpha_blocking;
+      values[6] = state.z;
+      values[11] = pair.control_point.x();
+      values[12] = pair.control_point.y();
+      values[13] = pair.control_point.z();
+      values[14] = pair.obstacle_center.x();
+      values[15] = pair.obstacle_center.y();
+      values[16] = pair.obstacle_center.z();
+      values[17] = pair.outward_normal.x();
+      values[18] = pair.outward_normal.y();
+      values[19] = pair.outward_normal.z();
+      values[26] = risk_damped_mode ? 7.0 : 6.0;
+      values[31] = static_cast<double>(pair.obstacle_key);
+      values[32] = static_cast<double>(state.handoff_reason);
+      values[33] = static_cast<double>(static_cast<int>(state.phase));
+      values[38] = -1.0;
+      values[39] = 0.0;
+      values[44] = pair.alpha_stuck;
+      values[47] = 0.0;
+      values[50] = pair.raw_activation;
+      values[51] = state.filtered_goal_progress;
+      values[52] = pair.nominal_velocity.norm();
+      values[53] = pair.alpha_stuck >= 0.5 ? 1.0 : 0.0;
+      values[54] = best_pair != nullptr ? best_pair->blockage : 0.0;
+      if (risk_damped_mode) {
+        values[61] = pair.clearance_rate;
+        values[62] = pair.closing_speed;
+        values[63] = pair.risk_distance_acceleration;
+        values[64] = pair.risk_approach_acceleration;
+        values[65] = pair.risk_acceleration;
+        values[66] = 0.0;
+        values[67] = pair.risk_acceleration;
+      }
+      *debug_data = std::move(values);
+    };
+
   const bool release_phase =
-    state.phase == TangentEscapeCanonicalPhase::ReleaseDriveDown ||
-    state.phase == TangentEscapeCanonicalPhase::ReleaseBrake ||
-    state.phase == TangentEscapeCanonicalPhase::ReleaseLambdaDown;
+    state.phase == CanonicalPhase::ReleaseDriveDown ||
+    state.phase == CanonicalPhase::ReleaseBrake ||
+    state.phase == CanonicalPhase::ReleaseLambdaDown;
   const double activation_target = release_phase ?
     0.0 :
     (
@@ -623,8 +712,12 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
     state.z = clamp01(state.z + dt * limited_z_rate);
   }
 
-  const JointVector base_qdd =
+  const JointVector base_raw_qdd =
     resolve_trial_root(base_metric, base_force, config_.solve_offset);
+  const JointVector base_qdd = limit_joint_acceleration(
+    base_raw_qdd,
+    config_.max_joint_accel,
+    config_.preserve_joint_accel_direction);
   const Eigen::Vector3d baseline_tcp_position =
     context.tcp_position +
     preview_time * context.tcp_velocity +
@@ -765,11 +858,15 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
       trial_force +=
         scalar_jacobian.transpose() *
         (candidate.metric_scalar * (candidate.scalar_acceleration - scalar_curvature));
-      candidate.qdd =
+      const JointVector raw_candidate_qdd =
         resolve_trial_root(trial_metric, trial_force, config_.solve_offset);
-      if (!candidate.qdd.allFinite()) {
+      if (!raw_candidate_qdd.allFinite()) {
         return candidate;
       }
+      candidate.qdd = limit_joint_acceleration(
+        raw_candidate_qdd,
+        config_.max_joint_accel,
+        config_.preserve_joint_accel_direction);
 
       const double joint_velocity_limit =
         std::max(config_.joint_velocity_cap.max_velocity, 0.0);
@@ -794,10 +891,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
         const bool velocity_invalid =
           joint_velocity_limit > 0.0 &&
           std::abs(predicted_velocity) > joint_velocity_limit;
-        const bool acceleration_invalid =
-          joint_acceleration_limit > 0.0 &&
-          std::abs(candidate.qdd[joint]) > joint_acceleration_limit;
-        if (apply_hard_gates && (position_invalid || velocity_invalid || acceleration_invalid)) {
+        if (apply_hard_gates && (position_invalid || velocity_invalid)) {
           return candidate;
         }
 
@@ -813,7 +907,8 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
           std::abs(predicted_velocity) > 0.95 * joint_velocity_limit;
         const bool acceleration_near_limit =
           joint_acceleration_limit > 0.0 &&
-          std::abs(candidate.qdd[joint]) > 0.95 * joint_acceleration_limit;
+          std::abs(raw_candidate_qdd[joint]) >
+          0.95 * joint_acceleration_limit;
         candidate.saturation_risk =
           candidate.saturation_risk ||
           position_near_limit ||
@@ -1097,7 +1192,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
       state.pending_failure_memory = false;
     };
 
-  const auto start_phase = [&state](TangentEscapeCanonicalPhase phase) {
+  const auto start_phase = [&state](CanonicalPhase phase) {
       state.phase = phase;
       state.phase_elapsed_s = 0.0;
       state.phase_start_lambda = state.lambda;
@@ -1121,7 +1216,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
       state.actual_distance = 0.0;
       state.active_age_s = 0.0;
       state.z = 0.0;
-      state.phase = TangentEscapeCanonicalPhase::Off;
+      state.phase = CanonicalPhase::Off;
       state.phase_elapsed_s = 0.0;
       clear_failure_memory();
     };
@@ -1133,7 +1228,8 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
       &diagnostic_candidates,
       &selected_diagnostic_candidate,
       &clear_failure_memory,
-      &params](
+      &params,
+      debug_data](
       const SensorPairEvaluation & pair,
       bool same_episode)
     {
@@ -1141,7 +1237,9 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
         clear_failure_memory();
       }
       SelectionResult selection = select_direction(pair);
-      diagnostic_candidates = selection.records;
+      if (debug_data != nullptr) {
+        diagnostic_candidates = selection.records;
+      }
       if (!selection.selected.has_value()) {
         return false;
       }
@@ -1165,7 +1263,9 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
           selection.selected = current_direction;
         }
       }
-      selected_diagnostic_candidate = selection.selected;
+      if (debug_data != nullptr) {
+        selected_diagnostic_candidate = selection.selected;
+      }
 
       state.active_pair_valid = true;
       state.control_point_index = pair.control_point_index;
@@ -1181,7 +1281,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
       state.drive_ramp = 0.0;
       state.release_brake = 0.0;
       state.desired_velocity = 0.0;
-      state.phase = TangentEscapeCanonicalPhase::Engage;
+      state.phase = CanonicalPhase::Engage;
       state.phase_elapsed_s = 0.0;
       state.phase_start_lambda = 0.0;
       state.phase_start_drive_ramp = 0.0;
@@ -1196,7 +1296,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
     };
 
   if (
-    state.phase == TangentEscapeCanonicalPhase::Off &&
+    state.phase == CanonicalPhase::Off &&
     !state.active_pair_valid &&
     best_pair != nullptr &&
     best_pair->blockage >= minimum_pair_activation &&
@@ -1211,7 +1311,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
       // B is the complete activation, so normal driving starts with lambda=1.
       state.lambda = 1.0;
       state.drive_ramp = 1.0;
-      state.phase = TangentEscapeCanonicalPhase::Drive;
+      state.phase = CanonicalPhase::Drive;
       state.phase_elapsed_s = 0.0;
     }
     current_pair = state.active_pair_valid ?
@@ -1241,8 +1341,8 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
 
   bool zero_effect_pair_replacement = false;
   const bool in_engage_or_drive =
-    state.phase == TangentEscapeCanonicalPhase::Engage ||
-    state.phase == TangentEscapeCanonicalPhase::Drive;
+    state.phase == CanonicalPhase::Engage ||
+    state.phase == CanonicalPhase::Drive;
   if (
     risk_damped_mode &&
     state.active_pair_valid &&
@@ -1308,8 +1408,8 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
         state.handoff_reason = switch_pair ? 2 : (goal_changed ? 3 : 4);
         start_phase(
           risk_damped_mode ?
-          TangentEscapeCanonicalPhase::ReselectLambdaDown :
-          TangentEscapeCanonicalPhase::ReselectDriveDown);
+          CanonicalPhase::ReselectLambdaDown :
+          CanonicalPhase::ReselectDriveDown);
       }
     } else if (
       !risk_damped_mode &&
@@ -1319,7 +1419,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
         std::max(params.release_blockage_threshold, 0.0)))
     {
       state.handoff_reason = 1;
-      start_phase(TangentEscapeCanonicalPhase::ReleaseDriveDown);
+      start_phase(CanonicalPhase::ReleaseDriveDown);
     } else if (
       !risk_damped_mode &&
       state.active_age_s >= std::max(params.minimum_drive_duration, 0.0) &&
@@ -1330,7 +1430,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
       // A recovered goal-progress signal closes this episode. Reason 6
       // enforces a short OFF cooldown before preventive re-entry.
       state.handoff_reason = 6;
-      start_phase(TangentEscapeCanonicalPhase::ReleaseDriveDown);
+      start_phase(CanonicalPhase::ReleaseDriveDown);
     }
   }
 
@@ -1340,12 +1440,12 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
   const double drive_ramp_duration = std::max(params.drive_ramp_duration, 0.0);
   const double handoff_duration = std::max(params.handoff_duration, 0.0);
   switch (state.phase) {
-    case TangentEscapeCanonicalPhase::Off:
+    case CanonicalPhase::Off:
       state.lambda = 0.0;
       state.drive_ramp = 0.0;
       state.release_brake = 0.0;
       break;
-    case TangentEscapeCanonicalPhase::Engage:
+    case CanonicalPhase::Engage:
       state.lambda = ramp_between(
         state.phase_start_lambda,
         1.0,
@@ -1368,16 +1468,16 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
         state.lambda = 1.0;
         state.drive_ramp = 1.0;
         state.release_brake = 0.0;
-        start_phase(TangentEscapeCanonicalPhase::Drive);
+        start_phase(CanonicalPhase::Drive);
       }
       break;
-    case TangentEscapeCanonicalPhase::Drive:
+    case CanonicalPhase::Drive:
       state.lambda = 1.0;
       state.drive_ramp = 1.0;
       state.release_brake = 0.0;
       break;
-    case TangentEscapeCanonicalPhase::ReleaseDriveDown:
-    case TangentEscapeCanonicalPhase::ReselectDriveDown:
+    case CanonicalPhase::ReleaseDriveDown:
+    case CanonicalPhase::ReselectDriveDown:
       state.drive_ramp = ramp_between(
         state.phase_start_drive_ramp,
         0.0,
@@ -1392,13 +1492,13 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
         state.drive_ramp = 0.0;
         state.release_brake = 1.0;
         start_phase(
-          state.phase == TangentEscapeCanonicalPhase::ReleaseDriveDown ?
-          TangentEscapeCanonicalPhase::ReleaseBrake :
-          TangentEscapeCanonicalPhase::ReselectBrake);
+          state.phase == CanonicalPhase::ReleaseDriveDown ?
+          CanonicalPhase::ReleaseBrake :
+          CanonicalPhase::ReselectBrake);
       }
       break;
-    case TangentEscapeCanonicalPhase::ReleaseBrake:
-    case TangentEscapeCanonicalPhase::ReselectBrake:
+    case CanonicalPhase::ReleaseBrake:
+    case CanonicalPhase::ReselectBrake:
       state.drive_ramp = 0.0;
       state.release_brake = 1.0;
       {
@@ -1416,19 +1516,19 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
         const double reselect_brake_timeout =
           std::max(handoff_duration, 3.0 * velocity_time_constant);
         const bool reselect_brake_timed_out =
-          state.phase == TangentEscapeCanonicalPhase::ReselectBrake &&
+          state.phase == CanonicalPhase::ReselectBrake &&
           state.phase_elapsed_s >= reselect_brake_timeout;
         if (!tangent_speed_stopped && !reselect_brake_timed_out) {
           break;
         }
         start_phase(
-          state.phase == TangentEscapeCanonicalPhase::ReleaseBrake ?
-          TangentEscapeCanonicalPhase::ReleaseLambdaDown :
-          TangentEscapeCanonicalPhase::ReselectLambdaDown);
+          state.phase == CanonicalPhase::ReleaseBrake ?
+          CanonicalPhase::ReleaseLambdaDown :
+          CanonicalPhase::ReselectLambdaDown);
       }
       break;
-    case TangentEscapeCanonicalPhase::ReleaseLambdaDown:
-    case TangentEscapeCanonicalPhase::ReselectLambdaDown:
+    case CanonicalPhase::ReleaseLambdaDown:
+    case CanonicalPhase::ReselectLambdaDown:
       state.drive_ramp = 0.0;
       state.release_brake = risk_damped_mode ? 0.0 : 1.0;
       state.lambda = ramp_between(
@@ -1438,7 +1538,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
         handoff_duration);
       if (state.phase_elapsed_s >= handoff_duration) {
         const bool reselect =
-          state.phase == TangentEscapeCanonicalPhase::ReselectLambdaDown;
+          state.phase == CanonicalPhase::ReselectLambdaDown;
         state.lambda = 0.0;
         if (!reselect) {
           clear_active_episode();
@@ -1521,6 +1621,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
   double effective_metric_scalar = 0.0;
   double risk_distance_acceleration = 0.0;
   double risk_approach_acceleration = 0.0;
+  double risk_stuck_acceleration = 0.0;
   double risk_acceleration = 0.0;
   double risk_damping_acceleration = 0.0;
   double risk_acceleration_input = 0.0;
@@ -1549,6 +1650,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
         closing_speed = current_pair->closing_speed;
         risk_distance_acceleration = current_pair->risk_distance_acceleration;
         risk_approach_acceleration = current_pair->risk_approach_acceleration;
+        risk_stuck_acceleration = current_pair->risk_stuck_acceleration;
         risk_acceleration = current_pair->risk_acceleration;
       }
       risk_damping_acceleration =
@@ -1624,7 +1726,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
     state.actual_distance / std::max(state.command_distance, 1e-9);
 
   if (
-    state.phase == TangentEscapeCanonicalPhase::Drive &&
+    state.phase == CanonicalPhase::Drive &&
     current_pair != nullptr &&
     active_trial.has_value() &&
     state.active_age_s >= std::max(params.minimum_drive_duration, 0.0) &&
@@ -1643,8 +1745,8 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
       state.handoff_reason = 5;
       start_phase(
         risk_damped_mode ?
-        TangentEscapeCanonicalPhase::ReselectLambdaDown :
-        TangentEscapeCanonicalPhase::ReselectDriveDown);
+        CanonicalPhase::ReselectLambdaDown :
+        CanonicalPhase::ReselectDriveDown);
     }
   }
 
@@ -1660,15 +1762,25 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
     state.last_blockage = 0.0;
   }
 
-  state.previous_qdd =
-    resolve_trial_root(metric, force, config_.solve_offset);
-  state.previous_qdd_valid = state.previous_qdd.allFinite();
-
   if (!state.active_pair_valid || !state.tangent_valid) {
     if (std::abs(state.desired_velocity) < 1e-8) {
       state.desired_velocity = 0.0;
     }
-    publish_inactive();
+    publish_inactive_diagnostics();
+    return;
+  }
+
+  command.control_point_index = state.control_point_index;
+  command.tangent = state.tangent;
+  command.scalar_acceleration = scalar_acceleration;
+  command.metric_scalar = effective_metric_scalar;
+  command.active =
+    command.control_point_index < RB10Model::sensor_control_points.size() &&
+    command.tangent.allFinite() && command.tangent.norm() > 1e-9 &&
+    std::isfinite(command.scalar_acceleration) &&
+    std::isfinite(command.metric_scalar) && command.metric_scalar > 0.0;
+
+  if (debug_data == nullptr) {
     return;
   }
 
@@ -1691,21 +1803,21 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
 
   int high_level_state = 0;
   switch (state.phase) {
-    case TangentEscapeCanonicalPhase::Off:
+    case CanonicalPhase::Off:
       high_level_state = 0;
       break;
-    case TangentEscapeCanonicalPhase::Engage:
-    case TangentEscapeCanonicalPhase::Drive:
+    case CanonicalPhase::Engage:
+    case CanonicalPhase::Drive:
       high_level_state = risk_damped_mode ? 1 : (alpha_stuck >= 0.5 ? 2 : 1);
       break;
-    case TangentEscapeCanonicalPhase::ReleaseDriveDown:
-    case TangentEscapeCanonicalPhase::ReleaseBrake:
-    case TangentEscapeCanonicalPhase::ReleaseLambdaDown:
+    case CanonicalPhase::ReleaseDriveDown:
+    case CanonicalPhase::ReleaseBrake:
+    case CanonicalPhase::ReleaseLambdaDown:
       high_level_state = 3;
       break;
-    case TangentEscapeCanonicalPhase::ReselectDriveDown:
-    case TangentEscapeCanonicalPhase::ReselectBrake:
-    case TangentEscapeCanonicalPhase::ReselectLambdaDown:
+    case CanonicalPhase::ReselectDriveDown:
+    case CanonicalPhase::ReselectBrake:
+    case CanonicalPhase::ReselectLambdaDown:
       high_level_state = 4;
       break;
   }
@@ -1764,13 +1876,19 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
   values[46] = release_velocity_gate;
   values[47] = static_cast<double>(high_level_state);
   values[48] = state.drive_ramp;
-  values[49] = state.release_brake;
+  // risk_damped does not use the legacy release-brake slot. Reuse it without
+  // changing the schema length so logs can expose the stuck-only drive floor.
+  values[49] = risk_damped_mode ? risk_stuck_acceleration : state.release_brake;
   values[50] = current_pair != nullptr ? current_pair->raw_activation : 0.0;
   values[51] = state.filtered_goal_progress;
-  values[52] = alpha_stuck;
+  values[52] = current_pair != nullptr ? current_pair->nominal_velocity.norm() : 0.0;
   values[53] = alpha_stuck >= 0.5 ? 1.0 : 0.0;
-  values[54] = state.z;
-  values[55] = state.lambda;
+  values[54] = best_pair != nullptr ? best_pair->blockage : state.last_blockage;
+  // Slot 55 previously duplicated lambda from slot 45 and had no consumer.
+  // Expose the episode generation so a slower trace logger can distinguish a
+  // true in-mode axis mutation from an OFF/re-entry cycle that it did not
+  // sample.
+  values[55] = static_cast<double>(state.handoff_generation);
   values[56] = diagnostic_candidate.blocked_penalty;
   values[57] = maximum_memory;
   values[58] = state.command_distance;
@@ -1790,9 +1908,7 @@ void PinocchioDirectRmpSolver::accumulate_tangent_escape_impl(
   for (const auto & candidate : diagnostic_candidates) {
     append_candidate_record(values, candidate, alpha_stuck);
   }
-  if (debug_data != nullptr) {
-    *debug_data = std::move(values);
-  }
+  *debug_data = std::move(values);
 }
 
 }  // namespace rb10_rmpflow_rviz

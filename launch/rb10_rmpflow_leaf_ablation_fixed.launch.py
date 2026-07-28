@@ -34,6 +34,12 @@ def generate_launch_description():
             "start_fake_proximity": "false",
             "initialize_goal_from_first_state": "true",
             "rmp_flag_gate_enabled": "false",
+            "publish_control_timing_debug": LaunchConfiguration(
+                "publish_control_timing_debug"
+            ),
+            "control_timing_publish_rate": LaunchConfiguration(
+                "control_timing_publish_rate"
+            ),
             "enable_tangent_escape_rmp": LaunchConfiguration(
                 "enable_tangent_escape_rmp"
             ),
@@ -53,15 +59,30 @@ def generate_launch_description():
             "preserve_joint_accel_direction": LaunchConfiguration(
                 "preserve_joint_accel_direction"
             ),
-            "publish_tangent_escape_rmp_data": "true",
-            "publish_tangent_escape_dual_solve_data": "true",
-            "publish_leaf_ablation_data": "true",
-            "publish_debug_state": "true",
-            "publish_tangent_escape_geometry_debug": "true",
-            "publish_stability_certificate_data": "false",
+            "publish_tangent_escape_rmp_data": LaunchConfiguration(
+                "publish_tangent_escape_rmp_data"
+            ),
+            "publish_tangent_escape_dual_solve_data": LaunchConfiguration(
+                "publish_tangent_escape_dual_solve_data"
+            ),
+            "publish_leaf_ablation_data": LaunchConfiguration(
+                "publish_leaf_ablation_data"
+            ),
+            "publish_debug_state": LaunchConfiguration("publish_debug_state"),
+            "publish_tangent_escape_geometry_debug": LaunchConfiguration(
+                "publish_tangent_escape_geometry_debug"
+            ),
+            "escape_stability_guard_enabled": LaunchConfiguration(
+                "escape_stability_guard_enabled"
+            ),
+            "publish_stability_certificate_data": LaunchConfiguration(
+                "publish_stability_certificate_data"
+            ),
             "use_stability_certificate_visualizer": "false",
             "proximity_surface_visualization": "false",
-            "use_rmpflow_trace_logger": "true",
+            "use_rmpflow_trace_logger": LaunchConfiguration(
+                "use_rmpflow_trace_logger"
+            ),
             "rmpflow_trace_log_rate": LaunchConfiguration("trace_rate_hz"),
             "rmpflow_trace_log_directory": LaunchConfiguration("output_directory"),
             "rmpflow_trace_output_prefix": LaunchConfiguration("output_prefix"),
@@ -123,6 +144,46 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "enable_tangent_escape_rmp",
                 default_value="false",
+            ),
+            DeclareLaunchArgument(
+                "publish_control_timing_debug",
+                default_value="false",
+            ),
+            DeclareLaunchArgument(
+                "control_timing_publish_rate",
+                default_value="10.0",
+            ),
+            DeclareLaunchArgument(
+                "publish_tangent_escape_dual_solve_data",
+                default_value="true",
+            ),
+            DeclareLaunchArgument(
+                "publish_tangent_escape_rmp_data",
+                default_value="true",
+            ),
+            DeclareLaunchArgument(
+                "publish_leaf_ablation_data",
+                default_value="true",
+            ),
+            DeclareLaunchArgument(
+                "publish_debug_state",
+                default_value="true",
+            ),
+            DeclareLaunchArgument(
+                "publish_tangent_escape_geometry_debug",
+                default_value="true",
+            ),
+            DeclareLaunchArgument(
+                "escape_stability_guard_enabled",
+                default_value="false",
+            ),
+            DeclareLaunchArgument(
+                "publish_stability_certificate_data",
+                default_value="false",
+            ),
+            DeclareLaunchArgument(
+                "use_rmpflow_trace_logger",
+                default_value="true",
             ),
             DeclareLaunchArgument(
                 "tangent_escape_rmp_metric_scalar",

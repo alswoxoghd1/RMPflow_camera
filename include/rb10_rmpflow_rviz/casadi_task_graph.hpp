@@ -25,7 +25,8 @@ public:
     const RmpNodeConfig & node,
     const std::vector<int> & parent_dims) const;
 
-private:
+  // Exposed for whole-graph RMP2 construction. Keeping this symbolic avoids
+  // materializing a Jacobian at every configured graph edge.
   static casadi::MX apply_task_map(
     const RmpNodeConfig & node,
     const std::vector<casadi::MX> & parents);

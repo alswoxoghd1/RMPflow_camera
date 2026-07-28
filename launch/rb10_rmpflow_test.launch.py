@@ -10,12 +10,34 @@ from launch_ros.actions import Node
 from launch_ros.parameter_descriptions import ParameterValue
 
 
-def _validate_params_file(context):
+def _as_bool(value):
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _validate_launch(context):
     params_path = LaunchConfiguration("params_file").perform(context)
     if not os.path.isfile(params_path):
         raise RuntimeError(
             f'Launch argument "params_file" must point to an existing YAML file: {params_path}'
         )
+
+    controller_box_simulation = _as_bool(
+        LaunchConfiguration("controller_box_simulation").perform(context)
+    )
+    if controller_box_simulation:
+        if _as_bool(LaunchConfiguration("cb_simulation").perform(context)):
+            raise RuntimeError(
+                "controller_box_simulation:=true cannot be combined with "
+                "cb_simulation:=true. Select exactly one simulation backend."
+            )
+        if not _as_bool(
+            LaunchConfiguration("hardware_command_enabled").perform(context)
+        ):
+            raise RuntimeError(
+                "controller_box_simulation:=true requires "
+                "hardware_command_enabled:=true because Controller Box simulation "
+                "uses the RB10 command socket."
+            )
     return []
 
 
@@ -33,10 +55,27 @@ def generate_launch_description():
     robot_ip = LaunchConfiguration("robot_ip")
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_config = LaunchConfiguration("rviz_config")
+    control_rate = LaunchConfiguration("control_rate")
+    solver_backend = LaunchConfiguration("solver_backend")
+    casadi_rmp2_max_obstacles = LaunchConfiguration("casadi_rmp2_max_obstacles")
+    casadi_rmp2_jit = LaunchConfiguration("casadi_rmp2_jit")
+    publish_control_timing_debug = LaunchConfiguration(
+        "publish_control_timing_debug"
+    )
+    control_timing_debug_topic = LaunchConfiguration(
+        "control_timing_debug_topic"
+    )
+    control_timing_publish_rate = LaunchConfiguration(
+        "control_timing_publish_rate"
+    )
     cb_simulation = LaunchConfiguration("cb_simulation")
+    controller_box_simulation = LaunchConfiguration("controller_box_simulation")
     use_direct_hardware_backend = LaunchConfiguration("use_direct_hardware_backend")
+    hardware_command_enabled = LaunchConfiguration("hardware_command_enabled")
+    dry_run_command_topic = LaunchConfiguration("dry_run_command_topic")
     real_joint_state_source = LaunchConfiguration("real_joint_state_source")
     publish_debug_joint_state_sources = LaunchConfiguration("publish_debug_joint_state_sources")
+    publish_rmp_ee_pose = LaunchConfiguration("publish_rmp_ee_pose")
     use_interactive_goal = LaunchConfiguration("use_interactive_goal")
     use_obstacles = LaunchConfiguration("use_obstacles")
     use_proximity_bridge = LaunchConfiguration("use_proximity_bridge")
@@ -78,25 +117,57 @@ def generate_launch_description():
     bridge_max_command_step_deg = LaunchConfiguration("bridge_max_command_step_deg")
     bridge_max_command_velocity_deg_s = LaunchConfiguration("bridge_max_command_velocity_deg_s")
     bridge_large_command_jump_warn_deg = LaunchConfiguration("bridge_large_command_jump_warn_deg")
+    bridge_publish_only_new_state_packets = LaunchConfiguration(
+        "bridge_publish_only_new_state_packets"
+    )
+    bridge_state_max_raw_velocity_rad_s = LaunchConfiguration(
+        "bridge_state_max_raw_velocity_rad_s"
+    )
+    bridge_state_position_step_margin_rad = LaunchConfiguration(
+        "bridge_state_position_step_margin_rad"
+    )
     bridge_publish_rate = LaunchConfiguration("bridge_publish_rate")
-    estimate_velocity_in_controller = LaunchConfiguration("estimate_velocity_in_controller")
-    use_synced_input_velocity_filter = LaunchConfiguration("use_synced_input_velocity_filter")
-    synced_input_velocity_filter_alpha = LaunchConfiguration("synced_input_velocity_filter_alpha")
-    synced_input_velocity_filter_beta = LaunchConfiguration("synced_input_velocity_filter_beta")
-    synced_input_velocity_ratio_tolerance = LaunchConfiguration("synced_input_velocity_ratio_tolerance")
-    use_velocity_feedback_in_solver = LaunchConfiguration("use_velocity_feedback_in_solver")
-    measured_velocity_feedback_blend = LaunchConfiguration("measured_velocity_feedback_blend")
     record_joint_velocity = LaunchConfiguration("record_joint_velocity")
     joint_velocity_log_directory = LaunchConfiguration("joint_velocity_log_directory")
     joint_velocity_log_prefix = LaunchConfiguration("joint_velocity_log_prefix")
     params_file = LaunchConfiguration("params_file")
     controller_parameters = {
         "robot_ip": robot_ip,
-        "simulation_mode": cb_simulation,
+        "solver_backend": solver_backend,
+        "control_rate": ParameterValue(control_rate, value_type=float),
+        "casadi_rmp2_max_obstacles": ParameterValue(
+            casadi_rmp2_max_obstacles,
+            value_type=int,
+        ),
+        "casadi_rmp2_jit": ParameterValue(casadi_rmp2_jit, value_type=bool),
+        "publish_control_timing_debug": ParameterValue(
+            publish_control_timing_debug,
+            value_type=bool,
+        ),
+        "control_timing_debug_topic": control_timing_debug_topic,
+        "control_timing_publish_rate": ParameterValue(
+            control_timing_publish_rate,
+            value_type=float,
+        ),
+        # controller_box_simulation is an explicit networked Controller Box
+        # simulation session. cb_simulation remains the socket-free local mode.
+        "simulation_mode": ParameterValue(
+            controller_box_simulation,
+            value_type=bool,
+        ),
         "real_joint_state_source": real_joint_state_source,
         "hardware_data_request_rate": bridge_publish_rate,
         "joint_state_topic": "/joint_states",
         "position_command_topic": "/position_controllers/commands",
+        "hardware_command_enabled": ParameterValue(
+            PythonExpression([
+                'False if "', cb_simulation,
+                '" == "true" else (True if "', hardware_command_enabled,
+                '" == "true" else False)'
+            ]),
+            value_type=bool,
+        ),
+        "dry_run_command_topic": dry_run_command_topic,
         "publish_position_command": True,
         "position_command_state_topic": "/rmp_position_command",
         "command_mode": command_mode,
@@ -104,14 +175,17 @@ def generate_launch_description():
         "target_q_topic": "/target_q",
         "publish_joint_states": ParameterValue(
             PythonExpression([
-                'True if "', use_direct_hardware_backend, '" == "true" else False'
+                'True if "', cb_simulation, '" == "true" or "',
+                use_direct_hardware_backend, '" == "true" else False'
             ]),
             value_type=bool,
         ),
         "backend_mode": ParameterValue(
             PythonExpression([
-                '"rb10_direct_api" if "', use_direct_hardware_backend,
-                '" == "true" else "joint_command_topics"'
+                '"simulation" if "', cb_simulation,
+                '" == "true" else ("rb10_direct_api" if "',
+                use_direct_hardware_backend,
+                '" == "true" else "joint_command_topics")'
             ]),
             value_type=str,
         ),
@@ -131,14 +205,10 @@ def generate_launch_description():
         "enable_socket_realtime": enable_socket_realtime,
         "socket_realtime_priority": socket_realtime_priority,
         "publish_debug_joint_state_sources": publish_debug_joint_state_sources,
-        "estimate_velocity_in_controller": estimate_velocity_in_controller,
-        "use_synced_input_velocity_filter": use_synced_input_velocity_filter,
-        "synced_input_velocity_filter_type": "alpha-beta",
-        "synced_input_velocity_filter_alpha": synced_input_velocity_filter_alpha,
-        "synced_input_velocity_filter_beta": synced_input_velocity_filter_beta,
-        "synced_input_velocity_ratio_tolerance": synced_input_velocity_ratio_tolerance,
-        "use_velocity_feedback_in_solver": use_velocity_feedback_in_solver,
-        "measured_velocity_feedback_blend": measured_velocity_feedback_blend,
+        "publish_rmp_ee_pose": ParameterValue(
+            publish_rmp_ee_pose,
+            value_type=bool,
+        ),
         "enable_tangent_escape_rmp": ParameterValue(
             enable_tangent_escape_rmp,
             value_type=bool,
@@ -172,12 +242,19 @@ def generate_launch_description():
         executable="rb10_api_bridge.py",
         name="rb10_api_bridge",
         output="screen",
-        condition=IfCondition(PythonExpression(['"', use_direct_hardware_backend, '" != "true"'])),
+        condition=IfCondition(PythonExpression([
+            '"', cb_simulation, '" != "true" and "',
+            use_direct_hardware_backend, '" != "true" and "',
+            hardware_command_enabled, '" == "true"',
+        ])),
         parameters=[
             params_file,
             {
                 "robot_ip": robot_ip,
-                "simulation_mode": cb_simulation,
+                "simulation_mode": ParameterValue(
+                    controller_box_simulation,
+                    value_type=bool,
+                ),
                 "command_mode": command_mode,
                 "command_topic": "/position_controllers/commands",
                 "joint_state_topic": "/joint_states",
@@ -190,6 +267,18 @@ def generate_launch_description():
                 "max_command_step_deg": bridge_max_command_step_deg,
                 "max_command_velocity_deg_s": bridge_max_command_velocity_deg_s,
                 "large_command_jump_warn_deg": bridge_large_command_jump_warn_deg,
+                "publish_only_new_state_packets": ParameterValue(
+                    bridge_publish_only_new_state_packets,
+                    value_type=bool,
+                ),
+                "state_max_raw_velocity_rad_s": ParameterValue(
+                    bridge_state_max_raw_velocity_rad_s,
+                    value_type=float,
+                ),
+                "state_position_step_margin_rad": ParameterValue(
+                    bridge_state_position_step_margin_rad,
+                    value_type=float,
+                ),
                 "stop_on_shutdown": stop_on_shutdown,
                 "shutdown_action": shutdown_action,
             },
@@ -285,7 +374,13 @@ def generate_launch_description():
         output="screen",
         condition=IfCondition(record_data),
         parameters=[{
-            "mode": "real",
+            "mode": ParameterValue(
+                PythonExpression([
+                    '"simulation" if "', cb_simulation,
+                    '" == "true" else "real"'
+                ]),
+                value_type=str,
+            ),
             "auto_start": auto_start_recording,
             "recording_rate": recording_rate,
             "output_directory": recording_output_directory,
@@ -329,7 +424,17 @@ def generate_launch_description():
             "external_goal_topic": "/RMP_goal",
             "controller_goal_topic": "/goal_pose",
             "joint_state_topic": "/joint_states",
-            "command_topic": "/position_controllers/commands",
+            "command_topic": ParameterValue(
+                PythonExpression([
+                    '"/position_controllers/commands" if "', cb_simulation,
+                    '" != "true" and "',
+                    hardware_command_enabled,
+                    '" == "true" else "',
+                    dry_run_command_topic,
+                    '"',
+                ]),
+                value_type=str,
+            ),
             "target_q_topic": "/target_q",
             "target_metric_topic": "/target_metric",
             "debug_state_topic": "/rmp_debug_state",
@@ -380,9 +485,55 @@ def generate_launch_description():
             description="Absolute path to the RViz config file.",
         ),
         DeclareLaunchArgument(
+            "control_rate",
+            default_value="200.0",
+            description="RMP controller loop rate in Hz.",
+        ),
+        DeclareLaunchArgument(
+            "solver_backend",
+            default_value="pinocchio_direct",
+            description=(
+                "Runtime RMP solver: pinocchio_direct (real-time default) or "
+                "casadi_rmp2 (reference/equivalence backend)."
+            ),
+        ),
+        DeclareLaunchArgument("casadi_rmp2_max_obstacles", default_value="24"),
+        DeclareLaunchArgument("casadi_rmp2_jit", default_value="true"),
+        DeclareLaunchArgument(
+            "publish_control_timing_debug",
+            default_value="false",
+            description=(
+                "Publish low-rate cumulative controller/socket timing telemetry."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "control_timing_debug_topic",
+            default_value="/rmp_control_timing",
+            description="Topic for low-rate controller timing telemetry.",
+        ),
+        DeclareLaunchArgument(
+            "control_timing_publish_rate",
+            default_value="10.0",
+            description="Timing telemetry publication rate in Hz.",
+        ),
+        DeclareLaunchArgument(
             "cb_simulation",
             default_value="false",
-            description="Use the RB controller box in simulation mode.",
+            description=(
+                "Use the local in-process simulation backend. This mode never opens "
+                "RB10 hardware sockets or sends hardware commands."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "controller_box_simulation",
+            default_value="false",
+            description=(
+                "Connect to the RB10 Controller Box and request PG_MODE.SIMULATION. "
+                "This still opens the real data/command sockets and sends controller "
+                "initialization, mode, motion, and shutdown commands. Requires "
+                "cb_simulation:=false, use_direct_hardware_backend:=false, and "
+                "hardware_command_enabled:=true."
+            ),
         ),
         DeclareLaunchArgument(
             "use_direct_hardware_backend",
@@ -391,6 +542,19 @@ def generate_launch_description():
                 "Bypass the ROS command bridge and let rmpflow_controller send RB10 API servo "
                 "commands directly while keeping RViz/debug publication alive."
             ),
+        ),
+        DeclareLaunchArgument(
+            "hardware_command_enabled",
+            default_value="true",
+            description=(
+                "Allow RB10 initialization and motion commands. Set false for read-only "
+                "dry-run; the direct backend then opens only the data socket."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "dry_run_command_topic",
+            default_value="/rmp_dry_run_command",
+            description="Safe diagnostics-only topic for commands calculated in dry-run mode.",
         ),
         DeclareLaunchArgument(
             "real_joint_state_source",
@@ -402,10 +566,18 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "publish_debug_joint_state_sources",
-            default_value="true",
+            default_value="false",
             description=(
                 "Publish reference/measured joint-state debug topics and their tracking error "
                 "for vibration-source diagnosis."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "publish_rmp_ee_pose",
+            default_value="false",
+            description=(
+                "Publish the current TCP pose on /rmp_ee_pose for arrival-based "
+                "experiment_goal_runner trajectories."
             ),
         ),
         DeclareLaunchArgument(
@@ -447,39 +619,19 @@ def generate_launch_description():
             description="RB10 state receive/publish rate in Hz before filtering.",
         ),
         DeclareLaunchArgument(
-            "estimate_velocity_in_controller",
-            default_value="false",
-            description="Estimate qd in the 50 Hz controller loop from measured q.",
-        ),
-        DeclareLaunchArgument(
-            "use_synced_input_velocity_filter",
+            "bridge_publish_only_new_state_packets",
             default_value="true",
-            description="Use the direct backend high-rate input velocity filter for solver qd.",
+            description="Publish one JointState per new RB10 Controller Box state packet.",
         ),
         DeclareLaunchArgument(
-            "synced_input_velocity_filter_alpha",
-            default_value="0.35",
-            description="Alpha for the high-rate velocity filter.",
+            "bridge_state_max_raw_velocity_rad_s",
+            default_value="6.0",
+            description="Reject bridge state steps implying a faster joint velocity.",
         ),
         DeclareLaunchArgument(
-            "synced_input_velocity_filter_beta",
-            default_value="0.02",
-            description="Beta for the fixed alpha-beta synchronized high-rate velocity filter.",
-        ),
-        DeclareLaunchArgument(
-            "synced_input_velocity_ratio_tolerance",
-            default_value="0.05",
-            description="Tolerance when matching input/control rates to an integer sync ratio.",
-        ),
-        DeclareLaunchArgument(
-            "use_velocity_feedback_in_solver",
-            default_value="true",
-            description="Pass qd feedback into the RMP solver.",
-        ),
-        DeclareLaunchArgument(
-            "measured_velocity_feedback_blend",
-            default_value="1.0",
-            description="Blend factor for measured/synced qd before the RMP solve.",
+            "bridge_state_position_step_margin_rad",
+            default_value="0.01",
+            description="Additional bridge position-step allowance above the velocity bound.",
         ),
         DeclareLaunchArgument(
             "record_data",
@@ -516,12 +668,12 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "publish_tangent_escape_rmp_data",
-            default_value="true",
+            default_value="false",
             description="Publish tangent escape RMP diagnostics for trace logging.",
         ),
         DeclareLaunchArgument(
             "publish_tangent_escape_dual_solve_data",
-            default_value="true",
+            default_value="false",
             description=(
                 "Publish the same-state Collision-only versus Collision-plus-Escape "
                 "post-limit acceleration comparison."
@@ -529,7 +681,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "publish_tangent_escape_geometry_debug",
-            default_value="true",
+            default_value="false",
             description=(
                 "Publish tangent escape geometry data and selected-direction RViz markers."
             ),
@@ -664,7 +816,7 @@ def generate_launch_description():
             default_value="60",
             description="SCHED_FIFO priority for the direct RB10 socket threads when enabled.",
         ),
-        OpaqueFunction(function=_validate_params_file),
+        OpaqueFunction(function=_validate_launch),
         api_bridge,
         robot_state_publisher,
         rmpflow_controller,

@@ -1,0 +1,335 @@
+#include <algorithm>
+#include <array>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include <gtest/gtest.h>
+
+#include "rb10_rmpflow_rviz/casadi_rmp2_solver.hpp"
+#include "rb10_rmpflow_rviz/pinocchio_direct_solver.hpp"
+
+namespace rb10_rmpflow_rviz
+{
+namespace
+{
+
+using JointVector = RB10Model::JointVector;
+
+std::string test_urdf_path()
+{
+  return RB10_TEST_URDF_PATH;
+}
+
+EigenRmpConfig base_config()
+{
+  EigenRmpConfig config;
+  config.solve_method = "rmp2";
+  config.rmp_type = "canonical";
+  config.solve_offset = 1e-3;
+  config.max_joint_accel = 1e6;
+  config.casadi_rmp2_max_obstacles = 2;
+  config.casadi_rmp2_jit = false;
+  config.tangent_escape.enabled = false;
+  config.enable_tangent_escape_diagnostics = false;
+  config.enable_tangent_escape_dual_solve_diagnostics = false;
+  config.enable_leaf_ablation_diagnostics = false;
+  config.enable_stability_certificate_diagnostics = false;
+  config.escape_energy_certificate.enabled = false;
+  config.default_q = {0.1, -0.25, -1.35, 0.2, -0.65, 0.1};
+  return config;
+}
+
+EigenRmpConfig escape_config(bool enabled)
+{
+  auto config = base_config();
+  config.solve_offset = 1e-4;
+  config.enable_tangent_escape_diagnostics = true;
+  config.graph_nodes = {
+    make_rmp_node_config("tcp_position", "root", "tcp_position", "none", true),
+    make_rmp_node_config("target", "tcp_position", "identity", "target", true, "goal"),
+    make_rmp_node_config("control_points", "root", "control_points", "none", true),
+    make_rmp_node_config(
+      "tangent_escape", "control_points", "identity", "tangent_escape", true, "goal"),
+    make_rmp_node_config("damping", "root", "identity", "damping", true)
+  };
+  config.target.accel_p_gain = 30.0;
+  config.target.accel_d_gain = 10.0;
+  config.target.accel_norm_eps = 0.05;
+  config.target.proximity_metric_boost_scalar = 1.0;
+  config.damping.accel_d_gain = 2.0;
+  config.damping.metric_scalar = 0.001;
+  config.damping.inertia = 0.01;
+  auto & escape = config.tangent_escape;
+  escape.enabled = enabled;
+  escape.acceleration_model = "risk_damped";
+  escape.metric_scalar = 20.0;
+  escape.safe_distance = 0.10;
+  escape.influence_distance = 0.40;
+  escape.goal_block_beta_on = 0.10;
+  escape.goal_block_beta_full = 0.60;
+  escape.nominal_prediction_dt = 0.05;
+  escape.min_activation = 0.0;
+  escape.min_tangent_norm = 1e-8;
+  escape.normal_tolerance = 0.25;
+  escape.control_dt = 0.01;
+  escape.activation_time_constant = 0.01;
+  escape.activation_rise_rate = 100.0;
+  escape.activation_fall_rate = 100.0;
+  escape.intent_on_speed = 1e-10;
+  escape.intent_full_speed = 1e-8;
+  escape.handoff_duration = 0.0;
+  escape.candidate_lookahead = 0.10;
+  escape.refinement_iterations = 2;
+  escape.pair_switch_margin = 1.0;
+  escape.direction_switch_margin = 1.0;
+  escape.sector_risk_scale = 1e6;
+  escape.sector_risk_hard_limit = 1.0;
+  escape.accel_jump_scale = 1e6;
+  escape.candidate_min_displacement = 1e-7;
+  escape.command_test_distance = 10.0;
+  escape.minimum_move_ratio = 0.0;
+  escape.goal_change_reset_distance = 10.0;
+  escape.max_accel = 1.0;
+  escape.max_speed = 0.20;
+  escape.risk_distance_gain = 0.40;
+  escape.risk_distance_scale = 0.08;
+  escape.risk_approach_gain = 0.50;
+  escape.risk_approach_distance_scale = 0.08;
+  escape.risk_approach_epsilon = 0.25;
+  escape.risk_velocity_gate_scale = 0.03;
+  escape.risk_clearance_rate_filter_time_constant = 0.01;
+  escape.risk_tangent_damping_gain = 4.0;
+  return config;
+}
+
+std::unordered_map<std::string, Eigen::Vector3d> targets()
+{
+  return {
+    {"goal", Eigen::Vector3d(0.45, -0.25, 0.75)},
+    {"orientation_goal_x", Eigen::Vector3d::UnitX()},
+    {"orientation_goal_y", Eigen::Vector3d::UnitY()},
+    {"orientation_goal_z", Eigen::Vector3d::UnitZ()}
+  };
+}
+
+ObstacleSphere obstacle_for_control_point(
+  const KinematicsContext & context,
+  std::size_t control_point_index,
+  double clearance)
+{
+  const auto & spec = RB10Model::sensor_control_points.at(control_point_index);
+  const Eigen::Vector3d normal =
+    (context.link_rotations.at(spec.parent_link) * spec.local_normal).normalized();
+  ObstacleSphere obstacle;
+  obstacle.radius = 0.03;
+  obstacle.center = context.control_points.at(control_point_index).position + normal * (
+    context.control_points.at(control_point_index).radius + obstacle.radius + clearance);
+  obstacle.proximity_control_point_index = static_cast<int>(control_point_index);
+  obstacle.source_id = 7;
+  return obstacle;
+}
+
+void expect_equivalent(
+  const RmpSolveResult & pinocchio,
+  const RmpSolveResult & casadi,
+  const std::string & label)
+{
+  const double metric_scale = std::max(pinocchio.metric.norm(), casadi.metric.norm());
+  const double force_scale = std::max(pinocchio.force.norm(), casadi.force.norm());
+  const double qdd_scale = std::max(pinocchio.qdd.norm(), casadi.qdd.norm());
+  const double metric_relative_error =
+    (pinocchio.metric - casadi.metric).norm() / (1.0 + metric_scale);
+  const double force_relative_error =
+    (pinocchio.force - casadi.force).norm() / (1.0 + force_scale);
+  const double qdd_relative_error =
+    (pinocchio.qdd - casadi.qdd).norm() / (1.0 + qdd_scale);
+
+  EXPECT_LT(metric_relative_error, 1e-8) << label;
+  EXPECT_LT(force_relative_error, 1e-8) << label;
+  EXPECT_LT(qdd_relative_error, 1e-7) << label;
+}
+
+void compare_config(
+  const EigenRmpConfig & config,
+  const std::vector<ObstacleSphere> & obstacles)
+{
+  const PinocchioDirectRmpSolver pinocchio(config, test_urdf_path());
+  const CasadiRmp2Solver casadi(config, test_urdf_path());
+  const std::array<JointVector, 3> positions{
+    (JointVector() << 0.2, -0.35, -1.45, 0.25, -0.75, 0.15).finished(),
+    (JointVector() << -0.1, 0.2, -1.15, -0.35, -0.45, -0.2).finished(),
+    (JointVector() << 0.45, -0.15, -1.7, 0.4, -0.9, 0.3).finished()
+  };
+  const std::array<JointVector, 3> velocities{
+    (JointVector() << 0.08, -0.06, 0.04, -0.03, 0.02, -0.01).finished(),
+    (JointVector() << -0.12, 0.09, -0.07, 0.05, -0.03, 0.02).finished(),
+    (JointVector() << 0.02, 0.03, -0.05, 0.07, -0.04, -0.06).finished()
+  };
+
+  for (std::size_t sample = 0; sample < positions.size(); ++sample) {
+    const auto pinocchio_result = pinocchio.solve(
+      positions[sample], velocities[sample], targets(), obstacles);
+    const auto casadi_result = casadi.solve(
+      positions[sample], velocities[sample], targets(), obstacles);
+    expect_equivalent(
+      pinocchio_result, casadi_result, "sample=" + std::to_string(sample));
+  }
+}
+
+TEST(SolverBackendEquivalence, TargetAndCurvature)
+{
+  auto config = base_config();
+  config.graph_nodes = {
+    make_rmp_node_config("tcp_position", "root", "tcp_position", "none", true),
+    make_rmp_node_config("target", "tcp_position", "identity", "target", true, "goal")
+  };
+  compare_config(config, {});
+}
+
+TEST(SolverBackendEquivalence, Collision)
+{
+  auto config = base_config();
+  config.graph_nodes = {
+    make_rmp_node_config("control_points", "root", "control_points", "none", true),
+    make_rmp_node_config(
+      "collision", "control_points", "collision_distance", "collision", true)
+  };
+  const CasadiRmp2Solver geometry_solver(config, test_urdf_path());
+  JointVector q;
+  q << 0.2, -0.35, -1.45, 0.25, -0.75, 0.15;
+  const auto context = geometry_solver.forward_context(q, JointVector::Zero());
+  compare_config(config, {obstacle_for_control_point(context, 2, 0.08)});
+}
+
+TEST(SolverBackendEquivalence, CompleteNonEscapeGraph)
+{
+  auto config = base_config();
+  config.graph_nodes = {
+    make_rmp_node_config("cspace_target", "root", "cspace_target", "cspace_target", true),
+    make_rmp_node_config("joint_limits", "root", "joint_limit", "joint_limit", true),
+    make_rmp_node_config(
+      "joint_velocity_cap", "root", "identity", "joint_velocity_cap", true),
+    make_rmp_node_config("tcp_position", "root", "tcp_position", "none", true),
+    make_rmp_node_config("target", "tcp_position", "identity", "target", true, "goal"),
+    make_rmp_node_config("control_points", "root", "control_points", "none", true),
+    make_rmp_node_config(
+      "collision", "control_points", "collision_distance", "collision", true),
+    make_rmp_node_config("damping", "root", "identity", "damping", true),
+    make_rmp_node_config(
+      "tcp_axis_target_x", "root", "link_orientation_axis", "axis_target", true,
+      "orientation_goal_x", "tcp_rmp", "x"),
+    make_rmp_node_config(
+      "tcp_axis_target_y", "root", "link_orientation_axis", "axis_target", true,
+      "orientation_goal_y", "tcp_rmp", "y"),
+    make_rmp_node_config(
+      "tcp_axis_target_z", "root", "link_orientation_axis", "axis_target", true,
+      "orientation_goal_z", "tcp_rmp", "z")
+  };
+  const CasadiRmp2Solver geometry_solver(config, test_urdf_path());
+  JointVector q;
+  q << 0.2, -0.35, -1.45, 0.25, -0.75, 0.15;
+  const auto context = geometry_solver.forward_context(q, JointVector::Zero());
+  compare_config(config, {obstacle_for_control_point(context, 2, 0.08)});
+}
+
+TEST(SolverBackendEquivalence, StatefulTangentEscape)
+{
+  const auto nominal_config = escape_config(false);
+  const CasadiRmp2Solver nominal_solver(nominal_config, test_urdf_path());
+  const JointVector q = JointVector::Zero();
+  const JointVector qd = JointVector::Zero();
+  const auto context = nominal_solver.forward_context(q, qd);
+
+  const std::array<Eigen::Vector3d, 6> directions{
+    Eigen::Vector3d::UnitX(), -Eigen::Vector3d::UnitX(),
+    Eigen::Vector3d::UnitY(), -Eigen::Vector3d::UnitY(),
+    Eigen::Vector3d::UnitZ(), -Eigen::Vector3d::UnitZ()};
+  double best_score = 0.0;
+  std::size_t best_point = 0;
+  Eigen::Vector3d best_motion = Eigen::Vector3d::Zero();
+  Eigen::Vector3d best_goal = context.tcp_position;
+  for (const auto & direction : directions) {
+    const Eigen::Vector3d goal = context.tcp_position + 0.25 * direction;
+    const auto nominal = nominal_solver.solve(q, qd, {{"goal", goal}}, {});
+    for (std::size_t point = 0; point < context.control_points.size(); ++point) {
+      const Eigen::Vector3d motion = context.control_point_jacobians[point] *
+        (qd + nominal_config.tangent_escape.nominal_prediction_dt * nominal.qdd);
+      if (motion.norm() <= 1e-10) {
+        continue;
+      }
+      const Eigen::Vector3d approach = motion.normalized();
+      const double score = motion.norm() *
+        ((Eigen::Matrix3d::Identity() - approach * approach.transpose()) *
+        context.control_point_jacobians[point]).norm();
+      if (score > best_score) {
+        best_score = score;
+        best_point = point;
+        best_motion = motion;
+        best_goal = goal;
+      }
+    }
+  }
+  ASSERT_GT(best_score, 1e-8);
+
+  const auto & point = context.control_points[best_point];
+  constexpr double obstacle_radius = 0.04;
+  constexpr double clearance = 0.02;
+  const ObstacleSphere obstacle{
+    point.position +
+    (point.radius + obstacle_radius + clearance) * best_motion.normalized(),
+    obstacle_radius,
+    static_cast<int>(best_point),
+    101};
+  const std::unordered_map<std::string, Eigen::Vector3d> goal{{"goal", best_goal}};
+
+  const auto config = escape_config(true);
+  PinocchioDirectRmpSolver pinocchio(config, test_urdf_path());
+  CasadiRmp2Solver casadi(config, test_urdf_path());
+  bool escape_activated = false;
+  for (int cycle = 0; cycle < 8; ++cycle) {
+    const auto pinocchio_result = pinocchio.solve(q, qd, goal, {obstacle});
+    const auto casadi_result = casadi.solve(q, qd, goal, {obstacle});
+    expect_equivalent(
+      pinocchio_result, casadi_result, "escape cycle=" + std::to_string(cycle));
+    if (
+      !pinocchio_result.tangent_escape_rmp_data.empty() &&
+      pinocchio_result.tangent_escape_rmp_data[0] > 0.5)
+    {
+      escape_activated = true;
+    }
+  }
+  EXPECT_TRUE(escape_activated);
+}
+
+TEST(SolverBackendEquivalence, PinocchioDiagnosticsAreOptIn)
+{
+  auto config = base_config();
+  config.graph_nodes = {
+    make_rmp_node_config("tcp_position", "root", "tcp_position", "none", true),
+    make_rmp_node_config("target", "tcp_position", "identity", "target", true, "goal"),
+    make_rmp_node_config("damping", "root", "identity", "damping", true)
+  };
+  JointVector q;
+  q << 0.2, -0.35, -1.45, 0.25, -0.75, 0.15;
+  const JointVector qd = JointVector::Zero();
+
+  const PinocchioDirectRmpSolver lean_solver(config, test_urdf_path());
+  const auto lean = lean_solver.solve(q, qd, targets(), {});
+  EXPECT_TRUE(lean.tangent_escape_dual_solve_data.empty());
+  EXPECT_TRUE(lean.leaf_ablation_data.empty());
+  EXPECT_TRUE(lean.stability_certificate_data.empty());
+
+  config.enable_tangent_escape_dual_solve_diagnostics = true;
+  config.enable_leaf_ablation_diagnostics = true;
+  config.enable_stability_certificate_diagnostics = true;
+  const PinocchioDirectRmpSolver diagnostic_solver(config, test_urdf_path());
+  (void)diagnostic_solver.solve(q, qd, targets(), {});
+  const auto diagnostic = diagnostic_solver.solve(q, qd, targets(), {});
+  EXPECT_EQ(diagnostic.tangent_escape_dual_solve_data.size(), 43U);
+  EXPECT_GE(diagnostic.leaf_ablation_data.size(), 25U);
+  EXPECT_EQ(diagnostic.stability_certificate_data.size(), 35U);
+}
+
+}  // namespace
+}  // namespace rb10_rmpflow_rviz

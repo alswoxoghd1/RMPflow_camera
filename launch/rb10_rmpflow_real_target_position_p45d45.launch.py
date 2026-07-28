@@ -32,6 +32,7 @@ def generate_launch_description():
 
     robot_ip = LaunchConfiguration("robot_ip")
     use_rviz = LaunchConfiguration("use_rviz")
+    solver_backend = LaunchConfiguration("solver_backend")
     cb_simulation = LaunchConfiguration("cb_simulation")
     use_direct_hardware_backend = LaunchConfiguration("use_direct_hardware_backend")
     real_joint_state_source = LaunchConfiguration("real_joint_state_source")
@@ -72,7 +73,15 @@ def generate_launch_description():
     params_file = LaunchConfiguration("params_file")
     controller_parameters = {
         "robot_ip": robot_ip,
-        "simulation_mode": cb_simulation,
+        "solver_backend": solver_backend,
+        # Keep local simulation isolated from the physical RB controller box.
+        "simulation_mode": False,
+        "hardware_command_enabled": ParameterValue(
+            PythonExpression([
+                'False if "', cb_simulation, '" == "true" else True'
+            ]),
+            value_type=bool,
+        ),
         "real_joint_state_source": real_joint_state_source,
         "hardware_data_request_rate": bridge_publish_rate,
         "joint_state_topic": "/joint_states",
@@ -81,14 +90,17 @@ def generate_launch_description():
         "target_q_topic": "/target_q",
         "publish_joint_states": ParameterValue(
             PythonExpression([
-                'True if "', use_direct_hardware_backend, '" == "true" else False'
+                'True if "', cb_simulation, '" == "true" or "',
+                use_direct_hardware_backend, '" == "true" else False'
             ]),
             value_type=bool,
         ),
         "backend_mode": ParameterValue(
             PythonExpression([
-                '"rb10_direct_api" if "', use_direct_hardware_backend,
-                '" == "true" else "joint_command_topics"'
+                '"simulation" if "', cb_simulation,
+                '" == "true" else ("rb10_direct_api" if "',
+                use_direct_hardware_backend,
+                '" == "true" else "joint_command_topics")'
             ]),
             value_type=str,
         ),
@@ -117,10 +129,13 @@ def generate_launch_description():
         executable="rb10_api_bridge.py",
         name="rb10_api_bridge",
         output="screen",
-        condition=IfCondition(PythonExpression(['"', use_direct_hardware_backend, '" != "true"'])),
+        condition=IfCondition(PythonExpression([
+            '"', cb_simulation, '" != "true" and "',
+            use_direct_hardware_backend, '" != "true"'
+        ])),
         parameters=[{
             "robot_ip": robot_ip,
-            "simulation_mode": cb_simulation,
+            "simulation_mode": False,
             "command_topic": "/position_controllers/commands",
             "joint_state_topic": "/joint_states",
             "real_joint_state_source": real_joint_state_source,
@@ -277,9 +292,20 @@ def generate_launch_description():
             description="Start RViz.",
         ),
         DeclareLaunchArgument(
+            "solver_backend",
+            default_value="pinocchio_direct",
+            description=(
+                "Runtime RMP solver: pinocchio_direct (real-time default) or "
+                "casadi_rmp2 (reference/equivalence backend)."
+            ),
+        ),
+        DeclareLaunchArgument(
             "cb_simulation",
             default_value="false",
-            description="Use the RB controller box in simulation mode.",
+            description=(
+                "Use the local in-process simulation backend. This mode never opens "
+                "RB10 hardware sockets or sends hardware commands."
+            ),
         ),
         DeclareLaunchArgument(
             "use_direct_hardware_backend",

@@ -60,6 +60,13 @@ struct KinematicsContext
   std::vector<Eigen::Vector3d> control_point_curvatures;
 };
 
+enum class ControlPointJacobianMode
+{
+  kNone,
+  kAnalytic,
+  kNumerical
+};
+
 class RB10Model
 {
 public:
@@ -227,7 +234,37 @@ public:
     return link_frame_from_q(q, sensor.parent_link) * sensor.offset;
   }
 
-  static KinematicsContext forward_context(const JointVector & q)
+  static int active_joint_count_for_link(std::size_t link_index)
+  {
+    switch (link_index) {
+      case BASE_LINK:
+      case LINK0:
+        return 0;
+      case LINK1:
+        return 1;
+      case LINK2:
+        return 2;
+      case LINK3:
+      case LINK3_5:
+        return 3;
+      case LINK4:
+        return 4;
+      case LINK5:
+        return 5;
+      case LINK6:
+      case TCP:
+      case TCP_RMP:
+      case TCP_GRIPPER:
+        return 6;
+      default:
+        throw std::runtime_error("Unsupported link index for point Jacobian");
+    }
+  }
+
+  static KinematicsContext forward_context(
+    const JointVector & q,
+    ControlPointJacobianMode control_point_jacobian_mode =
+    ControlPointJacobianMode::kNumerical)
   {
     KinematicsContext context;
     Eigen::Affine3d transform = Eigen::Affine3d::Identity();
@@ -318,16 +355,26 @@ public:
     context.link_rotations[TCP_GRIPPER] = tcp_gripper_transform.linear();
 
     context.control_points.reserve(sensor_control_points.size());
-    context.control_point_jacobians.reserve(sensor_control_points.size());
+    if (control_point_jacobian_mode != ControlPointJacobianMode::kNone) {
+      context.control_point_jacobians.reserve(sensor_control_points.size());
+    }
     for (const auto & sensor : sensor_control_points) {
       const Eigen::Vector3d position =
         context.link_positions[sensor.parent_link] +
         context.link_rotations[sensor.parent_link] * sensor.offset;
       context.control_points.push_back(ControlPoint{position, sensor.radius});
-      context.control_point_jacobians.push_back(
-        numerical_jacobian(q, [&sensor](const JointVector & sample_q) {
-          return sensor_position_from_q(sample_q, sensor);
-        }));
+      if (control_point_jacobian_mode == ControlPointJacobianMode::kAnalytic) {
+        context.control_point_jacobians.push_back(point_jacobian(
+            position,
+            context.joint_origins,
+            context.joint_axes,
+            active_joint_count_for_link(sensor.parent_link)));
+      } else if (control_point_jacobian_mode == ControlPointJacobianMode::kNumerical) {
+        context.control_point_jacobians.push_back(
+          numerical_jacobian(q, [&sensor](const JointVector & sample_q) {
+            return sensor_position_from_q(sample_q, sensor);
+          }));
+      }
     }
 
     return context;
