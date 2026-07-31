@@ -220,6 +220,11 @@ rmpflow_controller:
     tangent_escape_rmp_drive_ramp_duration: 0.25
     tangent_escape_rmp_handoff_duration: 0.25
     tangent_escape_rmp_minimum_drive_duration: 2.0
+    # Bound one continuously active Escape episode. The timeout uses the same
+    # smooth lambda-down handoff as other releases; normal observed episodes
+    # currently finish within 5.44 s, so 12 s is a failsafe-only threshold.
+    tangent_escape_rmp_maximum_active_duration: 12.0
+    tangent_escape_rmp_timeout_reentry_cooldown: 1.0
     tangent_escape_rmp_release_blockage_threshold: 0.03
     tangent_escape_rmp_pair_switch_margin: 0.10
     tangent_escape_rmp_direction_switch_margin: 0.08

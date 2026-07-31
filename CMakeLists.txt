@@ -22,6 +22,7 @@ find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(visualization_msgs REQUIRED)
+find_package(yaml-cpp REQUIRED)
 
 set(CASADI_ROOT "/home/song/ros2_ws/third_party/casadi/install")
 set(CASADI_INCLUDE_DIR "${CASADI_ROOT}/include")
@@ -52,7 +53,9 @@ add_library(rb10_rmp_core
   src/paper_gds_collision.cpp
   src/paper_gds_joint_limit.cpp
   src/escape_energy_certificate.cpp
+  src/production_command_map.cpp
   src/rmp_stability_profile.cpp
+  src/tangent_escape_natural_form.cpp
 )
 target_include_directories(rb10_rmp_core PUBLIC include)
 target_link_libraries(rb10_rmp_core Eigen3::Eigen)
@@ -132,6 +135,7 @@ target_link_libraries(
   rb10_casadi_graph
   rb10_pinocchio_rmp
   Threads::Threads
+  yaml-cpp
   ${CASADI_LIBRARY}
 )
 ament_target_dependencies(
@@ -337,7 +341,9 @@ install(
     scripts/stability_certificate_visualizer.py
     scripts/plot_rmpflow_proof_run.py
     scripts/plot_escape_stability_evidence.py
-	    scripts/plot_velocity_filter_comparison.py
+    scripts/plot_production_stability_report.py
+    scripts/build_tangent_escape_design_dossier.py
+		    scripts/plot_velocity_filter_comparison.py
     scripts/plot_velocity_dataset_comparison.py
     scripts/record_rmp_control_rate.py
   DESTINATION lib/${PROJECT_NAME}
@@ -396,6 +402,28 @@ if(BUILD_TESTING)
   target_include_directories(test_escape_energy_certificate PRIVATE include)
   target_link_libraries(
     test_escape_energy_certificate
+    Eigen3::Eigen
+    rb10_rmp_core
+  )
+
+  ament_add_gtest(
+    test_production_command_map
+    test/test_production_command_map.cpp
+  )
+  target_include_directories(test_production_command_map PRIVATE include)
+  target_link_libraries(
+    test_production_command_map
+    Eigen3::Eigen
+    rb10_rmp_core
+  )
+
+  ament_add_gtest(
+    test_tangent_escape_natural_form
+    test/test_tangent_escape_natural_form.cpp
+  )
+  target_include_directories(test_tangent_escape_natural_form PRIVATE include)
+  target_link_libraries(
+    test_tangent_escape_natural_form
     Eigen3::Eigen
     rb10_rmp_core
   )

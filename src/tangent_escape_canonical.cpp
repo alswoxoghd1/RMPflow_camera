@@ -1215,6 +1215,7 @@ void TangentEscapeSupervisor::evaluate_impl(
       state.command_distance = 0.0;
       state.actual_distance = 0.0;
       state.active_age_s = 0.0;
+      state.episode_age_s = 0.0;
       state.z = 0.0;
       state.phase = CanonicalPhase::Off;
       state.phase_elapsed_s = 0.0;
@@ -1295,14 +1296,19 @@ void TangentEscapeSupervisor::evaluate_impl(
       return true;
     };
 
+  const double off_reentry_cooldown =
+    state.handoff_reason == 7 ?
+    std::max(params.timeout_reentry_cooldown, 0.0) :
+    std::max(params.minimum_drive_duration, 0.0);
+  const bool off_reentry_allowed =
+    (state.handoff_reason != 6 && state.handoff_reason != 7) ||
+    state.phase_elapsed_s >= off_reentry_cooldown;
   if (
     state.phase == CanonicalPhase::Off &&
     !state.active_pair_valid &&
     best_pair != nullptr &&
     best_pair->blockage >= minimum_pair_activation &&
-    (
-      state.handoff_reason != 6 ||
-      state.phase_elapsed_s >= std::max(params.minimum_drive_duration, 0.0)))
+    off_reentry_allowed)
   {
     if (!activate_pair(*best_pair, false)) {
       clear_active_episode();
@@ -1353,6 +1359,7 @@ void TangentEscapeSupervisor::evaluate_impl(
     // The risk-damped leaf has no RELEASE authority.  Invalid geometry or
     // B=0 removes its metric and force in this same solve.  If another valid
     // pair already exists, start a fresh zero-effect engage episode for it.
+    const double continuing_episode_age = state.episode_age_s;
     clear_active_episode();
     current_pair = nullptr;
     active_trial.reset();
@@ -1364,6 +1371,9 @@ void TangentEscapeSupervisor::evaluate_impl(
       // Keep the newly selected axis at zero effect for this solve, then let
       // Engage ramp lambda from 0 to 1 on subsequent solves.
       zero_effect_pair_replacement = activate_pair(*best_pair, false);
+      if (zero_effect_pair_replacement) {
+        state.episode_age_s = continuing_episode_age;
+      }
       current_pair = state.active_pair_valid ?
         find_pair(state.control_point_index, state.obstacle_key) :
         nullptr;
@@ -1378,6 +1388,9 @@ void TangentEscapeSupervisor::evaluate_impl(
     }
   }
   if (state.active_pair_valid && in_engage_or_drive) {
+    const bool episode_timed_out =
+      params.maximum_active_duration > 0.0 &&
+      state.episode_age_s >= params.maximum_active_duration;
     const bool tangent_invalid =
       current_pair != nullptr &&
       std::abs(state.tangent.dot(current_pair->obstacle_direction)) >
@@ -1398,7 +1411,16 @@ void TangentEscapeSupervisor::evaluate_impl(
       best_pair->blockage >
       current_pair->blockage + std::max(params.pair_switch_margin, 0.0);
 
-    if (goal_changed || tangent_invalid || critical_sector || switch_pair) {
+    if (episode_timed_out) {
+      state.pending_pair_valid = false;
+      state.force_direction_change = false;
+      state.pending_failure_memory = false;
+      state.handoff_reason = 7;
+      start_phase(
+        risk_damped_mode ?
+        CanonicalPhase::ReleaseLambdaDown :
+        CanonicalPhase::ReleaseDriveDown);
+    } else if (goal_changed || tangent_invalid || critical_sector || switch_pair) {
       const SensorPairEvaluation * requested_pair = switch_pair ? best_pair : current_pair;
       if (requested_pair != nullptr) {
         state.pending_pair_valid = true;
@@ -1699,6 +1721,7 @@ void TangentEscapeSupervisor::evaluate_impl(
 
   if (state.active_pair_valid) {
     state.active_age_s += dt;
+    state.episode_age_s += dt;
   }
 
   active_trial.reset();

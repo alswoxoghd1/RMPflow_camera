@@ -168,6 +168,9 @@ struct TangentEscapeRmpParams
   double drive_ramp_duration{0.15};
   double handoff_duration{0.15};
   double minimum_drive_duration{0.2};
+  // Zero disables the hard episode timeout for explicit rollback profiles.
+  double maximum_active_duration{0.0};
+  double timeout_reentry_cooldown{1.0};
   double release_blockage_threshold{0.03};
   double pair_switch_margin{0.10};
   double direction_switch_margin{0.08};

@@ -1316,6 +1316,66 @@ void run_risk_damped_test(const std::string & urdf_path)
     new_episode_ramped_in,
     "risk-damped new obstacle pair did not ramp in after zero-effect handoff");
 
+  EigenRmpConfig timeout_config = risk_config;
+  timeout_config.tangent_escape.maximum_active_duration = 0.05;
+  timeout_config.tangent_escape.timeout_reentry_cooldown = 0.05;
+  timeout_config.tangent_escape.handoff_duration = 0.02;
+  timeout_config.tangent_escape.command_test_distance = 10.0;
+  timeout_config.tangent_escape.pair_switch_margin = 1.0;
+  CasadiRmp2Solver timeout_solver(timeout_config, urdf_path);
+  ObstacleSphere persistent_obstacle = obstacle_at_clearance(0.01);
+  persistent_obstacle.source_id = 901;
+
+  bool saw_timeout_reason = false;
+  bool saw_smooth_timeout_lambda_down = false;
+  bool saw_timeout_off = false;
+  bool reactivated_after_timeout = false;
+  int timeout_off_cycles = 0;
+  for (int cycle = 0; cycle < 40; ++cycle) {
+    const auto result =
+      timeout_solver.solve(q, qd, targets, {persistent_obstacle});
+    require(
+      finite_result(result),
+      "risk-damped hard-timeout solve is not finite");
+    const auto & debug = result.tangent_escape_rmp_data;
+    require(
+      debug.size() >= kRequiredRiskDebugSize,
+      "risk-damped hard-timeout diagnostics are missing");
+    const bool active = debug[kDebugActive] > 0.5;
+    const bool timeout_reason =
+      approximately_integer(debug[kDebugHandoffReason], 7);
+    if (active && timeout_reason) {
+      saw_timeout_reason = true;
+      saw_smooth_timeout_lambda_down =
+        saw_smooth_timeout_lambda_down ||
+        (
+          approximately_integer(debug[kDebugHandoffPhase], 5) &&
+          debug[kDebugLambda] > 1e-8 &&
+          debug[kDebugLambda] < 1.0 - 1e-8);
+    } else if (saw_timeout_reason && !active) {
+      saw_timeout_off = true;
+      ++timeout_off_cycles;
+    } else if (saw_timeout_off && active) {
+      reactivated_after_timeout = true;
+      break;
+    }
+  }
+  require(
+    saw_timeout_reason,
+    "persistent obstacle did not trigger hard Escape timeout reason 7");
+  require(
+    saw_smooth_timeout_lambda_down,
+    "hard Escape timeout did not use smooth lambda-down");
+  require(
+    saw_timeout_off,
+    "hard Escape timeout did not terminate the active episode");
+  require(
+    timeout_off_cycles >= 4,
+    "hard Escape timeout did not enforce the configured OFF cooldown");
+  require(
+    reactivated_after_timeout,
+    "persistent blockage did not reactivate after the timeout cooldown");
+
   std::cout
     << "risk-damped tangent Escape integration test passed"
     << " (cp=" << nominal.control_point_index

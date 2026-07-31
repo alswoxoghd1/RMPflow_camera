@@ -9,11 +9,17 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstdlib>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
 #include <functional>
+#include <iomanip>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -22,6 +28,7 @@
 #include <vector>
 
 #include <Eigen/Dense>
+#include <yaml-cpp/yaml.h>
 
 #include "ament_index_cpp/get_package_share_directory.hpp"
 #include "geometry_msgs/msg/point.hpp"
@@ -44,8 +51,10 @@
 #include "rb10_rmpflow_rviz/casadi_rmp2_solver.hpp"
 #include "rb10_rmpflow_rviz/joint_acceleration_limiter.hpp"
 #include "rb10_rmpflow_rviz/pinocchio_direct_solver.hpp"
+#include "rb10_rmpflow_rviz/production_command_map.hpp"
 #include "rb10_rmpflow_rviz/rb10_model.hpp"
 #include "rb10_rmpflow_rviz/rmp_solver_interface.hpp"
+#include "rb10_rmpflow_rviz/tangent_escape_natural_form.hpp"
 
 namespace rb10_rmpflow_rviz
 {
@@ -77,6 +86,57 @@ double degrees_to_radians(double degrees)
 double radians_to_degrees(double radians)
 {
   return radians * 180.0 / kPi;
+}
+
+std::filesystem::path expand_home_path(const std::string & value)
+{
+  if (value.empty() || value.front() != '~') {
+    return std::filesystem::path(value);
+  }
+  const char * home = std::getenv("HOME");
+  if (home == nullptr || std::string(home).empty()) {
+    throw std::runtime_error("HOME is not set; cannot expand output path: " + value);
+  }
+  if (value.size() == 1) {
+    return std::filesystem::path(home);
+  }
+  if (value[1] != '/') {
+    throw std::runtime_error("Only ~/... paths are supported: " + value);
+  }
+  return std::filesystem::path(home) / value.substr(2);
+}
+
+std::string file_timestamp()
+{
+  const std::time_t now = std::time(nullptr);
+  std::tm local_time{};
+  localtime_r(&now, &local_time);
+  std::ostringstream stream;
+  stream << std::put_time(&local_time, "%Y%m%d_%H%M%S");
+  return stream.str();
+}
+
+YAML::Node yaml_joint_vector(const JointVector & vector)
+{
+  YAML::Node node(YAML::NodeType::Sequence);
+  for (Eigen::Index index = 0; index < vector.size(); ++index) {
+    node.push_back(vector[index]);
+  }
+  return node;
+}
+
+template<typename MatrixType>
+YAML::Node yaml_matrix(const MatrixType & matrix)
+{
+  YAML::Node node(YAML::NodeType::Sequence);
+  for (Eigen::Index row = 0; row < matrix.rows(); ++row) {
+    YAML::Node output_row(YAML::NodeType::Sequence);
+    for (Eigen::Index column = 0; column < matrix.cols(); ++column) {
+      output_row.push_back(matrix(row, column));
+    }
+    node.push_back(output_row);
+  }
+  return node;
 }
 
 struct RobotState
@@ -1962,6 +2022,8 @@ public:
     declare_parameter("tangent_escape_rmp_drive_ramp_duration", 0.15);
     declare_parameter("tangent_escape_rmp_handoff_duration", 0.15);
     declare_parameter("tangent_escape_rmp_minimum_drive_duration", 0.2);
+    declare_parameter("tangent_escape_rmp_maximum_active_duration", 0.0);
+    declare_parameter("tangent_escape_rmp_timeout_reentry_cooldown", 1.0);
     declare_parameter("tangent_escape_rmp_release_blockage_threshold", 0.03);
     declare_parameter("tangent_escape_rmp_pair_switch_margin", 0.10);
     declare_parameter("tangent_escape_rmp_direction_switch_margin", 0.08);
@@ -2125,6 +2187,23 @@ public:
     declare_parameter(
       "stability_certificate_data_topic",
       "/rmp_stability_certificate");
+    declare_parameter("run_production_stability_analysis", false);
+    declare_parameter("shutdown_after_production_stability_analysis", false);
+    declare_parameter("production_stability_wait_for_external_goal", false);
+    declare_parameter(
+      "production_stability_output_directory",
+      "~/ros2_ws/log/rmpflow_production_stability");
+    declare_parameter("production_stability_equilibrium_max_iterations", 80);
+    declare_parameter("production_stability_equilibrium_tolerance", 1e-7);
+    declare_parameter("production_stability_settle_max_steps", 20000);
+    declare_parameter("production_stability_settle_velocity_tolerance", 1e-6);
+    declare_parameter("production_stability_settle_acceleration_tolerance", 1e-5);
+    declare_parameter("production_stability_position_difference_step", 1e-5);
+    declare_parameter("production_stability_velocity_difference_step", 1e-5);
+    declare_parameter("production_stability_random_directions_per_radius", 64);
+    declare_parameter(
+      "production_stability_sample_radii",
+      std::vector<double>{1e-5, 3e-5, 1e-4, 3e-4, 1e-3, 3e-3, 1e-2});
     declare_parameter("damping_rmp_accel_d_gain", 120.0);
     declare_parameter("damping_rmp_metric_scalar", 0.0);
     declare_parameter("damping_rmp_inertia", 300.0);
@@ -2238,6 +2317,9 @@ public:
     configure_external_rmp_inputs(solver_config.graph_nodes);
     solver_ = build_solver(solver_config);
     body_obstacles_visual_ = solver_config.body_obstacles;
+    tangent_escape_rmp_enabled_ = solver_config.tangent_escape.enabled;
+    production_stability_analysis_enabled_ =
+      get_parameter("run_production_stability_analysis").as_bool();
 
     publish_joint_states_enabled_ = get_parameter("publish_joint_states").as_bool();
     publish_visualization_enabled_ = get_parameter("publish_visualization").as_bool();
@@ -2946,6 +3028,10 @@ private:
       get_parameter("tangent_escape_rmp_handoff_duration").as_double();
     config.tangent_escape.minimum_drive_duration =
       get_parameter("tangent_escape_rmp_minimum_drive_duration").as_double();
+    config.tangent_escape.maximum_active_duration =
+      get_parameter("tangent_escape_rmp_maximum_active_duration").as_double();
+    config.tangent_escape.timeout_reentry_cooldown =
+      get_parameter("tangent_escape_rmp_timeout_reentry_cooldown").as_double();
     config.tangent_escape.release_blockage_threshold =
       get_parameter("tangent_escape_rmp_release_blockage_threshold").as_double();
     config.tangent_escape.pair_switch_margin =
@@ -4542,6 +4628,907 @@ private:
     return clamped;
   }
 
+  ProductionCommandMapConfig production_command_map_config(double dt) const
+  {
+    ProductionCommandMapConfig config;
+    config.dt = dt;
+    config.max_joint_accel = max_joint_accel_;
+    config.preserve_joint_accel_direction = preserve_joint_accel_direction_;
+    config.command_mode =
+      command_mode_ == CommandMode::kVelocity ?
+      ProductionCommandMode::kVelocity :
+      ProductionCommandMode::kPosition;
+    config.command_guard_max_step_rad = command_guard_max_step_rad_;
+    config.command_guard_max_velocity_rad_s = command_guard_max_velocity_rad_s_;
+    config.command_guard_velocity_slew_enabled =
+      command_guard_velocity_slew_enabled_;
+    config.command_guard_max_accel_rad_s2 = command_guard_max_accel_rad_s2_;
+    config.predictive_joint_limit_guard = predictive_joint_limit_guard_;
+    config.joint_lower_limits = joint_lower_limits_;
+    config.joint_upper_limits = joint_upper_limits_;
+    config.joint_limit_buffers = joint_limit_buffers_;
+    return config;
+  }
+
+  void run_production_stability_analysis_once(
+    const RobotState & seed_state,
+    const GoalTarget & goal_target)
+  {
+    if (
+      !production_stability_analysis_enabled_ ||
+      production_stability_analysis_completed_)
+    {
+      return;
+    }
+    if (
+      get_parameter("production_stability_wait_for_external_goal").as_bool() &&
+      !external_goal_received_.load())
+    {
+      return;
+    }
+    production_stability_analysis_completed_ = true;
+
+    if (get_parameter("backend_mode").as_string() != "simulation") {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Production stability analysis is restricted to the socket-free simulation backend");
+      return;
+    }
+
+    const double dt = 1.0 / std::max(control_rate_hz_, 1e-9);
+    const ProductionCommandMapConfig command_config =
+      production_command_map_config(dt);
+    std::unordered_map<std::string, Eigen::Vector3d> vector_targets;
+    vector_targets.emplace("goal", goal_target.position);
+    vector_targets.emplace("body_goal", body_goal_);
+    const Eigen::Matrix3d goal_rotation =
+      goal_target.orientation.normalized().toRotationMatrix();
+    vector_targets.emplace("orientation_goal_x", goal_rotation.col(0));
+    vector_targets.emplace("orientation_goal_y", goal_rotation.col(1));
+    vector_targets.emplace("orientation_goal_z", goal_rotation.col(2));
+
+    // NORMAL-mode certification uses a fixed obstacle-free environment. The
+    // Escape leaf remains present in the configured graph, but its metric and
+    // force are exactly zero because there is no active proximity pair.
+    const std::vector<ObstacleSphere> normal_mode_obstacles;
+    const std::unordered_map<std::string, ExternalRmpFeature> no_external_rmps;
+
+    const auto raw_acceleration =
+      [this, &vector_targets, &normal_mode_obstacles, &no_external_rmps](
+      const ProductionJointState & state)
+      {
+        RmpBatchInput input;
+        input.q = state.q;
+        input.qd = state.qd;
+        input.vector_targets = vector_targets;
+        input.obstacles = normal_mode_obstacles;
+        input.external_rmps = no_external_rmps;
+        const auto results = solver_->solve_batch({input});
+        if (results.size() != 1U) {
+          throw std::runtime_error(
+                  "Production stability analysis expected one batch result");
+        }
+        return results.front().qdd;
+      };
+
+    const auto static_acceleration =
+      [&raw_acceleration](const ProductionJointVector & q)
+      {
+        ProductionJointState state;
+        state.q = q;
+        state.qd.setZero();
+        // Search the smooth root equation before the production saturation.
+        // A valid equilibrium has qdd=0, so the limiter is inactive there;
+        // including it here can flatten the Newton Jacobian when the seed is
+        // far from the goal. The certificate below still linearizes the exact
+        // limited and guarded production one-cycle map.
+        return raw_acceleration(state);
+      };
+
+    EquilibriumSearchOptions equilibrium_options;
+    equilibrium_options.maximum_iterations = static_cast<int>(
+      get_parameter("production_stability_equilibrium_max_iterations").as_int());
+    equilibrium_options.acceleration_tolerance =
+      get_parameter("production_stability_equilibrium_tolerance").as_double();
+    const double position_difference_step =
+      get_parameter("production_stability_position_difference_step").as_double();
+    const double velocity_difference_step =
+      get_parameter("production_stability_velocity_difference_step").as_double();
+    equilibrium_options.finite_difference_step = position_difference_step;
+
+    RCLCPP_WARN(
+      get_logger(),
+      "Running one-shot production-map stability analysis in local simulation; "
+      "the control loop will pause while finite-difference solves are evaluated");
+
+    ProductionJointState settled_seed;
+    settled_seed.q = seed_state.q;
+    settled_seed.qd.setZero();
+    const int settle_max_steps = std::max(
+      static_cast<int>(
+        get_parameter("production_stability_settle_max_steps").as_int()),
+      0);
+    const double settle_velocity_tolerance = std::max(
+      get_parameter(
+        "production_stability_settle_velocity_tolerance").as_double(),
+      0.0);
+    const double settle_acceleration_tolerance = std::max(
+      get_parameter(
+        "production_stability_settle_acceleration_tolerance").as_double(),
+      0.0);
+    int settle_steps = 0;
+    bool settle_converged = false;
+    std::size_t settle_nonsmooth_steps = 0U;
+    double settle_final_raw_acceleration_norm =
+      std::numeric_limits<double>::infinity();
+    for (int step_index = 0; step_index < settle_max_steps; ++step_index) {
+      ProductionCommandMemory memory;
+      memory.previous_velocity_command = settled_seed.qd;
+      memory.previous_velocity_command_initialized = true;
+      const ProductionJointVector raw_qdd = raw_acceleration(settled_seed);
+      const ProductionCommandStep step = production_command_step(
+        settled_seed,
+        raw_qdd,
+        command_config,
+        memory);
+      ++settle_steps;
+      if (step.diagnostics.any_nonsmooth_branch_active()) {
+        ++settle_nonsmooth_steps;
+      }
+      settled_seed = step.state;
+      settle_final_raw_acceleration_norm = raw_acceleration(settled_seed).norm();
+      if (
+        settle_steps >= 100 &&
+        settled_seed.qd.norm() <= settle_velocity_tolerance &&
+        settle_final_raw_acceleration_norm <= settle_acceleration_tolerance)
+      {
+        settle_converged = true;
+        break;
+      }
+    }
+
+    const EquilibriumSearchResult equilibrium = find_production_equilibrium(
+      static_acceleration,
+      settled_seed.q,
+      joint_lower_limits_,
+      joint_upper_limits_,
+      equilibrium_options);
+
+    ProductionJointState equilibrium_state;
+    equilibrium_state.q = equilibrium.q;
+    equilibrium_state.qd.setZero();
+    RmpBatchInput equilibrium_input;
+    equilibrium_input.q = equilibrium_state.q;
+    equilibrium_input.qd = equilibrium_state.qd;
+    equilibrium_input.vector_targets = vector_targets;
+    equilibrium_input.obstacles = normal_mode_obstacles;
+    equilibrium_input.external_rmps = no_external_rmps;
+    const auto equilibrium_solve_results =
+      solver_->solve_batch({equilibrium_input});
+    if (equilibrium_solve_results.size() != 1U) {
+      throw std::runtime_error(
+              "Production stability analysis could not evaluate equilibrium root form");
+    }
+    const auto & equilibrium_solve = equilibrium_solve_results.front();
+    const auto symmetric_root_metric =
+      0.5 * (equilibrium_solve.metric + equilibrium_solve.metric.transpose());
+    Eigen::SelfAdjointEigenSolver<Eigen::Matrix<double, 6, 6>>
+    root_metric_eigen_solver(symmetric_root_metric);
+    const double root_metric_min_eigenvalue =
+      root_metric_eigen_solver.info() == Eigen::Success ?
+      root_metric_eigen_solver.eigenvalues().minCoeff() :
+      -std::numeric_limits<double>::infinity();
+    const double root_metric_symmetry_residual =
+      (equilibrium_solve.metric - equilibrium_solve.metric.transpose()).norm();
+    const double root_resolve_residual =
+      (
+      equilibrium_solve.metric * equilibrium_solve.qdd -
+      equilibrium_solve.force).norm();
+    const bool equilibrium_natural_form_valid =
+      equilibrium_solve.metric.allFinite() &&
+      equilibrium_solve.force.allFinite() &&
+      equilibrium_solve.qdd.allFinite() &&
+      root_metric_min_eigenvalue > 0.0 &&
+      root_metric_symmetry_residual <= 1e-9 &&
+      root_resolve_residual <=
+      1e-7 * (1.0 + equilibrium_solve.force.norm());
+
+    struct EscapeNaturalFormAggregate
+    {
+      bool available{false};
+      bool inactive_zero{false};
+      bool all_feasible_sensors_activated{false};
+      bool all_active_samples_valid{false};
+      std::size_t sensor_count{0U};
+      std::size_t feasible_sensor_count{0U};
+      std::size_t activated_sensor_count{0U};
+      std::size_t active_sample_count{0U};
+      std::size_t failed_active_sample_count{0U};
+      double inactive_metric_norm{std::numeric_limits<double>::infinity()};
+      double inactive_force_norm{std::numeric_limits<double>::infinity()};
+      double minimum_contribution_eigenvalue{
+        std::numeric_limits<double>::infinity()};
+      double maximum_contribution_symmetry_residual{0.0};
+      double maximum_tangent_normal_dot_abs{0.0};
+      double minimum_root_metric_eigenvalue{
+        std::numeric_limits<double>::infinity()};
+      double maximum_regularized_resolve_residual{0.0};
+      int maximum_contribution_rank{0};
+      std::string error;
+      YAML::Node sensor_probes{YAML::NodeType::Sequence};
+    };
+    EscapeNaturalFormAggregate escape_natural_form_audit;
+
+    try {
+      if (get_parameter("solver_backend").as_string() != "pinocchio_direct") {
+        throw std::runtime_error(
+                "Active Escape natural-form audit requires solver_backend=pinocchio_direct");
+      }
+
+      EigenRmpConfig enabled_audit_config = build_solver_config();
+      enabled_audit_config.tangent_escape.enabled = true;
+      enabled_audit_config.enable_tangent_escape_diagnostics = true;
+      enabled_audit_config.enable_tangent_escape_dual_solve_diagnostics = false;
+      enabled_audit_config.enable_leaf_ablation_diagnostics = false;
+      enabled_audit_config.enable_stability_certificate_diagnostics = false;
+      enabled_audit_config.escape_energy_certificate.enabled = false;
+      EigenRmpConfig base_audit_config = enabled_audit_config;
+      base_audit_config.tangent_escape.enabled = false;
+      base_audit_config.enable_tangent_escape_diagnostics = false;
+
+      const std::string urdf_path = resolve_robot_urdf_path();
+      const PinocchioModel audit_model(urdf_path);
+      const JointVector audit_q = seed_state.q;
+      const JointVector audit_qd = JointVector::Zero();
+      const auto audit_context = audit_model.forward_context(audit_q, audit_qd);
+      PinocchioDirectRmpSolver base_audit_solver(base_audit_config, urdf_path);
+
+      const auto audit_targets =
+        [this, &goal_target, &audit_context](const Eigen::Vector3d & position)
+        {
+          std::unordered_map<std::string, Eigen::Vector3d> targets;
+          targets.emplace("goal", position);
+          targets.emplace("body_goal", body_goal_);
+          const Eigen::Matrix3d orientation =
+            goal_target.orientation.normalized().toRotationMatrix();
+          targets.emplace("orientation_goal_x", orientation.col(0));
+          targets.emplace("orientation_goal_y", orientation.col(1));
+          targets.emplace("orientation_goal_z", orientation.col(2));
+          return targets;
+        };
+
+      const auto fixed_audit_targets = audit_targets(goal_target.position);
+      PinocchioDirectRmpSolver inactive_enabled_solver(
+        enabled_audit_config, urdf_path);
+      const auto inactive_base = base_audit_solver.solve(
+        audit_q, audit_qd, fixed_audit_targets, {});
+      const auto inactive_enabled = inactive_enabled_solver.solve(
+        audit_q, audit_qd, fixed_audit_targets, {});
+      escape_natural_form_audit.inactive_metric_norm =
+        (inactive_enabled.metric - inactive_base.metric).norm();
+      escape_natural_form_audit.inactive_force_norm =
+        (inactive_enabled.force - inactive_base.force).norm();
+      escape_natural_form_audit.inactive_zero =
+        escape_natural_form_audit.inactive_metric_norm <= 1e-12 &&
+        escape_natural_form_audit.inactive_force_norm <= 1e-12;
+
+      const std::array<Eigen::Vector3d, 6> probe_directions{
+        Eigen::Vector3d::UnitX(),
+        -Eigen::Vector3d::UnitX(),
+        Eigen::Vector3d::UnitY(),
+        -Eigen::Vector3d::UnitY(),
+        Eigen::Vector3d::UnitZ(),
+        -Eigen::Vector3d::UnitZ()};
+      const double obstacle_radius = 0.04;
+      const double probe_clearance =
+        enabled_audit_config.tangent_escape.safe_distance +
+        0.25 *
+        (
+        enabled_audit_config.tangent_escape.influence_distance -
+        enabled_audit_config.tangent_escape.safe_distance);
+      const int audit_cycles = std::clamp(
+        static_cast<int>(std::ceil(
+            enabled_audit_config.tangent_escape.handoff_duration /
+            std::max(enabled_audit_config.tangent_escape.control_dt, 1e-4))) + 3,
+        4,
+        256);
+
+      escape_natural_form_audit.sensor_count =
+        audit_context.control_points.size();
+      for (std::size_t sensor_index = 0;
+        sensor_index < audit_context.control_points.size();
+        ++sensor_index)
+      {
+        double best_predicted_speed = -1.0;
+        Eigen::Vector3d best_obstacle_direction = Eigen::Vector3d::UnitX();
+        std::unordered_map<std::string, Eigen::Vector3d> best_targets;
+        for (const auto & direction : probe_directions) {
+          const auto targets = audit_targets(
+            audit_context.tcp_position + 0.20 * direction);
+          const auto nominal_result = base_audit_solver.solve(
+            audit_q, audit_qd, targets, {});
+          const Eigen::Vector3d predicted_motion =
+            audit_context.control_point_jacobians[sensor_index] *
+            (
+            audit_qd +
+            enabled_audit_config.tangent_escape.nominal_prediction_dt *
+            nominal_result.qdd);
+          if (predicted_motion.norm() > best_predicted_speed) {
+            best_predicted_speed = predicted_motion.norm();
+            if (predicted_motion.norm() > 1e-12) {
+              best_obstacle_direction = predicted_motion.normalized();
+            }
+            best_targets = targets;
+          }
+        }
+
+        YAML::Node sensor_probe;
+        sensor_probe["index"] = sensor_index;
+        sensor_probe["name"] =
+          RB10Model::sensor_control_points[sensor_index].frame_name;
+        sensor_probe["best_nominal_speed_m_s"] = best_predicted_speed;
+        const bool feasible =
+          best_predicted_speed >=
+          std::max(enabled_audit_config.tangent_escape.intent_on_speed, 1e-9);
+        sensor_probe["feasible_intent"] = feasible;
+        if (!feasible || best_targets.empty()) {
+          sensor_probe["activated"] = false;
+          sensor_probe["passed"] = false;
+          sensor_probe["reason"] = "nominal_intent_below_entry_threshold";
+          escape_natural_form_audit.sensor_probes.push_back(sensor_probe);
+          continue;
+        }
+        ++escape_natural_form_audit.feasible_sensor_count;
+
+        ObstacleSphere obstacle;
+        const auto & point = audit_context.control_points[sensor_index];
+        obstacle.center =
+          point.position +
+          (
+          point.radius +
+          obstacle_radius +
+          probe_clearance +
+          enabled_audit_config.tangent_escape.clearance_margin) *
+          best_obstacle_direction;
+        obstacle.radius = obstacle_radius;
+        obstacle.proximity_control_point_index =
+          static_cast<int>(sensor_index);
+        obstacle.source_id =
+          static_cast<std::int64_t>(70000U + sensor_index);
+
+        const auto base_result = base_audit_solver.solve(
+          audit_q, audit_qd, best_targets, {obstacle});
+        PinocchioDirectRmpSolver enabled_solver(
+          enabled_audit_config, urdf_path);
+        bool sensor_activated = false;
+        bool sensor_passed = true;
+        TangentEscapeNaturalFormAudit last_audit;
+        for (int cycle = 0; cycle < audit_cycles; ++cycle) {
+          const auto enabled_result = enabled_solver.solve(
+            audit_q, audit_qd, best_targets, {obstacle});
+          const auto & debug = enabled_result.tangent_escape_rmp_data;
+          if (
+            debug.size() < 23U ||
+            debug[0] <= 0.5 ||
+            debug[10] <= 1e-10)
+          {
+            continue;
+          }
+
+          sensor_activated = true;
+          Eigen::Vector3d normal(debug[17], debug[18], debug[19]);
+          Eigen::Vector3d tangent(debug[20], debug[21], debug[22]);
+          last_audit = audit_tangent_escape_natural_form(
+            base_result.metric,
+            base_result.force,
+            enabled_result.metric,
+            enabled_result.force,
+            enabled_result.qdd,
+            enabled_audit_config.solve_offset,
+            tangent,
+            normal);
+          ++escape_natural_form_audit.active_sample_count;
+          if (!last_audit.natural_form_compatible) {
+            ++escape_natural_form_audit.failed_active_sample_count;
+            sensor_passed = false;
+          }
+          escape_natural_form_audit.minimum_contribution_eigenvalue =
+            std::min(
+            escape_natural_form_audit.minimum_contribution_eigenvalue,
+            last_audit.contribution_min_eigenvalue);
+          escape_natural_form_audit.maximum_contribution_symmetry_residual =
+            std::max(
+            escape_natural_form_audit.maximum_contribution_symmetry_residual,
+            last_audit.contribution_symmetry_residual);
+          escape_natural_form_audit.maximum_tangent_normal_dot_abs =
+            std::max(
+            escape_natural_form_audit.maximum_tangent_normal_dot_abs,
+            last_audit.tangent_normal_dot_abs);
+          escape_natural_form_audit.minimum_root_metric_eigenvalue =
+            std::min(
+            escape_natural_form_audit.minimum_root_metric_eigenvalue,
+            last_audit.root_metric_min_eigenvalue);
+          escape_natural_form_audit.maximum_regularized_resolve_residual =
+            std::max(
+            escape_natural_form_audit.maximum_regularized_resolve_residual,
+            last_audit.regularized_root_resolve_residual);
+          escape_natural_form_audit.maximum_contribution_rank =
+            std::max(
+            escape_natural_form_audit.maximum_contribution_rank,
+            last_audit.contribution_numerical_rank);
+        }
+
+        if (sensor_activated) {
+          ++escape_natural_form_audit.activated_sensor_count;
+        }
+        sensor_probe["activated"] = sensor_activated;
+        sensor_probe["passed"] = sensor_activated && sensor_passed;
+        sensor_probe["contribution_rank"] =
+          last_audit.contribution_numerical_rank;
+        sensor_probe["contribution_min_eigenvalue"] =
+          last_audit.contribution_min_eigenvalue;
+        sensor_probe["contribution_symmetry_residual"] =
+          last_audit.contribution_symmetry_residual;
+        sensor_probe["tangent_normal_dot_abs"] =
+          last_audit.tangent_normal_dot_abs;
+        sensor_probe["root_metric_min_eigenvalue"] =
+          last_audit.root_metric_min_eigenvalue;
+        sensor_probe["regularized_resolve_residual"] =
+          last_audit.regularized_root_resolve_residual;
+        if (!sensor_activated) {
+          sensor_probe["reason"] = "no_active_leaf_sample";
+        } else if (!sensor_passed) {
+          sensor_probe["reason"] = "natural_form_check_failed";
+        } else {
+          sensor_probe["reason"] = "passed";
+        }
+        escape_natural_form_audit.sensor_probes.push_back(sensor_probe);
+      }
+
+      escape_natural_form_audit.all_feasible_sensors_activated =
+        escape_natural_form_audit.feasible_sensor_count > 0U &&
+        escape_natural_form_audit.activated_sensor_count ==
+        escape_natural_form_audit.feasible_sensor_count;
+      escape_natural_form_audit.all_active_samples_valid =
+        escape_natural_form_audit.active_sample_count > 0U &&
+        escape_natural_form_audit.failed_active_sample_count == 0U;
+      escape_natural_form_audit.available = true;
+    } catch (const std::exception & error) {
+      escape_natural_form_audit.error = error.what();
+      RCLCPP_ERROR(
+        get_logger(),
+        "Active Escape natural-form audit failed: %s",
+        error.what());
+    }
+
+    const auto production_step =
+      [&raw_acceleration, &command_config](const ProductionJointState & state)
+      {
+        ProductionCommandMemory memory;
+        // Under the ideal inner-loop tracking assumption, the velocity applied
+        // in the previous cycle is the current velocity state.
+        memory.previous_velocity_command = state.qd;
+        memory.previous_velocity_command_initialized = true;
+        return production_command_step(
+          state,
+          raw_acceleration(state),
+          command_config,
+          memory);
+      };
+
+    const DiscreteLyapunovResult certificate =
+      analyze_production_local_stability(
+      production_step,
+      equilibrium_state,
+      position_difference_step,
+      velocity_difference_step);
+
+    std::vector<double> sample_radii =
+      get_parameter("production_stability_sample_radii").as_double_array();
+    sample_radii.erase(
+      std::remove_if(
+        sample_radii.begin(),
+        sample_radii.end(),
+        [](double radius) {
+          return !std::isfinite(radius) || radius <= 0.0;
+        }),
+      sample_radii.end());
+    std::sort(sample_radii.begin(), sample_radii.end());
+    const int random_direction_count = static_cast<int>(
+      get_parameter(
+        "production_stability_random_directions_per_radius").as_int());
+    std::vector<NonlinearLyapunovSample> samples;
+    if (
+      certificate.lyapunov_solved &&
+      certificate.lyapunov_positive_definite)
+    {
+      samples = sample_production_lyapunov_region(
+        production_step,
+        equilibrium_state,
+        certificate.lyapunov_matrix,
+        sample_radii,
+        random_direction_count);
+    }
+
+    const auto equilibrium_context = RB10Model::forward_context(
+      equilibrium.q,
+      ControlPointJacobianMode::kNone);
+    const auto floor_metrics = compute_floor_safety_metrics(equilibrium_context);
+    const bool equilibrium_floor_guard_inactive =
+      floor_metrics.min_link_z >= workspace_floor_z_ &&
+      floor_metrics.min_joint_z >= workspace_floor_z_ &&
+      floor_metrics.min_control_point_z >= workspace_floor_z_ &&
+      floor_metrics.min_body_obstacle_z >= workspace_floor_z_ &&
+      equilibrium_context.link_positions[RB10Model::LINK6].z() >= min_link6_z_ &&
+      equilibrium_context.link_positions[RB10Model::TCP_GRIPPER].z() >= min_tcp_z_;
+
+    double largest_sampled_decrease_radius = 0.0;
+    YAML::Node radius_summaries(YAML::NodeType::Sequence);
+    for (double radius : sample_radii) {
+      std::size_t count = 0U;
+      std::size_t positive_count = 0U;
+      std::size_t nonsmooth_count = 0U;
+      double maximum_delta = -std::numeric_limits<double>::infinity();
+      double maximum_relative_delta = -std::numeric_limits<double>::infinity();
+      for (const auto & sample : samples) {
+        if (std::abs(sample.radius - radius) > 1e-15) {
+          continue;
+        }
+        ++count;
+        maximum_delta = std::max(maximum_delta, sample.delta_value);
+        maximum_relative_delta =
+          std::max(maximum_relative_delta, sample.relative_delta);
+        if (sample.delta_value >= 0.0) {
+          ++positive_count;
+        }
+        if (sample.nonsmooth_branch_active) {
+          ++nonsmooth_count;
+        }
+      }
+      const bool radius_passed =
+        count > 0U &&
+        positive_count == 0U &&
+        nonsmooth_count == 0U &&
+        std::isfinite(maximum_delta);
+      if (radius_passed) {
+        largest_sampled_decrease_radius = radius;
+      }
+      YAML::Node summary;
+      summary["radius"] = radius;
+      summary["sample_count"] = count;
+      summary["strict_decrease_count"] = count - positive_count;
+      summary["nondecrease_count"] = positive_count;
+      summary["nonsmooth_branch_count"] = nonsmooth_count;
+      summary["maximum_delta_v"] = maximum_delta;
+      summary["maximum_relative_delta_v"] = maximum_relative_delta;
+      summary["passed"] = radius_passed;
+      radius_summaries.push_back(summary);
+    }
+
+    const double equilibrium_map_tolerance =
+      std::max(10.0 * equilibrium_options.acceleration_tolerance * dt, 1e-9);
+    const bool formal_normal_certificate =
+      equilibrium.converged &&
+      certificate.linearization_finite &&
+      certificate.schur_stable &&
+      certificate.lyapunov_solved &&
+      certificate.lyapunov_positive_definite &&
+      certificate.lyapunov_decrease_strict &&
+      certificate.residual_norm <= 1e-6 &&
+      certificate.equilibrium_map_residual_norm <= equilibrium_map_tolerance &&
+      !certificate.equilibrium_nonsmooth_branch_active &&
+      !certificate.perturbation_nonsmooth_branch_active &&
+      equilibrium_floor_guard_inactive;
+
+    YAML::Node report;
+    report["schema_version"] = 1;
+    report["analysis_type"] =
+      "exact_production_discrete_map_local_normal_mode";
+    report["timestamp"] = file_timestamp();
+    report["scope"]["mode"] = "NORMAL";
+    report["scope"]["environment"] = "fixed_goal_static_obstacle_free";
+    report["scope"]["external_rmps_included"] = false;
+    report["scope"]["escape_graph_configured"] = tangent_escape_rmp_enabled_;
+    report["scope"]["escape_active_at_equilibrium"] = false;
+    report["assumptions"].push_back(
+      "The RB10 inner velocity loop tracks each guarded velocity command within one sample.");
+    report["assumptions"].push_back(
+      "Goal, orientation target, body target, and environment remain fixed.");
+    report["assumptions"].push_back(
+      "The floor safety hold, acceleration limiter, and command guard stay inactive in the certified neighborhood.");
+    report["assumptions"].push_back(
+      "Sensor and model uncertainty are outside this local nominal certificate.");
+
+    report["configuration"]["control_rate_hz"] = control_rate_hz_;
+    report["configuration"]["dt_s"] = dt;
+    report["configuration"]["solver_backend"] =
+      get_parameter("solver_backend").as_string();
+    report["configuration"]["command_mode"] =
+      command_mode_to_string(command_mode_);
+    report["configuration"]["max_joint_accel_rad_s2"] = max_joint_accel_;
+    report["configuration"]["preserve_joint_accel_direction"] =
+      preserve_joint_accel_direction_;
+    report["configuration"]["max_joint_velocity_rad_s"] =
+      command_guard_max_velocity_rad_s_;
+    report["configuration"]["velocity_slew_enabled"] =
+      command_guard_velocity_slew_enabled_;
+    report["configuration"]["predictive_joint_limit_guard"] =
+      predictive_joint_limit_guard_;
+    report["configuration"]["root_solve_offset"] =
+      get_parameter("root_solve_offset").as_double();
+    report["configuration"]["collision_policy"] =
+      get_parameter("collision_policy").as_string();
+    report["configuration"]["joint_limit_policy"] =
+      get_parameter("joint_limit_policy").as_string();
+    report["configuration"]["tangent_escape_enabled"] =
+      tangent_escape_rmp_enabled_;
+
+    YAML::Node goal_position(YAML::NodeType::Sequence);
+    goal_position.push_back(goal_target.position.x());
+    goal_position.push_back(goal_target.position.y());
+    goal_position.push_back(goal_target.position.z());
+    report["fixed_inputs"]["goal_position"] = goal_position;
+    YAML::Node goal_quaternion(YAML::NodeType::Sequence);
+    goal_quaternion.push_back(goal_target.orientation.x());
+    goal_quaternion.push_back(goal_target.orientation.y());
+    goal_quaternion.push_back(goal_target.orientation.z());
+    goal_quaternion.push_back(goal_target.orientation.w());
+    report["fixed_inputs"]["goal_quaternion_xyzw"] = goal_quaternion;
+    YAML::Node body_goal_node(YAML::NodeType::Sequence);
+    body_goal_node.push_back(body_goal_.x());
+    body_goal_node.push_back(body_goal_.y());
+    body_goal_node.push_back(body_goal_.z());
+    report["fixed_inputs"]["body_goal"] = body_goal_node;
+
+    report["equilibrium"]["converged"] = equilibrium.converged;
+    report["equilibrium"]["iterations"] = equilibrium.iterations;
+    report["equilibrium"]["settle_initialization"]["converged"] =
+      settle_converged;
+    report["equilibrium"]["settle_initialization"]["steps"] = settle_steps;
+    report["equilibrium"]["settle_initialization"]["final_qd_norm_rad_s"] =
+      settled_seed.qd.norm();
+    report["equilibrium"]["settle_initialization"]["final_raw_qdd_norm_rad_s2"] =
+      settle_final_raw_acceleration_norm;
+    report["equilibrium"]["settle_initialization"]["nonsmooth_steps"] =
+      settle_nonsmooth_steps;
+    report["equilibrium"]["q_rad"] = yaml_joint_vector(equilibrium.q);
+    report["equilibrium"]["qdd_rad_s2"] =
+      yaml_joint_vector(equilibrium.acceleration);
+    report["equilibrium"]["qdd_norm_rad_s2"] =
+      equilibrium.acceleration_norm;
+    report["equilibrium"]["map_residual_norm"] =
+      certificate.equilibrium_map_residual_norm;
+    report["equilibrium"]["floor_guard_inactive"] =
+      equilibrium_floor_guard_inactive;
+    report["equilibrium"]["min_link_z_m"] = floor_metrics.min_link_z;
+    report["equilibrium"]["min_joint_z_m"] = floor_metrics.min_joint_z;
+    report["equilibrium"]["min_control_point_z_m"] =
+      floor_metrics.min_control_point_z;
+    report["equilibrium"]["min_body_obstacle_z_m"] =
+      floor_metrics.min_body_obstacle_z;
+
+    report["linearization"]["jacobian"] =
+      yaml_matrix(certificate.jacobian);
+    YAML::Node eigenvalues(YAML::NodeType::Sequence);
+    for (const auto & eigenvalue : certificate.eigenvalues) {
+      YAML::Node value;
+      value["real"] = eigenvalue.x();
+      value["imag"] = eigenvalue.y();
+      value["magnitude"] = eigenvalue.norm();
+      eigenvalues.push_back(value);
+    }
+    report["linearization"]["eigenvalues"] = eigenvalues;
+    report["linearization"]["spectral_radius"] =
+      certificate.spectral_radius;
+    report["linearization"]["schur_stable"] = certificate.schur_stable;
+    report["linearization"]["equilibrium_nonsmooth_branch_active"] =
+      certificate.equilibrium_nonsmooth_branch_active;
+    report["linearization"]["perturbation_nonsmooth_branch_active"] =
+      certificate.perturbation_nonsmooth_branch_active;
+
+    report["rmp_natural_form"]["root_metric_min_eigenvalue"] =
+      root_metric_min_eigenvalue;
+    report["rmp_natural_form"]["root_metric_symmetry_residual"] =
+      root_metric_symmetry_residual;
+    report["rmp_natural_form"]["root_resolve_residual"] =
+      root_resolve_residual;
+    report["rmp_natural_form"]["equilibrium_natural_form_valid"] =
+      equilibrium_natural_form_valid;
+    report["rmp_natural_form"]["escape_leaf_formula"]["task_metric"] =
+      "m_y = m_t * lambda * B >= 0";
+    report["rmp_natural_form"]["escape_leaf_formula"]["task_force"] =
+      "f_y = m_y * (a_y - Jdot_y * qdot)";
+    report["rmp_natural_form"]["escape_leaf_formula"]["root_pullback"] =
+      "DeltaM = J_y^T * m_y * J_y, Deltaf = J_y^T * f_y";
+    report["rmp_natural_form"]["active_escape_audit"]["available"] =
+      escape_natural_form_audit.available;
+    report["rmp_natural_form"]["active_escape_audit"]["error"] =
+      escape_natural_form_audit.error;
+    report["rmp_natural_form"]["active_escape_audit"]["inactive_metric_norm"] =
+      escape_natural_form_audit.inactive_metric_norm;
+    report["rmp_natural_form"]["active_escape_audit"]["inactive_force_norm"] =
+      escape_natural_form_audit.inactive_force_norm;
+    report["rmp_natural_form"]["active_escape_audit"]["inactive_exact_zero"] =
+      escape_natural_form_audit.inactive_zero;
+    report["rmp_natural_form"]["active_escape_audit"]["sensor_count"] =
+      escape_natural_form_audit.sensor_count;
+    report["rmp_natural_form"]["active_escape_audit"]["feasible_sensor_count"] =
+      escape_natural_form_audit.feasible_sensor_count;
+    report["rmp_natural_form"]["active_escape_audit"]["activated_sensor_count"] =
+      escape_natural_form_audit.activated_sensor_count;
+    report["rmp_natural_form"]["active_escape_audit"]["active_sample_count"] =
+      escape_natural_form_audit.active_sample_count;
+    report["rmp_natural_form"]["active_escape_audit"]["failed_active_sample_count"] =
+      escape_natural_form_audit.failed_active_sample_count;
+    report["rmp_natural_form"]["active_escape_audit"]["all_feasible_sensors_activated"] =
+      escape_natural_form_audit.all_feasible_sensors_activated;
+    report["rmp_natural_form"]["active_escape_audit"]["all_active_samples_valid"] =
+      escape_natural_form_audit.all_active_samples_valid;
+    report["rmp_natural_form"]["active_escape_audit"]["minimum_contribution_eigenvalue"] =
+      escape_natural_form_audit.minimum_contribution_eigenvalue;
+    report["rmp_natural_form"]["active_escape_audit"]["maximum_contribution_rank"] =
+      escape_natural_form_audit.maximum_contribution_rank;
+    report["rmp_natural_form"]["active_escape_audit"]["maximum_contribution_symmetry_residual"] =
+      escape_natural_form_audit.maximum_contribution_symmetry_residual;
+    report["rmp_natural_form"]["active_escape_audit"]["maximum_tangent_normal_dot_abs"] =
+      escape_natural_form_audit.maximum_tangent_normal_dot_abs;
+    report["rmp_natural_form"]["active_escape_audit"]["minimum_root_metric_eigenvalue"] =
+      escape_natural_form_audit.minimum_root_metric_eigenvalue;
+    report["rmp_natural_form"]["active_escape_audit"]["maximum_regularized_resolve_residual"] =
+      escape_natural_form_audit.maximum_regularized_resolve_residual;
+    report["rmp_natural_form"]["active_escape_audit"]["sensor_probes"] =
+      escape_natural_form_audit.sensor_probes;
+    const bool active_escape_natural_form_valid =
+      escape_natural_form_audit.available &&
+      escape_natural_form_audit.inactive_zero &&
+      escape_natural_form_audit.all_feasible_sensors_activated &&
+      escape_natural_form_audit.all_active_samples_valid;
+    report["rmp_natural_form"]["active_escape_natural_form_valid"] =
+      active_escape_natural_form_valid;
+    report["rmp_natural_form"]["structured_gds_closure_claimed"] = false;
+    report["rmp_natural_form"]["interpretation"] =
+      "The active Escape contribution was checked as a symmetric PSD rank-one "
+      "pullback and the complete root remained SPD and consistently resolved. "
+      "This is natural-form compatibility, not a structured-GDS closure claim "
+      "for the stateful hybrid Escape policy.";
+
+    const double escape_entry_threshold =
+      get_parameter("tangent_escape_rmp_acceleration_model").as_string() ==
+      "risk_damped" ?
+      1e-12 :
+      std::max(get_parameter("tangent_escape_rmp_min_activation").as_double(), 0.0);
+    const double escape_safe_distance =
+      get_parameter("tangent_escape_rmp_safe_distance").as_double();
+    const double escape_influence_distance =
+      get_parameter("tangent_escape_rmp_influence_distance").as_double();
+    const bool clear_guard_separation =
+      std::isfinite(escape_entry_threshold) &&
+      escape_entry_threshold > 0.0 &&
+      std::isfinite(escape_safe_distance) &&
+      std::isfinite(escape_influence_distance) &&
+      escape_influence_distance > escape_safe_distance;
+    report["normal_escape_guard_separation"]["normal_set"] =
+      "Omega_N_sample = {x: ||x-x*||_2 <= sampled decrease radius}";
+    report["normal_escape_guard_separation"]["clear_environment_set"] =
+      "C_clear = {all sensor-obstacle clearances d_i >= d_off}";
+    report["normal_escape_guard_separation"]["combined_set"] =
+      "Omega_N_clear = Omega_N_sample x C_clear";
+    report["normal_escape_guard_separation"]["distance_activation"] =
+      "alpha_d = quintic01((d_off-d)/(d_off-d_safe))";
+    report["normal_escape_guard_separation"]["safe_distance_m"] =
+      escape_safe_distance;
+    report["normal_escape_guard_separation"]["distance_off_m"] =
+      escape_influence_distance;
+    report["normal_escape_guard_separation"]["escape_entry_threshold"] =
+      escape_entry_threshold;
+    report["normal_escape_guard_separation"]["entry_guard_upper_bound_in_clear_set"] =
+      0.0;
+    report["normal_escape_guard_separation"]["strict_guard_exclusion"] =
+      clear_guard_separation;
+    report["normal_escape_guard_separation"]["scope"] =
+      "Analytical guard exclusion is conditional on every clearance remaining "
+      "at or above d_off; it is not a collision-free global ROA certificate.";
+
+    report["lyapunov"]["matrix_p"] =
+      yaml_matrix(certificate.lyapunov_matrix);
+    report["lyapunov"]["equation"] = "A^T P A - P = -I";
+    report["lyapunov"]["solved"] = certificate.lyapunov_solved;
+    report["lyapunov"]["p_min_eigenvalue"] =
+      certificate.lyapunov_min_eigenvalue;
+    report["lyapunov"]["p_max_eigenvalue"] =
+      certificate.lyapunov_max_eigenvalue;
+    report["lyapunov"]["decrease_max_eigenvalue"] =
+      certificate.decrease_max_eigenvalue;
+    report["lyapunov"]["residual_norm"] = certificate.residual_norm;
+    report["lyapunov"]["positive_definite"] =
+      certificate.lyapunov_positive_definite;
+    report["lyapunov"]["strict_linear_decrease"] =
+      certificate.lyapunov_decrease_strict;
+
+    report["nonlinear_sampling"]["radius_summaries"] = radius_summaries;
+    report["nonlinear_sampling"]["largest_strict_decrease_radius"] =
+      largest_sampled_decrease_radius;
+    YAML::Node sample_values(YAML::NodeType::Sequence);
+    for (const auto & sample : samples) {
+      YAML::Node value;
+      value["radius"] = sample.radius;
+      value["direction_index"] = sample.direction_index;
+      value["state_norm"] = sample.state_norm;
+      value["v"] = sample.value;
+      value["v_next"] = sample.next_value;
+      value["delta_v"] = sample.delta_value;
+      value["relative_delta_v"] = sample.relative_delta;
+      value["nonsmooth_branch_active"] =
+        sample.nonsmooth_branch_active;
+      sample_values.push_back(value);
+    }
+    report["nonlinear_sampling"]["samples"] = sample_values;
+
+    report["verdict"]["normal_local_exponential_stability_certified"] =
+      formal_normal_certificate;
+    report["verdict"]["software_command_box_forward_invariant_certified"] =
+      command_config.predictive_joint_limit_guard;
+    report["verdict"]["software_command_box"]["q_lower_rad"] =
+      yaml_joint_vector(
+      Eigen::Map<const JointVector>(command_config.joint_lower_limits.data()));
+    report["verdict"]["software_command_box"]["q_upper_rad"] =
+      yaml_joint_vector(
+      Eigen::Map<const JointVector>(command_config.joint_upper_limits.data()));
+    report["verdict"]["software_command_box"]["max_abs_qd_rad_s"] =
+      command_config.command_guard_max_velocity_rad_s;
+    report["verdict"]["software_command_box"]["max_abs_qdd_rad_s2"] =
+      command_config.max_joint_accel;
+    report["verdict"]["sampled_nonlinear_decrease_observed"] =
+      largest_sampled_decrease_radius > 0.0;
+    report["verdict"]["escape_leaf_natural_form_compatible"] =
+      active_escape_natural_form_valid;
+    report["verdict"]["normal_escape_guard_separated_in_clear_set"] =
+      clear_guard_separation;
+    report["verdict"]["global_stability_certified"] = false;
+    report["verdict"]["hybrid_escape_stability_certified"] = false;
+    report["verdict"]["collision_safe_set_invariance_certified"] = false;
+
+    try {
+      const std::filesystem::path output_directory = expand_home_path(
+        get_parameter("production_stability_output_directory").as_string());
+      std::filesystem::create_directories(output_directory);
+      const std::filesystem::path output_path =
+        output_directory /
+        ("production_stability_" + file_timestamp() + ".yaml");
+      std::ofstream output(output_path);
+      if (!output) {
+        throw std::runtime_error(
+                "Cannot open production stability report: " +
+                output_path.string());
+      }
+      output << report;
+      output.close();
+      production_stability_report_path_ = output_path.string();
+      RCLCPP_INFO(
+        get_logger(),
+        "Production stability report saved: %s",
+        production_stability_report_path_.c_str());
+      RCLCPP_INFO(
+        get_logger(),
+        "NORMAL local certificate: %s (rho=%.9g, min_eig(P)=%.9g, "
+        "max_eig(dV)=%.9g, sampled_radius=%.9g)",
+        formal_normal_certificate ? "PASS" : "FAIL",
+        certificate.spectral_radius,
+        certificate.lyapunov_min_eigenvalue,
+        certificate.decrease_max_eigenvalue,
+        largest_sampled_decrease_radius);
+    } catch (const std::exception & error) {
+      RCLCPP_ERROR(
+        get_logger(),
+        "Failed to write production stability analysis: %s",
+        error.what());
+    }
+    if (get_parameter("shutdown_after_production_stability_analysis").as_bool()) {
+      running_.store(false);
+      rclcpp::shutdown();
+    }
+  }
+
   JointVector compute_acceleration(
     const RobotState & state,
     const Eigen::Vector3d & goal,
@@ -4602,24 +5589,12 @@ private:
     const JointVector & qdd,
     double dt) const
   {
-    RobotState command_state = state;
-    command_state.qd += qdd * dt;
-    command_state.q += command_state.qd * dt;
-    command_state.q = clamp_joint_positions(command_state.q);
-
-    for (int index = 0; index < command_state.q.size(); ++index) {
-      const auto limit_index = static_cast<std::size_t>(index);
-      if (
-        (command_state.q[index] <= joint_lower_limits_[limit_index] + 0.1 &&
-        command_state.qd[index] < 0.0) ||
-        (command_state.q[index] >= joint_upper_limits_[limit_index] - 0.1 &&
-        command_state.qd[index] > 0.0))
-      {
-        command_state.qd[index] *= 0.5;
-      }
-    }
-
-    return command_state;
+    const ProductionJointState production_state{state.q, state.qd};
+    const auto integrated = integrate_production_command(
+      production_state,
+      qdd,
+      production_command_map_config(dt));
+    return RobotState{integrated.q, integrated.qd};
   }
 
   void send_velocity_hold_command(const RobotState & measured_state)
@@ -4812,115 +5787,34 @@ private:
     RobotState & command_state,
     double dt)
   {
+    ProductionJointState production_measured{measured_state.q, measured_state.qd};
+    ProductionJointState production_command{command_state.q, command_state.qd};
+    ProductionCommandMemory memory;
+    memory.previous_velocity_command = previous_velocity_command_;
+    memory.previous_velocity_command_initialized =
+      previous_velocity_command_initialized_;
+    ProductionCommandDiagnostics production_diagnostics;
+    apply_production_command_guard(
+      production_measured,
+      production_command,
+      production_command_map_config(dt),
+      memory,
+      &production_diagnostics);
+    command_state.q = production_command.q;
+    command_state.qd = production_command.qd;
+    previous_velocity_command_ = memory.previous_velocity_command;
+    previous_velocity_command_initialized_ =
+      memory.previous_velocity_command_initialized;
+
     CommandGuardDiagnostics diagnostics;
-    diagnostics.pre_guard_command =
-      command_mode_ == CommandMode::kVelocity ? command_state.qd : command_state.q;
-    if (command_mode_ == CommandMode::kVelocity) {
-      const double safe_dt = std::max(dt, 1e-6);
-      if (!previous_velocity_command_initialized_) {
-        previous_velocity_command_.setZero();
-        previous_velocity_command_initialized_ = true;
-      }
-      const JointVector previous_command = previous_velocity_command_;
-      const double max_velocity_step =
-        command_guard_velocity_slew_enabled_ ?
-        command_guard_max_accel_rad_s2_ * safe_dt :
-        std::numeric_limits<double>::infinity();
-      for (int index = 0; index < command_state.q.size(); ++index) {
-        const auto limit_index = static_cast<std::size_t>(index);
-        double limited_velocity = std::clamp(
-          command_state.qd[index],
-          -command_guard_max_velocity_rad_s_,
-          command_guard_max_velocity_rad_s_);
-        if (std::abs(limited_velocity - command_state.qd[index]) > 1e-9) {
-          diagnostics.clamped = true;
-        }
-        if (command_guard_velocity_slew_enabled_) {
-          const double slew_limited_velocity = std::clamp(
-            limited_velocity,
-            previous_command[index] - max_velocity_step,
-            previous_command[index] + max_velocity_step);
-          if (std::abs(slew_limited_velocity - limited_velocity) > 1e-9) {
-            diagnostics.clamped = true;
-            diagnostics.velocity_slew_clamped = true;
-          }
-          limited_velocity = slew_limited_velocity;
-        }
-        double guarded_lower = joint_lower_limits_[limit_index];
-        double guarded_upper = joint_upper_limits_[limit_index];
-
-        if (predictive_joint_limit_guard_) {
-          const double raw_lower = joint_lower_limits_[limit_index];
-          const double raw_upper = joint_upper_limits_[limit_index];
-          const double max_buffer = std::max(0.0, 0.45 * (raw_upper - raw_lower));
-          const double buffer = std::min(joint_limit_buffers_[limit_index], max_buffer);
-          guarded_lower = raw_lower + buffer;
-          guarded_upper = raw_upper - buffer;
-          const double measured_q = measured_state.q[index];
-
-          if (measured_q < guarded_lower) {
-            limited_velocity = std::max(limited_velocity, 0.0);
-          } else if (measured_q > guarded_upper) {
-            limited_velocity = std::min(limited_velocity, 0.0);
-          } else {
-            const double lower_velocity = (guarded_lower - measured_q) / safe_dt;
-            const double upper_velocity = (guarded_upper - measured_q) / safe_dt;
-            limited_velocity = std::clamp(limited_velocity, lower_velocity, upper_velocity);
-          }
-        } else if (
-          (measured_state.q[index] <= joint_lower_limits_[limit_index] + 0.1 &&
-          limited_velocity < 0.0) ||
-          (measured_state.q[index] >= joint_upper_limits_[limit_index] - 0.1 &&
-          limited_velocity > 0.0))
-        {
-          limited_velocity = 0.0;
-        }
-        if (std::abs(limited_velocity - command_state.qd[index]) > 1e-9) {
-          diagnostics.clamped = true;
-        }
-        command_state.qd[index] = limited_velocity;
-        command_state.q[index] = measured_state.q[index] + command_state.qd[index] * dt;
-        if (predictive_joint_limit_guard_) {
-          command_state.q[index] = std::clamp(command_state.q[index], guarded_lower, guarded_upper);
-        }
-      }
-      command_state.q = clamp_joint_positions(command_state.q);
-      diagnostics.command_step = command_state.qd - previous_command;
-      previous_velocity_command_ = command_state.qd;
-      if (diagnostics.velocity_slew_clamped) {
-        ++velocity_slew_clamp_count_;
-      }
-      return diagnostics;
+    diagnostics.clamped = production_diagnostics.command_guard_clamped;
+    diagnostics.velocity_slew_clamped =
+      production_diagnostics.velocity_slew_clamped;
+    diagnostics.pre_guard_command = production_diagnostics.pre_guard_command;
+    diagnostics.command_step = production_diagnostics.command_step;
+    if (diagnostics.velocity_slew_clamped) {
+      ++velocity_slew_clamp_count_;
     }
-
-    const double max_step_rad =
-      std::max(command_guard_max_step_rad_, command_guard_max_velocity_rad_s_ * dt);
-
-    for (int index = 0; index < command_state.q.size(); ++index) {
-      const double delta = command_state.q[index] - measured_state.q[index];
-      const double limited_delta = std::clamp(delta, -max_step_rad, max_step_rad);
-      if (std::abs(limited_delta - delta) > 1e-9) {
-        diagnostics.clamped = true;
-      }
-      command_state.q[index] = measured_state.q[index] + limited_delta;
-
-      const double limited_velocity = std::clamp(
-        command_state.qd[index],
-        -command_guard_max_velocity_rad_s_,
-        command_guard_max_velocity_rad_s_);
-      if (std::abs(limited_velocity - command_state.qd[index]) > 1e-9) {
-        diagnostics.clamped = true;
-      }
-      command_state.qd[index] = limited_velocity;
-    }
-
-    const JointVector unclamped_q = command_state.q;
-    command_state.q = clamp_joint_positions(command_state.q);
-    if ((command_state.q - unclamped_q).cwiseAbs().maxCoeff() > 1e-9) {
-      diagnostics.clamped = true;
-    }
-
-    diagnostics.command_step = command_state.q - measured_state.q;
     return diagnostics;
   }
 
@@ -5280,6 +6174,15 @@ private:
       goal_orientation = goal_target.orientation;
       obstacles_box_.get(obstacles);
       proximity_sensor_obstacles_box_.get(proximity_sensor_obstacles);
+      try {
+        run_production_stability_analysis_once(control_state, goal_target);
+      } catch (const std::exception & error) {
+        production_stability_analysis_completed_ = true;
+        RCLCPP_ERROR(
+          get_logger(),
+          "Production stability analysis failed: %s",
+          error.what());
+      }
 
       JointVector qdd = JointVector::Zero();
       std::vector<double> tangent_escape_rmp_data;
@@ -5850,6 +6753,10 @@ private:
   bool publish_leaf_ablation_data_enabled_{false};
   bool publish_stability_certificate_data_enabled_{false};
   bool publish_tangent_escape_geometry_debug_enabled_{false};
+  bool tangent_escape_rmp_enabled_{false};
+  bool production_stability_analysis_enabled_{false};
+  bool production_stability_analysis_completed_{false};
+  std::string production_stability_report_path_;
   double tangent_escape_geometry_marker_length_{0.12};
   int rmp_active_flag_value_{1};
   std::atomic<bool> rmp_active_{true};

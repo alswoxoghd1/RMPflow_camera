@@ -109,6 +109,7 @@ private:
     double phase_start_drive_ramp{0.0};
     double phase_start_release_brake{0.0};
     double active_age_s{0.0};
+    double episode_age_s{0.0};
     double previous_goal_error{0.0};
     bool previous_goal_error_valid{false};
     Eigen::Vector3d previous_goal{Eigen::Vector3d::Zero()};

@@ -574,6 +574,8 @@ PinocchioDirectRmpSolver::PinocchioDirectRmpSolver(
       std::isfinite(tangent_escape.max_speed) &&
       std::isfinite(tangent_escape.control_dt) &&
       std::isfinite(tangent_escape.handoff_duration) &&
+      std::isfinite(tangent_escape.maximum_active_duration) &&
+      std::isfinite(tangent_escape.timeout_reentry_cooldown) &&
       std::isfinite(tangent_escape.risk_distance_gain) &&
       std::isfinite(tangent_escape.risk_distance_scale) &&
       std::isfinite(tangent_escape.risk_approach_gain) &&
@@ -592,6 +594,8 @@ PinocchioDirectRmpSolver::PinocchioDirectRmpSolver(
       tangent_escape.max_speed <= 0.0 ||
       tangent_escape.control_dt <= 0.0 ||
       tangent_escape.handoff_duration < 0.0 ||
+      tangent_escape.maximum_active_duration < 0.0 ||
+      tangent_escape.timeout_reentry_cooldown < 0.0 ||
       tangent_escape.risk_distance_gain < 0.0 ||
       tangent_escape.risk_distance_scale <= 0.0 ||
       tangent_escape.risk_approach_gain < 0.0 ||

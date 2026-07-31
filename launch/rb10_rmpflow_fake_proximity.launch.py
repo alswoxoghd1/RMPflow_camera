@@ -88,6 +88,7 @@ def generate_launch_description():
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_config = LaunchConfiguration("rviz_config")
     publish_rmp_ee_pose = LaunchConfiguration("publish_rmp_ee_pose")
+    publish_position_command = LaunchConfiguration("publish_position_command")
     use_interactive_goal = LaunchConfiguration("use_interactive_goal")
     use_obstacles = LaunchConfiguration("use_obstacles")
     use_proximity_bridge = LaunchConfiguration("use_proximity_bridge")
@@ -222,6 +223,12 @@ def generate_launch_description():
     tangent_escape_rmp_minimum_drive_duration = LaunchConfiguration(
         "tangent_escape_rmp_minimum_drive_duration"
     )
+    tangent_escape_rmp_maximum_active_duration = LaunchConfiguration(
+        "tangent_escape_rmp_maximum_active_duration"
+    )
+    tangent_escape_rmp_timeout_reentry_cooldown = LaunchConfiguration(
+        "tangent_escape_rmp_timeout_reentry_cooldown"
+    )
     tangent_escape_rmp_command_test_distance = LaunchConfiguration(
         "tangent_escape_rmp_command_test_distance"
     )
@@ -354,7 +361,10 @@ def generate_launch_description():
                 "publish_joint_states": True,
                 "joint_state_publish_topic": "/joint_states",
                 "joint_state_topic": "/joint_states",
-                "publish_position_command": True,
+                "publish_position_command": ParameterValue(
+                    publish_position_command,
+                    value_type=bool,
+                ),
                 "position_command_state_topic": "/rmp_position_command",
                 "position_command_topic": "/position_controllers/commands",
                 "publish_target_q": True,
@@ -474,6 +484,14 @@ def generate_launch_description():
                 ),
                 "tangent_escape_rmp_minimum_drive_duration": ParameterValue(
                     tangent_escape_rmp_minimum_drive_duration,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_maximum_active_duration": ParameterValue(
+                    tangent_escape_rmp_maximum_active_duration,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_timeout_reentry_cooldown": ParameterValue(
+                    tangent_escape_rmp_timeout_reentry_cooldown,
                     value_type=float,
                 ),
                 "tangent_escape_rmp_command_test_distance": ParameterValue(
@@ -664,6 +682,14 @@ def generate_launch_description():
             "publish_rmp_ee_pose",
             default_value="true",
             description="Publish /rmp_ee_pose for fake closed-loop A/B analysis.",
+        ),
+        DeclareLaunchArgument(
+            "publish_position_command",
+            default_value="true",
+            description=(
+                "Publish /position_controllers/commands. Set false for isolated "
+                "headless verification."
+            ),
         ),
         DeclareLaunchArgument(
             "use_interactive_goal",
@@ -938,6 +964,16 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "tangent_escape_rmp_minimum_drive_duration",
             default_value="2.0",
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_maximum_active_duration",
+            default_value="12.0",
+            description="Hard bound for one continuously active Escape episode.",
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_timeout_reentry_cooldown",
+            default_value="1.0",
+            description="OFF cooldown after a hard Escape timeout.",
         ),
         DeclareLaunchArgument(
             "tangent_escape_rmp_command_test_distance",
