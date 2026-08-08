@@ -66,8 +66,18 @@ constexpr std::size_t kDebugRiskApproachAcceleration = 64;
 constexpr std::size_t kDebugRiskAcceleration = 65;
 constexpr std::size_t kDebugRiskDampingAcceleration = 66;
 constexpr std::size_t kDebugRiskAccelerationInput = 67;
+constexpr std::size_t kDebugPushActivation = 68;
+constexpr std::size_t kDebugMetricActivation = 69;
+constexpr std::size_t kDebugPushAcceleration = 70;
+constexpr std::size_t kDebugTangentDamping = 71;
+constexpr std::size_t kDebugAnalyticClearanceRate = 72;
+constexpr std::size_t kDebugInjectionPower = 73;
+constexpr std::size_t kDebugMetricIsotropy = 74;
+constexpr std::size_t kDebugTangentNormalComponent = 75;
+constexpr std::size_t kDebugScalarVelocity = 8;
 constexpr std::size_t kRequiredActiveDebugSize = kDebugHighLevelState + 1;
 constexpr std::size_t kRequiredRiskDebugSize = kDebugRiskAccelerationInput + 1;
+constexpr std::size_t kRequiredTangentPlaneDebugSize = kDebugTangentNormalComponent + 1;
 
 [[noreturn]] void fail(const std::string & message)
 {
@@ -230,6 +240,24 @@ EigenRmpConfig make_risk_damped_test_config(bool escape_enabled)
   return config;
 }
 
+EigenRmpConfig make_tangent_plane_test_config(bool escape_enabled, double metric_isotropy)
+{
+  EigenRmpConfig config = make_risk_damped_test_config(escape_enabled);
+  auto & escape = config.tangent_escape;
+  escape.acceleration_model = "tangent_plane";
+  escape.metric_isotropy = metric_isotropy;
+  // Deliberately mismatched so that b_t * v_max = 0.6 < a_max = 1.0 and the
+  // steady-state speed cap actually binds during the test.
+  escape.max_accel = 1.0;
+  escape.max_speed = 0.15;
+  escape.risk_tangent_damping_gain = 4.0;
+  escape.push_safe_distance = 0.10;
+  escape.push_influence_distance = 0.40;
+  escape.metric_safe_distance = 0.0;
+  escape.metric_influence_distance = 0.0;
+  return config;
+}
+
 std::vector<Eigen::Vector3d> goal_directions()
 {
   std::vector<Eigen::Vector3d> directions{
@@ -369,6 +397,53 @@ ScalarContributionCheck check_single_scalar_contribution(
   }
 
   return ScalarContributionCheck{rank, norm, minimum_eigenvalue, force_off_axis_norm};
+}
+
+struct PlaneContributionCheck
+{
+  int numerical_rank{0};
+  double norm{0.0};
+  double minimum_eigenvalue{0.0};
+};
+
+// The tangent-plane leaf contributes J^T m [(1-gamma) t t^T + gamma P_T] J.
+// Every term is PSD and t is re-projected into the plane of n, so the pullback
+// must stay PSD with rank at most two, and it must annihilate any joint
+// velocity whose control-point motion is purely along n.
+PlaneContributionCheck check_tangent_plane_contribution(
+  const Matrix6 & delta_metric_raw,
+  int maximum_rank)
+{
+  const Matrix6 delta_metric =
+    0.5 * (delta_metric_raw + delta_metric_raw.transpose());
+  require(
+    (delta_metric_raw - delta_metric).norm() <= 1e-9 * std::max(1.0, delta_metric.norm()),
+    "tangent-plane Escape delta metric is not symmetric");
+
+  Eigen::SelfAdjointEigenSolver<Matrix6> eigen_solver(delta_metric);
+  require(
+    eigen_solver.info() == Eigen::Success,
+    "tangent-plane Escape delta metric eigendecomposition failed");
+
+  const auto eigenvalues = eigen_solver.eigenvalues();
+  const double norm = delta_metric.norm();
+  const double tolerance = 1e-8 * std::max(1.0, norm);
+  const double minimum_eigenvalue = eigenvalues.minCoeff();
+  require(
+    minimum_eigenvalue >= -tolerance,
+    "tangent-plane Escape delta metric is not positive semidefinite");
+
+  int rank = 0;
+  for (Eigen::Index index = 0; index < eigenvalues.size(); ++index) {
+    if (eigenvalues[index] > tolerance) {
+      ++rank;
+    }
+  }
+  require(
+    rank <= maximum_rank,
+    "tangent-plane Escape delta metric exceeded its expected numerical rank");
+
+  return PlaneContributionCheck{rank, norm, minimum_eigenvalue};
 }
 
 Eigen::Vector3d debug_vector3(
@@ -1385,6 +1460,252 @@ void run_risk_damped_test(const std::string & urdf_path)
     << ")\n";
 }
 
+void run_tangent_plane_test(const std::string & urdf_path)
+{
+  const JointVector q = JointVector::Zero();
+  const JointVector qd = JointVector::Zero();
+
+  CasadiRb10Kinematics model(urdf_path);
+  const KinematicsContext context = model.forward_context(q, qd);
+
+  EigenRmpConfig disabled_config = make_tangent_plane_test_config(false, 1.0);
+  CasadiRmp2Solver disabled_solver(disabled_config, urdf_path);
+  const NominalScenario nominal = find_strongest_nominal_scenario(
+    disabled_solver,
+    context,
+    q,
+    qd,
+    disabled_config.tangent_escape.nominal_prediction_dt);
+
+  const Eigen::Vector3d approach_direction = nominal.control_point_motion.normalized();
+  const auto & selected_cp = context.control_points[nominal.control_point_index];
+  const double obstacle_radius = 0.04;
+  const double clearance = 0.02;
+  const double center_distance = selected_cp.radius + obstacle_radius + clearance;
+  ObstacleSphere obstacle{
+    selected_cp.position + center_distance * approach_direction,
+    obstacle_radius,
+    static_cast<int>(nominal.control_point_index)};
+  obstacle.source_id = 401;
+  const std::vector<ObstacleSphere> obstacles{obstacle};
+  const std::unordered_map<std::string, Eigen::Vector3d> targets{{"goal", nominal.goal}};
+
+  const RmpSolveResult disabled_result =
+    disabled_solver.solve(q, qd, targets, obstacles);
+  require(
+    finite_result(disabled_result),
+    "tangent-plane Escape-disabled reference solve is not finite");
+
+  // Rejecting an unknown model must not silently fall back to a working one.
+  {
+    EigenRmpConfig bad_config = make_tangent_plane_test_config(true, 1.0);
+    bad_config.tangent_escape.acceleration_model = "not_a_model";
+    bool threw = false;
+    try {
+      CasadiRmp2Solver bad_solver(bad_config, urdf_path);
+      const auto ignored = bad_solver.solve(q, qd, targets, obstacles);
+      static_cast<void>(ignored);
+    } catch (const std::exception &) {
+      threw = true;
+    }
+    require(threw, "unknown Escape acceleration model was accepted");
+  }
+
+  const Eigen::Matrix<double, 3, 6> & selected_jacobian =
+    context.control_point_jacobians[nominal.control_point_index];
+  const Eigen::JacobiSVD<Eigen::Matrix<double, 3, 6>> jacobian_svd(
+    selected_jacobian,
+    Eigen::ComputeFullU | Eigen::ComputeFullV);
+
+  const double maximum_leaf_accel = disabled_config.tangent_escape.max_accel;
+  const double damping_gain = disabled_config.tangent_escape.risk_tangent_damping_gain;
+  const double maximum_tangent_speed = disabled_config.tangent_escape.max_speed;
+
+  // gamma sweep: 0 must stay rank one, 1 must reach rank two.
+  for (const double isotropy : {0.0, 1.0}) {
+    EigenRmpConfig enabled_config = make_tangent_plane_test_config(true, isotropy);
+    // A metric gate deliberately wider than the push gate, to prove the
+    // alpha_M <= alpha_a clamp rather than assume it.
+    enabled_config.tangent_escape.metric_safe_distance = 0.10;
+    enabled_config.tangent_escape.metric_influence_distance = 1.50;
+    CasadiRmp2Solver enabled_solver(enabled_config, urdf_path);
+
+    bool saw_active = false;
+    bool saw_rank_two = false;
+    int active_samples = 0;
+    double maximum_rank = 0.0;
+
+    for (int cycle = 0; cycle < 40; ++cycle) {
+      const RmpSolveResult result = enabled_solver.solve(q, qd, targets, obstacles);
+      require(finite_result(result), "tangent-plane Escape solve is not finite");
+
+      const auto & debug = result.tangent_escape_rmp_data;
+      const Matrix6 delta_metric = result.metric - disabled_result.metric;
+      const JointVector delta_force = result.force - disabled_result.force;
+      const PlaneContributionCheck contribution = check_tangent_plane_contribution(
+        delta_metric,
+        isotropy > 0.0 ? 2 : 1);
+      maximum_rank = std::max(maximum_rank, static_cast<double>(contribution.numerical_rank));
+
+      // With no sensed pair at all the supervisor publishes a single-element
+      // record; that is only legal when it also contributed nothing.
+      if (debug.size() < kRequiredTangentPlaneDebugSize) {
+        require(
+          contribution.norm <= 1e-7 && delta_force.norm() <= 1e-7,
+          "pairless tangent-plane Escape still contributed to the root RMP");
+        continue;
+      }
+      // Candidate score slots are legitimately -inf for rejected candidates,
+      // so only the fixed-position scalars are required to be finite.
+      require(
+        std::all_of(
+          debug.begin(),
+          debug.begin() + static_cast<std::ptrdiff_t>(kRequiredTangentPlaneDebugSize),
+          [](double value) {return std::isfinite(value);}),
+        "tangent-plane Escape published a non-finite fixed diagnostic slot");
+      require(
+        approximately_integer(debug[kDebugLeafMode], 8),
+        "tangent-plane Escape did not publish schema id 8");
+      require(
+        std::abs(debug[kDebugMetricIsotropy] - isotropy) <= 1e-12,
+        "tangent-plane Escape published the wrong metric isotropy");
+
+      // alpha_M is clamped to alpha_a even though its distance gate is wider.
+      require(
+        debug[kDebugMetricActivation] <= debug[kDebugPushActivation] + 1e-12,
+        "tangent-plane Escape metric activation exceeded its push activation");
+
+      if (debug[kDebugActive] <= 0.5) {
+        require(
+          contribution.norm <= 1e-7 && delta_force.norm() <= 1e-7,
+          "inactive tangent-plane Escape still contributed to the root RMP");
+        continue;
+      }
+      saw_active = true;
+      ++active_samples;
+
+      // The push is the distance gate alone: no closing-rate term, no stuck
+      // floor, saturated at max_accel and capped so that the steady-state
+      // tangent speed a_push / b_t never exceeds max_speed.
+      const double expected_push = std::min(
+        maximum_leaf_accel * debug[kDebugPushActivation],
+        damping_gain * maximum_tangent_speed);
+      require(
+        std::abs(debug[kDebugPushAcceleration] - expected_push) <= 1e-9,
+        "tangent-plane Escape push is not max_accel * alpha_a");
+      require(
+        std::abs(
+          debug[kDebugTangentDamping] -
+          damping_gain * debug[kDebugScalarVelocity]) <= 1e-9,
+        "tangent-plane Escape damping term is not b_t * v_t");
+      require(
+        std::abs(debug[kDebugScalarAcceleration]) <= maximum_leaf_accel + 1e-9,
+        "tangent-plane Escape acceleration exceeded max_accel");
+
+      // P_inj = m * a_push * v_t, computable without the solve result.
+      require(
+        std::abs(
+          debug[kDebugInjectionPower] -
+          debug[kDebugEffectiveMetric] * debug[kDebugPushAcceleration] *
+          debug[kDebugScalarVelocity]) <=
+        1e-9 * std::max(1.0, std::abs(debug[kDebugInjectionPower])),
+        "tangent-plane Escape injection power is inconsistent with m*a_push*v_t");
+
+      // The applied axis always lies in the tangent plane.
+      const Eigen::Vector3d outward_normal =
+        debug_vector3(debug, kDebugOutwardNormal, "outward normal");
+      const Eigen::Vector3d applied_tangent =
+        debug_vector3(debug, kDebugTangent, "applied tangent");
+      require(
+        std::abs(applied_tangent.norm() - 1.0) <= 1e-9,
+        "tangent-plane Escape published a non-unit applied tangent");
+      require(
+        std::abs(applied_tangent.dot(outward_normal)) <= 1e-9,
+        "tangent-plane Escape applied a tangent with a normal component");
+
+      if (contribution.norm > 1e-8) {
+        if (contribution.numerical_rank == 2) {
+          saw_rank_two = true;
+        }
+        // A joint velocity whose control-point motion is purely along the
+        // obstacle normal must cost the leaf nothing.
+        const Eigen::Vector3d obstacle_direction = -outward_normal;
+        const JointVector normal_joint_velocity =
+          jacobian_svd.solve(obstacle_direction);
+        const Eigen::Vector3d realized = selected_jacobian * normal_joint_velocity;
+        if ((realized - obstacle_direction).norm() <= 1e-6) {
+          const double normal_cost =
+            normal_joint_velocity.transpose() * delta_metric * normal_joint_velocity;
+          require(
+            std::abs(normal_cost) <= 1e-6 * contribution.norm,
+            "tangent-plane Escape metric did not annihilate the obstacle normal");
+        }
+      }
+    }
+
+    require(
+      saw_active,
+      "tangent-plane Escape never activated in the blocking scenario");
+    require(
+      active_samples >= 5,
+      "tangent-plane Escape produced too few active samples to judge");
+    if (isotropy > 0.0) {
+      require(
+        saw_rank_two,
+        "gamma=1 tangent-plane Escape never reached a rank-two metric");
+    } else {
+      require(
+        maximum_rank <= 1.0,
+        "gamma=0 tangent-plane Escape produced a metric of rank above one");
+    }
+  }
+
+  // The analytic clearance rate must equal -n^T J qdot exactly, with no filter
+  // state and therefore no dependence on how many cycles have elapsed.
+  {
+    EigenRmpConfig enabled_config = make_tangent_plane_test_config(true, 1.0);
+    CasadiRmp2Solver moving_solver(enabled_config, urdf_path);
+    JointVector moving_qd = JointVector::Zero();
+    moving_qd[0] = 0.05;
+    moving_qd[1] = -0.03;
+    moving_qd[2] = 0.02;
+    const KinematicsContext moving_context = model.forward_context(q, moving_qd);
+
+    bool checked_rate = false;
+    for (int cycle = 0; cycle < 12; ++cycle) {
+      const RmpSolveResult result =
+        moving_solver.solve(q, moving_qd, targets, obstacles);
+      require(finite_result(result), "moving tangent-plane Escape solve is not finite");
+      const auto & debug = result.tangent_escape_rmp_data;
+      if (debug.size() < kRequiredTangentPlaneDebugSize || debug[kDebugActive] <= 0.5) {
+        continue;
+      }
+      const auto control_point_index =
+        static_cast<std::size_t>(std::llround(debug[kDebugControlPoint]));
+      require(
+        control_point_index < moving_context.control_point_velocities.size(),
+        "moving tangent-plane Escape published an invalid control point");
+      const Eigen::Vector3d obstacle_direction =
+        -debug_vector3(debug, kDebugOutwardNormal, "outward normal");
+      const double expected_rate = -obstacle_direction.dot(
+        moving_context.control_point_velocities[control_point_index]);
+      require(
+        std::abs(debug[kDebugAnalyticClearanceRate] - expected_rate) <= 1e-9,
+        "tangent-plane Escape clearance rate is not the analytic -n^T J qdot");
+      checked_rate = true;
+      break;
+    }
+    require(
+      checked_rate,
+      "tangent-plane Escape never became active with a nonzero joint velocity");
+  }
+
+  std::cout
+    << "tangent-plane tangent Escape integration test passed"
+    << " (cp=" << nominal.control_point_index
+    << ")\n";
+}
+
 }  // namespace
 
 int main(int argc, char ** argv)
@@ -1411,6 +1732,7 @@ int main(int argc, char ** argv)
 
     run_test(argv[1]);
     run_risk_damped_test(argv[1]);
+    run_tangent_plane_test(argv[1]);
   } catch (const std::exception & error) {
     std::cerr << "test_tangent_escape_canonical: " << error.what() << '\n';
     return EXIT_FAILURE;

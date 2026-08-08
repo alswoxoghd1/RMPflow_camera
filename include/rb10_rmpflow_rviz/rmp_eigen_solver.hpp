@@ -127,6 +127,8 @@ struct TangentEscapeRmpParams
   // "canonical_velocity" preserves the previous velocity-reference and
   // residual-release implementation.  "risk_damped" is the active design:
   // a distance/closing-rate drive opposed by signed tangent damping.
+  // "tangent_plane" replaces the closing-rate drive with a distance-only push
+  // and widens the rank-one axis metric into the obstacle tangent plane.
   std::string acceleration_model{"canonical_velocity"};
   double metric_scalar{50000.0};
   // Independent numeric copy of the Collision clearance margin.  Do not read
@@ -197,6 +199,28 @@ struct TangentEscapeRmpParams
   double risk_stuck_accel_floor{0.20};
   double risk_stuck_dwell_time{0.30};
   double risk_stuck_ramp_time{0.30};
+
+  // --- "tangent_plane" model only -------------------------------------------
+  // In-plane isotropy of the leaf metric.  With the latched tangent re-projected
+  // into the obstacle tangent plane as t and P_T = I - n n^T,
+  //
+  //   M_leaf = m [ (1 - gamma) t t^T + gamma P_T ].
+  //
+  // Both terms are PSD for gamma in [0,1], so M_leaf is PSD with rank <= 2.
+  // gamma = 0 reproduces the rank-one axis metric of the other two models;
+  // gamma = 1 removes the selected direction from the metric entirely, so a
+  // score-driven direction change no longer perturbs the pullback metric.
+  double metric_isotropy{1.0};
+  // Distance gate for the escape push, alpha_a.  Non-positive values inherit
+  // safe_distance / influence_distance.
+  double push_safe_distance{0.0};
+  double push_influence_distance{0.0};
+  // Distance gate for the leaf metric, alpha_M.  Non-positive values inherit
+  // the push gate.  The implementation additionally clamps alpha_M <= alpha_a:
+  // a metric that leads the push would demand zero tangent-plane acceleration
+  // at full weight, which brakes every other leaf inside the tangent plane.
+  double metric_safe_distance{0.0};
+  double metric_influence_distance{0.0};
 };
 
 struct EscapeEnergyCertificateParams

@@ -21,6 +21,7 @@ constexpr double kPi = 3.14159265358979323846;
 constexpr std::size_t kCoarseCandidateCount = 16;
 constexpr std::size_t kCanonicalDebugSize = 61;
 constexpr std::size_t kRiskDampedDebugSize = 68;
+constexpr std::size_t kTangentPlaneDebugSize = 76;
 constexpr double kCandidateDuplicateDot = 0.985;
 constexpr double kTangentOrthogonalityTolerance = 1e-5;
 constexpr double kMinimumScalarJacobianNorm = 1e-8;
@@ -84,6 +85,26 @@ std::optional<Eigen::Vector3d> tangent_projection(
     return std::nullopt;
   }
   return projected / norm;
+}
+
+// Leaf metric of the "tangent_plane" model, in world coordinates:
+//
+//   M = m [ (1 - gamma) t t^T + gamma (I - n n^T) ].
+//
+// t must already lie in the tangent plane of n, so that both terms share the
+// same range and M keeps rank <= 2.  Each term is PSD and both coefficients are
+// nonnegative for gamma in [0,1], so M is PSD for every admissible input.
+Eigen::Matrix3d tangent_plane_leaf_metric(
+  const Eigen::Vector3d & projected_tangent,
+  const Eigen::Vector3d & obstacle_direction,
+  double scalar_metric,
+  double isotropy)
+{
+  const Eigen::Matrix3d plane =
+    Eigen::Matrix3d::Identity() -
+    obstacle_direction * obstacle_direction.transpose();
+  const Eigen::Matrix3d axis = projected_tangent * projected_tangent.transpose();
+  return scalar_metric * ((1.0 - isotropy) * axis + isotropy * plane);
 }
 
 JointVector resolve_trial_root(
@@ -218,20 +239,12 @@ TangentEscapeCommand TangentEscapeSupervisor::evaluate(
     (config_.enable_tangent_escape_diagnostics ||
     config_.enable_tangent_escape_dual_solve_diagnostics) ?
     &debug_data : nullptr;
-  const bool risk_damped_mode =
-    config_.tangent_escape.acceleration_model == "risk_damped";
-  if (
-    !risk_damped_mode &&
-    config_.tangent_escape.acceleration_model != "canonical_velocity")
-  {
-    throw std::runtime_error(
-            "Unsupported tangent Escape acceleration model: " +
-            config_.tangent_escape.acceleration_model);
-  }
-  auto & state = risk_damped_mode ? risk_damped_state_ : canonical_state_;
+  const AccelerationModel model =
+    parse_acceleration_model(config_.tangent_escape.acceleration_model);
+  auto & state = state_for(model);
   evaluate_impl(
     state,
-    risk_damped_mode,
+    model,
     q,
     context,
     qd,
@@ -253,17 +266,46 @@ TangentEscapeCommand TangentEscapeSupervisor::evaluate(
   return command;
 }
 
+TangentEscapeSupervisor::AccelerationModel
+TangentEscapeSupervisor::parse_acceleration_model(const std::string & name)
+{
+  if (name == "canonical_velocity") {
+    return AccelerationModel::CanonicalVelocity;
+  }
+  if (name == "risk_damped") {
+    return AccelerationModel::RiskDamped;
+  }
+  if (name == "tangent_plane") {
+    return AccelerationModel::TangentPlane;
+  }
+  throw std::runtime_error("Unsupported tangent Escape acceleration model: " + name);
+}
+
+TangentEscapeSupervisor::CanonicalState &
+TangentEscapeSupervisor::state_for(AccelerationModel model) const
+{
+  switch (model) {
+    case AccelerationModel::RiskDamped:
+      return risk_damped_state_;
+    case AccelerationModel::TangentPlane:
+      return tangent_plane_state_;
+    case AccelerationModel::CanonicalVelocity:
+      break;
+  }
+  return canonical_state_;
+}
+
 void TangentEscapeSupervisor::set_previous_qdd(const JointVector & qdd) const
 {
-  auto & state = config_.tangent_escape.acceleration_model == "risk_damped" ?
-    risk_damped_state_ : canonical_state_;
+  auto & state = state_for(
+    parse_acceleration_model(config_.tangent_escape.acceleration_model));
   state.previous_qdd = qdd;
   state.previous_qdd_valid = qdd.allFinite();
 }
 
 void TangentEscapeSupervisor::evaluate_impl(
   CanonicalState & state,
-  bool risk_damped_mode,
+  AccelerationModel model,
   const JointVector & q,
   const KinematicsContext & context,
   const JointVector & qd,
@@ -278,6 +320,41 @@ void TangentEscapeSupervisor::evaluate_impl(
   std::vector<double> * debug_data) const
 {
   const auto & params = config_.tangent_escape;
+
+  // "tangent_plane" is a variant of the risk-damped supervisor: it reuses the
+  // same pair evaluation, blockage gating, scoring, and handoff phases, and
+  // only replaces the drive law and the leaf metric.  Keeping the broad flag
+  // as "not canonical_velocity" therefore leaves every shared branch intact.
+  const bool tangent_plane_mode = model == AccelerationModel::TangentPlane;
+  const bool risk_damped_mode = model != AccelerationModel::CanonicalVelocity;
+
+  // gamma, and the two distance gates of the tangent-plane model.
+  const double metric_isotropy = clamp01(params.metric_isotropy);
+  const double push_safe_distance = params.push_safe_distance > 0.0 ?
+    params.push_safe_distance : params.safe_distance;
+  const double push_influence_distance = params.push_influence_distance > 0.0 ?
+    params.push_influence_distance : params.influence_distance;
+  const double metric_safe_distance = params.metric_safe_distance > 0.0 ?
+    params.metric_safe_distance : push_safe_distance;
+  const double metric_influence_distance = params.metric_influence_distance > 0.0 ?
+    params.metric_influence_distance : push_influence_distance;
+  // alpha_a(d): 0 at or beyond the influence distance, 1 at or inside the safe
+  // distance.  Written as a decreasing quintic of clearance so that it matches
+  // the alpha_distance convention already used for blockage.
+  const auto distance_activation = [](double clearance, double safe, double influence) {
+      return quintic01((influence - clearance) / std::max(influence - safe, 1e-9));
+    };
+  const auto push_activation = [&](double clearance) {
+      return distance_activation(clearance, push_safe_distance, push_influence_distance);
+    };
+  // alpha_M is clamped to alpha_a.  A metric that switches on before the push
+  // would ask the leaf for zero tangent-plane acceleration at full weight,
+  // which brakes every other leaf inside the plane instead of escaping.
+  const auto metric_activation = [&](double clearance) {
+      return std::min(
+        distance_activation(clearance, metric_safe_distance, metric_influence_distance),
+        push_activation(clearance));
+    };
 
   const auto publish_empty_inactive = [&debug_data]() {
       if (debug_data != nullptr) {
@@ -503,7 +580,34 @@ void TangentEscapeSupervisor::evaluate_impl(
       std::max(params.intent_on_speed, params.intent_full_speed));
     pair.alpha_stuck = clamp01(low_progress_gate * low_motion_gate * intent_gate);
     pair.blockage = clamp01(pair.alpha_distance * pair.alpha_blocking);
-    if (risk_damped_mode) {
+    if (tangent_plane_mode) {
+      // The clearance rate is taken analytically from the control-point
+      // Jacobian instead of differencing a filtered distance, so it carries no
+      // filter state and no phase lag.  It covers the robot's own contribution
+      // only and is published for diagnosis; the drive law below does not read
+      // it.
+      pair.clearance_rate = -pair.obstacle_direction.dot(pair.point_velocity);
+      if (!std::isfinite(pair.clearance_rate)) {
+        pair.clearance_rate = 0.0;
+      }
+      pair.closing_speed = std::max(0.0, -pair.clearance_rate);
+      pair.risk_distance_acceleration =
+        std::max(params.max_accel, 0.0) * push_activation(pair.clearance);
+      pair.risk_approach_acceleration = 0.0;
+      pair.risk_stuck_acceleration = 0.0;
+      pair.risk_acceleration = pair.risk_distance_acceleration;
+      // The zero-input steady state of a_push - b_t v_t sits at
+      // v_t = a_push / b_t, so an uncapped push silently overshoots the
+      // configured tangent speed whenever b_t != a_max / v_max.  Capping the
+      // push keeps max_speed meaningful without coupling the two gains.
+      if (maximum_tangent_speed > 0.0 && risk_tangent_damping_gain > 0.0) {
+        pair.risk_acceleration = std::min(
+          pair.risk_acceleration,
+          risk_tangent_damping_gain * maximum_tangent_speed);
+        pair.risk_distance_acceleration = pair.risk_acceleration;
+      }
+      pair.raw_activation = pair.blockage;
+    } else if (risk_damped_mode) {
       auto rate_state = std::find_if(
         state.clearance_rate_states.begin(),
         state.clearance_rate_states.end(),
@@ -633,7 +737,11 @@ void TangentEscapeSupervisor::evaluate_impl(
       &state,
       best_pair,
       diagnostic_pair,
-      risk_damped_mode]()
+      risk_damped_mode,
+      tangent_plane_mode,
+      metric_isotropy,
+      &push_activation,
+      &metric_activation]()
     {
       if (debug_data == nullptr) {
         return;
@@ -645,7 +753,9 @@ void TangentEscapeSupervisor::evaluate_impl(
 
       const auto & pair = *diagnostic_pair;
       std::vector<double> values(
-        risk_damped_mode ? kRiskDampedDebugSize : kCanonicalDebugSize,
+        tangent_plane_mode ?
+        kTangentPlaneDebugSize :
+        (risk_damped_mode ? kRiskDampedDebugSize : kCanonicalDebugSize),
         0.0);
       values[0] = 0.0;
       values[1] = static_cast<double>(pair.control_point_index);
@@ -663,7 +773,7 @@ void TangentEscapeSupervisor::evaluate_impl(
       values[17] = pair.outward_normal.x();
       values[18] = pair.outward_normal.y();
       values[19] = pair.outward_normal.z();
-      values[26] = risk_damped_mode ? 7.0 : 6.0;
+      values[26] = tangent_plane_mode ? 8.0 : (risk_damped_mode ? 7.0 : 6.0);
       values[31] = static_cast<double>(pair.obstacle_key);
       values[32] = static_cast<double>(state.handoff_reason);
       values[33] = static_cast<double>(static_cast<int>(state.phase));
@@ -684,6 +794,16 @@ void TangentEscapeSupervisor::evaluate_impl(
         values[65] = pair.risk_acceleration;
         values[66] = 0.0;
         values[67] = pair.risk_acceleration;
+      }
+      if (tangent_plane_mode) {
+        values[68] = push_activation(pair.clearance);
+        values[69] = metric_activation(pair.clearance);
+        values[70] = pair.risk_acceleration;
+        values[71] = 0.0;
+        values[72] = pair.clearance_rate;
+        values[73] = 0.0;
+        values[74] = metric_isotropy;
+        values[75] = 0.0;
       }
       *debug_data = std::move(values);
     };
@@ -792,6 +912,10 @@ void TangentEscapeSupervisor::evaluate_impl(
       prevent_speed,
       recovery_speed,
       risk_damped_mode,
+      tangent_plane_mode,
+      metric_isotropy,
+      minimum_tangent_norm,
+      &metric_activation,
       risk_tangent_damping_gain](
       const SensorPairEvaluation & pair,
       const Eigen::Vector3d & requested_direction,
@@ -808,7 +932,20 @@ void TangentEscapeSupervisor::evaluate_impl(
       }
       candidate.direction.normalize();
 
-      if (
+      if (tangent_plane_mode) {
+        // The leaf axis is always re-projected into the current tangent plane,
+        // so a latched world tangent can never leak a normal-direction
+        // component into the metric.  This also makes the orthogonality gate
+        // below a selection trigger rather than a correctness requirement.
+        const auto projected = tangent_projection(
+          candidate.direction,
+          pair.obstacle_direction,
+          minimum_tangent_norm);
+        if (!projected.has_value()) {
+          return candidate;
+        }
+        candidate.direction = *projected;
+      } else if (
         apply_hard_gates &&
         std::abs(candidate.direction.dot(pair.obstacle_direction)) >
         kTangentOrthogonalityTolerance)
@@ -832,9 +969,11 @@ void TangentEscapeSupervisor::evaluate_impl(
       candidate.scalar_velocity =
         candidate.direction.dot(context.control_point_velocities[index]);
 
-      const double trial_activation = risk_damped_mode ?
+      const double trial_activation = tangent_plane_mode ?
+        clamp01(pair.alpha_blocking * metric_activation(pair.clearance)) :
+        (risk_damped_mode ?
         pair.blockage :
-        std::max(state.z, pair.raw_activation);
+        std::max(state.z, pair.raw_activation));
       candidate.metric_scalar =
         std::max(params.metric_scalar, 0.0) * trial_activation;
       if (risk_damped_mode) {
@@ -853,11 +992,26 @@ void TangentEscapeSupervisor::evaluate_impl(
 
       Matrix6 trial_metric = base_metric;
       JointVector trial_force = base_force;
-      trial_metric +=
-        scalar_jacobian.transpose() * candidate.metric_scalar * scalar_jacobian;
-      trial_force +=
-        scalar_jacobian.transpose() *
-        (candidate.metric_scalar * (candidate.scalar_acceleration - scalar_curvature));
+      if (tangent_plane_mode) {
+        // Same pullback the final solve uses, so the score reflects the metric
+        // that will actually be applied.
+        const Eigen::Matrix3d leaf_metric = tangent_plane_leaf_metric(
+          candidate.direction,
+          pair.obstacle_direction,
+          candidate.metric_scalar,
+          metric_isotropy);
+        const Eigen::Vector3d desired_acceleration =
+          candidate.scalar_acceleration * candidate.direction;
+        trial_metric += point_jacobian.transpose() * leaf_metric * point_jacobian;
+        trial_force += point_jacobian.transpose() * leaf_metric *
+          (desired_acceleration - context.control_point_curvatures[index]);
+      } else {
+        trial_metric +=
+          scalar_jacobian.transpose() * candidate.metric_scalar * scalar_jacobian;
+        trial_force +=
+          scalar_jacobian.transpose() *
+          (candidate.metric_scalar * (candidate.scalar_acceleration - scalar_curvature));
+      }
       const JointVector raw_candidate_qdd =
         resolve_trial_root(trial_metric, trial_force, config_.solve_offset);
       if (!raw_candidate_qdd.allFinite()) {
@@ -1603,13 +1757,38 @@ void TangentEscapeSupervisor::evaluate_impl(
   if (risk_damped_mode) {
     state.z = current_pair != nullptr ? clamp01(current_pair->blockage) : 0.0;
   }
+
+  // Obstacle direction and leaf axis actually applied this cycle.  The
+  // tangent-plane model re-projects the latched world tangent onto the current
+  // tangent plane every cycle; the other models use the latched tangent as-is.
+  const Eigen::Vector3d leaf_obstacle_direction = current_pair != nullptr ?
+    current_pair->obstacle_direction :
+    state.obstacle_direction_at_selection;
+  const double latched_tangent_normal_component =
+    std::abs(state.tangent.dot(leaf_obstacle_direction));
+  Eigen::Vector3d leaf_tangent = state.tangent;
+  bool leaf_tangent_valid = state.tangent_valid;
+  if (tangent_plane_mode && state.tangent_valid) {
+    const auto projected = tangent_projection(
+      state.tangent,
+      leaf_obstacle_direction,
+      minimum_tangent_norm);
+    if (projected.has_value()) {
+      leaf_tangent = *projected;
+    } else {
+      // The latched tangent collapsed onto the obstacle normal.  Contributing
+      // nothing is the safe outcome; the reselect triggers below still fire.
+      leaf_tangent_valid = false;
+    }
+  }
+
   if (
     state.active_pair_valid &&
-    state.tangent_valid &&
+    leaf_tangent_valid &&
     state.control_point_index < point_count)
   {
     current_scalar_velocity =
-      state.tangent.dot(context.control_point_velocities[state.control_point_index]);
+      leaf_tangent.dot(context.control_point_velocities[state.control_point_index]);
   } else {
     current_scalar_velocity = 0.0;
   }
@@ -1649,13 +1828,14 @@ void TangentEscapeSupervisor::evaluate_impl(
   double risk_acceleration_input = 0.0;
   double filtered_clearance_rate = 0.0;
   double closing_speed = 0.0;
+  double escape_injection_power = 0.0;
   Eigen::Vector3d control_point = Eigen::Vector3d::Zero();
   Eigen::Vector3d obstacle_center = Eigen::Vector3d::Zero();
   Eigen::Vector3d outward_normal = -state.obstacle_direction_at_selection;
   double scalar_coordinate = 0.0;
   if (
     state.active_pair_valid &&
-    state.tangent_valid &&
+    leaf_tangent_valid &&
     state.control_point_index < point_count)
   {
     const std::size_t point_index = state.control_point_index;
@@ -1664,7 +1844,7 @@ void TangentEscapeSupervisor::evaluate_impl(
       obstacle_center = current_pair->obstacle_center;
       outward_normal = current_pair->outward_normal;
     }
-    scalar_coordinate = state.tangent.dot(control_point);
+    scalar_coordinate = leaf_tangent.dot(control_point);
     double effective_activation = 0.0;
     if (risk_damped_mode) {
       if (current_pair != nullptr) {
@@ -1682,9 +1862,21 @@ void TangentEscapeSupervisor::evaluate_impl(
       scalar_acceleration = bounded_velocity_acceleration(
         risk_acceleration_input,
         maximum_leaf_acceleration);
-      effective_activation =
-        state.lambda *
-        (current_pair != nullptr ? current_pair->blockage : 0.0);
+      if (tangent_plane_mode) {
+        // alpha_b keeps the entry condition ("the nominal intent is blocked"),
+        // while alpha_M replaces the distance factor of blockage so that the
+        // metric gate can be tuned separately from the push gate.  With the
+        // default inherited distances alpha_M == alpha_distance, so this is
+        // numerically the same gate the risk-damped model uses.
+        effective_activation = current_pair != nullptr ?
+          state.lambda * clamp01(
+          current_pair->alpha_blocking * metric_activation(current_pair->clearance)) :
+          0.0;
+      } else {
+        effective_activation =
+          state.lambda *
+          (current_pair != nullptr ? current_pair->blockage : 0.0);
+      }
     } else {
       const double acceleration_input =
         desired_velocity_derivative +
@@ -1708,15 +1900,36 @@ void TangentEscapeSupervisor::evaluate_impl(
     effective_metric_scalar =
       std::max(params.metric_scalar, 0.0) * std::max(effective_activation, 0.0);
 
-    const RowVector6 scalar_jacobian =
-      state.tangent.transpose() * context.control_point_jacobians[point_index];
-    const double scalar_curvature =
-      state.tangent.dot(context.control_point_curvatures[point_index]);
-    metric +=
-      scalar_jacobian.transpose() * effective_metric_scalar * scalar_jacobian;
-    force +=
-      scalar_jacobian.transpose() *
-      (effective_metric_scalar * (scalar_acceleration - scalar_curvature));
+    const Eigen::Matrix<double, 3, 6> & point_jacobian =
+      context.control_point_jacobians[point_index];
+    if (tangent_plane_mode) {
+      const Eigen::Matrix3d leaf_metric = tangent_plane_leaf_metric(
+        leaf_tangent,
+        leaf_obstacle_direction,
+        effective_metric_scalar,
+        metric_isotropy);
+      const Eigen::Vector3d desired_acceleration =
+        scalar_acceleration * leaf_tangent;
+      metric += point_jacobian.transpose() * leaf_metric * point_jacobian;
+      force += point_jacobian.transpose() * leaf_metric *
+        (desired_acceleration - context.control_point_curvatures[point_index]);
+      // Power the non-GDS part of this leaf injects into the base storage.
+      // Splitting a_y into the distance push and the tangent damper gives
+      //   f_inject = M_leaf (a_push t) = m a_push t,
+      // so the injected power is exactly m * a_push * v_t.  It needs no solve
+      // result, unlike the exact rank-one interconnection power.
+      escape_injection_power =
+        effective_metric_scalar * risk_acceleration * current_scalar_velocity;
+    } else {
+      const RowVector6 scalar_jacobian = leaf_tangent.transpose() * point_jacobian;
+      const double scalar_curvature =
+        leaf_tangent.dot(context.control_point_curvatures[point_index]);
+      metric +=
+        scalar_jacobian.transpose() * effective_metric_scalar * scalar_jacobian;
+      force +=
+        scalar_jacobian.transpose() *
+        (effective_metric_scalar * (scalar_acceleration - scalar_curvature));
+    }
   }
 
   if (state.active_pair_valid) {
@@ -1785,7 +1998,7 @@ void TangentEscapeSupervisor::evaluate_impl(
     state.last_blockage = 0.0;
   }
 
-  if (!state.active_pair_valid || !state.tangent_valid) {
+  if (!state.active_pair_valid || !leaf_tangent_valid) {
     if (std::abs(state.desired_velocity) < 1e-8) {
       state.desired_velocity = 0.0;
     }
@@ -1794,7 +2007,9 @@ void TangentEscapeSupervisor::evaluate_impl(
   }
 
   command.control_point_index = state.control_point_index;
-  command.tangent = state.tangent;
+  // The applied axis, which for the tangent-plane model is the re-projected
+  // tangent rather than the latched world tangent.
+  command.tangent = leaf_tangent;
   command.scalar_acceleration = scalar_acceleration;
   command.metric_scalar = effective_metric_scalar;
   command.active =
@@ -1846,7 +2061,9 @@ void TangentEscapeSupervisor::evaluate_impl(
   }
 
   std::vector<double> values(
-    risk_damped_mode ? kRiskDampedDebugSize : kCanonicalDebugSize,
+    tangent_plane_mode ?
+    kTangentPlaneDebugSize :
+    (risk_damped_mode ? kRiskDampedDebugSize : kCanonicalDebugSize),
     0.0);
   values[0] = 1.0;
   values[1] = static_cast<double>(state.control_point_index);
@@ -1868,13 +2085,13 @@ void TangentEscapeSupervisor::evaluate_impl(
   values[17] = outward_normal.x();
   values[18] = outward_normal.y();
   values[19] = outward_normal.z();
-  values[20] = state.tangent.x();
-  values[21] = state.tangent.y();
-  values[22] = state.tangent.z();
-  values[23] = scalar_acceleration * state.tangent.x();
-  values[24] = scalar_acceleration * state.tangent.y();
-  values[25] = scalar_acceleration * state.tangent.z();
-  values[26] = risk_damped_mode ? 7.0 : 6.0;
+  values[20] = leaf_tangent.x();
+  values[21] = leaf_tangent.y();
+  values[22] = leaf_tangent.z();
+  values[23] = scalar_acceleration * leaf_tangent.x();
+  values[24] = scalar_acceleration * leaf_tangent.y();
+  values[25] = scalar_acceleration * leaf_tangent.z();
+  values[26] = tangent_plane_mode ? 8.0 : (risk_damped_mode ? 7.0 : 6.0);
   values[27] = scalar_coordinate;
   values[28] = velocity_reference;
   values[29] = current_scalar_velocity;
@@ -1884,9 +2101,9 @@ void TangentEscapeSupervisor::evaluate_impl(
   values[31] = static_cast<double>(state.obstacle_key);
   values[32] = static_cast<double>(state.handoff_reason);
   values[33] = static_cast<double>(static_cast<int>(state.phase));
-  values[34] = state.tangent.x();
-  values[35] = state.tangent.y();
-  values[36] = state.tangent.z();
+  values[34] = leaf_tangent.x();
+  values[35] = leaf_tangent.y();
+  values[36] = leaf_tangent.z();
   values[37] = static_cast<double>(diagnostic_candidates.size());
   values[38] = static_cast<double>(diagnostic_candidate.seed_index);
   values[39] = 1.0;
@@ -1926,6 +2143,18 @@ void TangentEscapeSupervisor::evaluate_impl(
     values[65] = risk_acceleration;
     values[66] = risk_damping_acceleration;
     values[67] = risk_acceleration_input;
+  }
+  if (tangent_plane_mode) {
+    const double clearance =
+      current_pair != nullptr ? current_pair->clearance : state.last_clearance;
+    values[68] = push_activation(clearance);
+    values[69] = metric_activation(clearance);
+    values[70] = risk_acceleration;
+    values[71] = risk_damping_acceleration;
+    values[72] = filtered_clearance_rate;
+    values[73] = escape_injection_power;
+    values[74] = metric_isotropy;
+    values[75] = latched_tangent_normal_component;
   }
 
   for (const auto & candidate : diagnostic_candidates) {

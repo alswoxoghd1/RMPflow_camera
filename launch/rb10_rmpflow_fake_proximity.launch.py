@@ -172,6 +172,39 @@ def generate_launch_description():
     tangent_escape_rmp_influence_distance = LaunchConfiguration(
         "tangent_escape_rmp_influence_distance"
     )
+    tangent_escape_rmp_safe_distance = LaunchConfiguration(
+        "tangent_escape_rmp_safe_distance"
+    )
+    tangent_escape_rmp_goal_block_beta_on = LaunchConfiguration(
+        "tangent_escape_rmp_goal_block_beta_on"
+    )
+    tangent_escape_rmp_goal_block_beta_full = LaunchConfiguration(
+        "tangent_escape_rmp_goal_block_beta_full"
+    )
+    tangent_escape_rmp_risk_distance_gain = LaunchConfiguration(
+        "tangent_escape_rmp_risk_distance_gain"
+    )
+    tangent_escape_rmp_risk_distance_scale = LaunchConfiguration(
+        "tangent_escape_rmp_risk_distance_scale"
+    )
+    tangent_escape_rmp_metric_isotropy = LaunchConfiguration(
+        "tangent_escape_rmp_metric_isotropy"
+    )
+    tangent_escape_rmp_push_safe_distance = LaunchConfiguration(
+        "tangent_escape_rmp_push_safe_distance"
+    )
+    tangent_escape_rmp_push_influence_distance = LaunchConfiguration(
+        "tangent_escape_rmp_push_influence_distance"
+    )
+    tangent_escape_rmp_metric_safe_distance = LaunchConfiguration(
+        "tangent_escape_rmp_metric_safe_distance"
+    )
+    tangent_escape_rmp_metric_influence_distance = LaunchConfiguration(
+        "tangent_escape_rmp_metric_influence_distance"
+    )
+    tangent_escape_rmp_risk_tangent_damping_gain = LaunchConfiguration(
+        "tangent_escape_rmp_risk_tangent_damping_gain"
+    )
     tangent_escape_rmp_velocity_gain = LaunchConfiguration(
         "tangent_escape_rmp_velocity_gain"
     )
@@ -416,6 +449,50 @@ def generate_launch_description():
                 ),
                 "tangent_escape_rmp_influence_distance": ParameterValue(
                     tangent_escape_rmp_influence_distance,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_safe_distance": ParameterValue(
+                    tangent_escape_rmp_safe_distance,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_goal_block_beta_on": ParameterValue(
+                    tangent_escape_rmp_goal_block_beta_on,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_goal_block_beta_full": ParameterValue(
+                    tangent_escape_rmp_goal_block_beta_full,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_risk_distance_gain": ParameterValue(
+                    tangent_escape_rmp_risk_distance_gain,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_risk_distance_scale": ParameterValue(
+                    tangent_escape_rmp_risk_distance_scale,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_metric_isotropy": ParameterValue(
+                    tangent_escape_rmp_metric_isotropy,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_push_safe_distance": ParameterValue(
+                    tangent_escape_rmp_push_safe_distance,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_push_influence_distance": ParameterValue(
+                    tangent_escape_rmp_push_influence_distance,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_metric_safe_distance": ParameterValue(
+                    tangent_escape_rmp_metric_safe_distance,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_metric_influence_distance": ParameterValue(
+                    tangent_escape_rmp_metric_influence_distance,
+                    value_type=float,
+                ),
+                "tangent_escape_rmp_risk_tangent_damping_gain": ParameterValue(
+                    tangent_escape_rmp_risk_tangent_damping_gain,
                     value_type=float,
                 ),
                 "tangent_escape_rmp_velocity_gain": ParameterValue(
@@ -901,8 +978,58 @@ def generate_launch_description():
             "tangent_escape_rmp_acceleration_model",
             default_value="risk_damped",
             description=(
-                "Select risk_damped for production experiments; "
+                "Select risk_damped for production experiments; tangent_plane "
+                "for the distance-push / tangent-plane-metric design; "
                 "canonical_velocity is retained only for explicit A/B rollback."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_metric_isotropy",
+            default_value="1.0",
+            description=(
+                "tangent_plane only. In-plane isotropy gamma of the leaf metric "
+                "m[(1-gamma) t t^T + gamma P_T]. 0 keeps the rank-one axis "
+                "metric, 1 removes the selected direction from the metric."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_push_safe_distance",
+            default_value="0.0",
+            description=(
+                "tangent_plane only. Distance at which the escape push reaches "
+                "max_accel. Non-positive inherits safe_distance."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_push_influence_distance",
+            default_value="0.0",
+            description=(
+                "tangent_plane only. Distance at which the escape push reaches "
+                "zero. Non-positive inherits influence_distance."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_metric_safe_distance",
+            default_value="0.0",
+            description=(
+                "tangent_plane only. Non-positive inherits the push gate. The "
+                "solver clamps alpha_M <= alpha_a regardless of this value."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_metric_influence_distance",
+            default_value="0.0",
+            description=(
+                "tangent_plane only. Non-positive inherits the push gate. The "
+                "solver clamps alpha_M <= alpha_a regardless of this value."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_risk_tangent_damping_gain",
+            default_value="10.0",
+            description=(
+                "Tangent damping gain b_t. Set to max_accel / max_speed so the "
+                "zero-input steady-state tangent speed equals max_speed."
             ),
         ),
         DeclareLaunchArgument(
@@ -917,6 +1044,47 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "tangent_escape_rmp_influence_distance",
             default_value="0.24",
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_goal_block_beta_on",
+            default_value="0.5",
+            description=(
+                "alpha_b turns on at this cos(angle) between the nominal "
+                "intent and the obstacle direction. 0.5 = 60 deg, 0.2 = 78 deg. "
+                "Lower widens the cone so Escape reacts before the robot is "
+                "aimed straight at the obstacle."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_goal_block_beta_full",
+            default_value="0.94",
+            description="cos(angle) at which alpha_b reaches 1. 0.94 = 20 deg.",
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_safe_distance",
+            default_value="0.08",
+            description=(
+                "Inner edge of the alpha_d gate band.  alpha_d is a quintic "
+                "smoothstep over [safe, influence], so a narrower band opens "
+                "the gate over a shorter approach.  This is not a hard safety "
+                "threshold: Collision RMP uses its own margin."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_risk_distance_gain",
+            default_value="8.00",
+            description=(
+                "k_p of the risk_damped push a = k_p * exp(-d / scale). The "
+                "push is still capped at damping_gain * max_speed."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "tangent_escape_rmp_risk_distance_scale",
+            default_value="0.08",
+            description=(
+                "Decay length of the push. Larger spreads the escape effect "
+                "across the whole band instead of concentrating it at contact."
+            ),
         ),
         DeclareLaunchArgument("tangent_escape_rmp_velocity_gain", default_value="20.0"),
         DeclareLaunchArgument("tangent_escape_rmp_prevent_weight", default_value="0.5"),

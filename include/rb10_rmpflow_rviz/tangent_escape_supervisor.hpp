@@ -3,6 +3,7 @@
 #include <array>
 #include <cstdint>
 #include <limits>
+#include <string>
 #include <vector>
 
 #include <Eigen/Dense>
@@ -52,6 +53,13 @@ public:
 
 private:
   static constexpr std::size_t failure_memory_count_ = 4;
+
+  enum class AccelerationModel : int
+  {
+    CanonicalVelocity = 0,
+    RiskDamped = 1,
+    TangentPlane = 2
+  };
 
   enum class CanonicalPhase : int
   {
@@ -134,7 +142,7 @@ private:
 
   void evaluate_impl(
     CanonicalState & state,
-    bool risk_damped_mode,
+    AccelerationModel model,
     const JointVector & q,
     const KinematicsContext & context,
     const JointVector & qd,
@@ -148,9 +156,16 @@ private:
     TangentEscapeCommand & command,
     std::vector<double> * debug_data) const;
 
+  // Each acceleration model owns its hybrid state so that switching models
+  // between runs never carries a latched pair, tangent, or failure memory
+  // across the model boundary.
+  static AccelerationModel parse_acceleration_model(const std::string & name);
+  CanonicalState & state_for(AccelerationModel model) const;
+
   EigenRmpConfig config_;
   mutable CanonicalState canonical_state_{};
   mutable CanonicalState risk_damped_state_{};
+  mutable CanonicalState tangent_plane_state_{};
 };
 
 }  // namespace rb10_rmpflow_rviz

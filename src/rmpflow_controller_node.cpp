@@ -2051,6 +2051,13 @@ public:
     declare_parameter("tangent_escape_rmp_risk_stuck_accel_floor", 0.20);
     declare_parameter("tangent_escape_rmp_risk_stuck_dwell_time", 0.30);
     declare_parameter("tangent_escape_rmp_risk_stuck_ramp_time", 0.30);
+    // "tangent_plane" model only.  Non-positive distances inherit the gate one
+    // level up: push inherits safe/influence, metric inherits push.
+    declare_parameter("tangent_escape_rmp_metric_isotropy", 1.0);
+    declare_parameter("tangent_escape_rmp_push_safe_distance", 0.0);
+    declare_parameter("tangent_escape_rmp_push_influence_distance", 0.0);
+    declare_parameter("tangent_escape_rmp_metric_safe_distance", 0.0);
+    declare_parameter("tangent_escape_rmp_metric_influence_distance", 0.0);
     declare_parameter("tangent_escape_rmp_safe_distance", 0.08);
     declare_parameter("tangent_escape_rmp_influence_distance", 0.20);
     declare_parameter("tangent_escape_rmp_candidate_lookahead", 0.08);
@@ -2962,11 +2969,12 @@ private:
       get_parameter("tangent_escape_rmp_acceleration_model").as_string();
     if (
       config.tangent_escape.acceleration_model != "canonical_velocity" &&
-      config.tangent_escape.acceleration_model != "risk_damped")
+      config.tangent_escape.acceleration_model != "risk_damped" &&
+      config.tangent_escape.acceleration_model != "tangent_plane")
     {
       throw std::runtime_error(
               "tangent_escape_rmp_acceleration_model must be "
-              "'canonical_velocity' or 'risk_damped'");
+              "'canonical_velocity', 'risk_damped', or 'tangent_plane'");
     }
     config.tangent_escape.metric_scalar =
       get_parameter("tangent_escape_rmp_metric_scalar").as_double();
@@ -3085,6 +3093,16 @@ private:
       get_parameter("tangent_escape_rmp_risk_stuck_dwell_time").as_double();
     config.tangent_escape.risk_stuck_ramp_time =
       get_parameter("tangent_escape_rmp_risk_stuck_ramp_time").as_double();
+    config.tangent_escape.metric_isotropy =
+      get_parameter("tangent_escape_rmp_metric_isotropy").as_double();
+    config.tangent_escape.push_safe_distance =
+      get_parameter("tangent_escape_rmp_push_safe_distance").as_double();
+    config.tangent_escape.push_influence_distance =
+      get_parameter("tangent_escape_rmp_push_influence_distance").as_double();
+    config.tangent_escape.metric_safe_distance =
+      get_parameter("tangent_escape_rmp_metric_safe_distance").as_double();
+    config.tangent_escape.metric_influence_distance =
+      get_parameter("tangent_escape_rmp_metric_influence_distance").as_double();
 
     config.escape_energy_certificate.enabled =
       get_parameter("escape_stability_guard_enabled").as_bool();
@@ -5392,9 +5410,13 @@ private:
       "This is natural-form compatibility, not a structured-GDS closure claim "
       "for the stateful hybrid Escape policy.";
 
+    const std::string escape_acceleration_model =
+      get_parameter("tangent_escape_rmp_acceleration_model").as_string();
+    // risk_damped and tangent_plane both drive entry from raw blockage rather
+    // than the filtered min_activation of the canonical model.
     const double escape_entry_threshold =
-      get_parameter("tangent_escape_rmp_acceleration_model").as_string() ==
-      "risk_damped" ?
+      (escape_acceleration_model == "risk_damped" ||
+      escape_acceleration_model == "tangent_plane") ?
       1e-12 :
       std::max(get_parameter("tangent_escape_rmp_min_activation").as_double(), 0.0);
     const double escape_safe_distance =

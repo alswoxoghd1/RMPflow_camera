@@ -591,9 +591,10 @@ class RmpflowTraceLogger(Node):
         row["tangent_escape_rmp_active"] = self._fmt(values[0])
 
         # An inactive tangent leaf publishes the one-value record [0].  The
-        # preserved canonical-velocity mode uses schema 6/61 values; the active
-        # risk-damped mode uses schema 7/68 values followed by the same
-        # 17-value candidate records.
+        # preserved canonical-velocity mode uses schema 6/61 values; the
+        # risk-damped mode uses schema 7/68 values; the tangent-plane mode uses
+        # schema 8/76 values.  All three are followed by the same 17-value
+        # candidate records.
         if len(values) <= 26:
             return
         schema_id = float(values[26])
@@ -601,7 +602,9 @@ class RmpflowTraceLogger(Node):
             return
         row["tangent_escape_rmp_schema_id"] = self._fmt(schema_id)
         schema = int(round(schema_id))
-        prefix_size = 61 if schema == 6 else 68 if schema == 7 else 0
+        prefix_size = (
+            61 if schema == 6 else 68 if schema == 7 else 76 if schema == 8 else 0
+        )
         if prefix_size == 0 or len(values) < prefix_size:
             return
 
@@ -650,7 +653,7 @@ class RmpflowTraceLogger(Node):
         ]
         for field, index in scalar_fields:
             row[field] = self._fmt(values[index])
-        if schema == 7:
+        if schema in (7, 8):
             row["tangent_escape_rmp_release_brake"] = self._fmt(0.0)
             row["tangent_escape_rmp_risk_stuck_accel_m_s2"] = self._fmt(
                 values[49]
@@ -668,6 +671,19 @@ class RmpflowTraceLogger(Node):
                 row[field] = self._fmt(values[index])
         else:
             row["tangent_escape_rmp_release_brake"] = self._fmt(values[49])
+        if schema == 8:
+            plane_fields = [
+                ("tangent_escape_rmp_push_activation", 68),
+                ("tangent_escape_rmp_metric_activation", 69),
+                ("tangent_escape_rmp_push_accel_m_s2", 70),
+                ("tangent_escape_rmp_tangent_damping_term_m_s2", 71),
+                ("tangent_escape_rmp_analytic_clearance_rate_m_s", 72),
+                ("tangent_escape_rmp_injection_power", 73),
+                ("tangent_escape_rmp_metric_isotropy", 74),
+                ("tangent_escape_rmp_tangent_normal_component", 75),
+            ]
+            for field, index in plane_fields:
+                row[field] = self._fmt(values[index])
         self._fill_xyz_from_array(row, values, 11, "tangent_escape_rmp_control_point", "m")
         self._fill_xyz_from_array(row, values, 14, "tangent_escape_rmp_obstacle", "m")
         self._fill_xyz_from_array(row, values, 17, "tangent_escape_rmp_normal")
@@ -1172,6 +1188,14 @@ class RmpflowTraceLogger(Node):
                 "tangent_escape_rmp_risk_accel_m_s2",
                 "tangent_escape_rmp_tangent_damping_accel_m_s2",
                 "tangent_escape_rmp_accel_input_m_s2",
+                "tangent_escape_rmp_push_activation",
+                "tangent_escape_rmp_metric_activation",
+                "tangent_escape_rmp_push_accel_m_s2",
+                "tangent_escape_rmp_tangent_damping_term_m_s2",
+                "tangent_escape_rmp_analytic_clearance_rate_m_s",
+                "tangent_escape_rmp_injection_power",
+                "tangent_escape_rmp_metric_isotropy",
+                "tangent_escape_rmp_tangent_normal_component",
                 "tangent_escape_rmp_canonical_coordinate_m",
                 "tangent_escape_rmp_velocity_reference_m_s",
                 "tangent_escape_rmp_velocity_error_m_s",

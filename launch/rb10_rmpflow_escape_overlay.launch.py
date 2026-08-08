@@ -208,6 +208,21 @@ def _launch_setup(context):
         ("escape_stuck_accel_floor", "tangent_escape_rmp_risk_stuck_accel_floor"),
         ("escape_stuck_dwell_time", "tangent_escape_rmp_risk_stuck_dwell_time"),
         ("escape_stuck_ramp_time", "tangent_escape_rmp_risk_stuck_ramp_time"),
+        # Escape strength.  The leaf saturates its push at b_t * max_speed and
+        # then bounds a_y with tanh at max_accel, so these three together set
+        # the whole tangential acceleration envelope:
+        #   a_y <= b_t * (max_speed - v_t),  bounded by max_accel.
+        ("escape_max_speed", "tangent_escape_rmp_max_speed"),
+        ("escape_tangent_damping_gain", "tangent_escape_rmp_risk_tangent_damping_gain"),
+        ("escape_max_accel", "tangent_escape_rmp_max_accel"),
+        # alpha_d gate band, shared by all models.
+        ("escape_safe_distance", "tangent_escape_rmp_safe_distance"),
+        ("escape_beta_on", "tangent_escape_rmp_goal_block_beta_on"),
+        ("escape_beta_full", "tangent_escape_rmp_goal_block_beta_full"),
+        ("escape_influence_distance", "tangent_escape_rmp_influence_distance"),
+        # tangent_plane-only knobs; ignored by the other two models.
+        ("escape_metric_isotropy", "tangent_escape_rmp_metric_isotropy"),
+        ("escape_push_influence_distance", "tangent_escape_rmp_push_influence_distance"),
     ]:
         controller_common[parameter_name] = _resolve_optional_override(
             context,
@@ -541,6 +556,57 @@ def generate_launch_description():
             DeclareLaunchArgument("escape_stuck_accel_floor", default_value="params"),
             DeclareLaunchArgument("escape_stuck_dwell_time", default_value="params"),
             DeclareLaunchArgument("escape_stuck_ramp_time", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_max_speed",
+                default_value="params",
+                description=(
+                    "Tangent speed ceiling. It also sets the push saturation "
+                    "b_t * max_speed, so it bounds the escape acceleration too."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "escape_tangent_damping_gain",
+                default_value="params",
+                description=(
+                    "b_t. Converts the remaining speed headroom into "
+                    "acceleration: a_y <= b_t * (max_speed - v_t)."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "escape_max_accel",
+                default_value="params",
+                description="tanh saturation of the escape acceleration.",
+            ),
+            DeclareLaunchArgument(
+                "escape_beta_on",
+                default_value="params",
+                description="cos(angle) where alpha_b starts. 0.5=60deg, 0.2=78deg.",
+            ),
+            DeclareLaunchArgument(
+                "escape_beta_full",
+                default_value="params",
+                description="cos(angle) where alpha_b reaches 1. 0.94=20deg.",
+            ),
+            DeclareLaunchArgument(
+                "escape_safe_distance",
+                default_value="params",
+                description="Inner edge of the alpha_d gate band (not a safety threshold).",
+            ),
+            DeclareLaunchArgument(
+                "escape_influence_distance",
+                default_value="params",
+                description="Outer edge of the alpha_d gate band.",
+            ),
+            DeclareLaunchArgument(
+                "escape_metric_isotropy",
+                default_value="params",
+                description="tangent_plane only; ignored by the other models.",
+            ),
+            DeclareLaunchArgument(
+                "escape_push_influence_distance",
+                default_value="params",
+                description="tangent_plane only; ignored by the other models.",
+            ),
             OpaqueFunction(function=_launch_setup),
         ]
     )
