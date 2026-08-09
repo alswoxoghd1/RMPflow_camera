@@ -983,6 +983,11 @@ def generate_launch_description():
                 "canonical_velocity is retained only for explicit A/B rollback."
             ),
         ),
+        # Escape v2 ("tangent_ode") is configured only through params.yaml.
+        # A launch argument would be passed as a node parameter and would then
+        # silently win over the params file, so retuning params.yaml alone
+        # would have no effect here.  Use the overlay launch, whose "params"
+        # sentinel keeps the file authoritative, when a CLI override is needed.
         DeclareLaunchArgument(
             "tangent_escape_rmp_metric_isotropy",
             default_value="1.0",

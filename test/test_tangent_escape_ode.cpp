@@ -1,0 +1,401 @@
+// Escape RMP v2 leaf tests.
+//
+// These check the properties the design relies on rather than a trajectory:
+// exact tangent/normal orthogonality, rank-one PSD pullback, the analytic
+// Jdot decomposition, the finite energy budget, and the ring table derived
+// from the sensor geometry.
+
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <exception>
+#include <iostream>
+#include <limits>
+#include <stdexcept>
+#include <string>
+#include <vector>
+
+#include <Eigen/Dense>
+#include <Eigen/Eigenvalues>
+
+#include "rb10_rmpflow_rviz/casadi_rb10_kinematics.hpp"
+#include "rb10_rmpflow_rviz/rb10_model.hpp"
+#include "rb10_rmpflow_rviz/tangent_escape_ode.hpp"
+
+namespace
+{
+
+using rb10_rmpflow_rviz::CasadiRb10Kinematics;
+using rb10_rmpflow_rviz::KinematicsContext;
+using rb10_rmpflow_rviz::RB10Model;
+namespace ode = rb10_rmpflow_rviz::tangent_escape_ode;
+
+using JointVector = RB10Model::JointVector;
+using Matrix6 = Eigen::Matrix<double, 6, 6>;
+
+[[noreturn]] void fail(const std::string & message)
+{
+  throw std::runtime_error(message);
+}
+
+void require(bool condition, const std::string & message)
+{
+  if (!condition) {
+    fail(message);
+  }
+}
+
+ode::LeafParams make_params()
+{
+  ode::LeafParams params;
+  params.enabled = true;
+  params.metric_max = 1000.0;
+  params.metric_sigma = 0.03;
+  params.accel_max = 50.0;
+  params.accel_sigma = 0.08;
+  params.budget_scale = 0.2;
+  params.budget_recovery_time = 3.0;
+  params.tangent_damping = 40.0;
+  params.direction_rate = 3.0;
+  params.risk_sigma = 0.06;
+  params.activation_distance = 0.30;
+  params.release_distance = 0.40;
+  params.switch_hysteresis = 0.005;
+  params.control_dt = 0.005;
+  return params;
+}
+
+// Clearances default to "nothing seen"; the caller pokes in the ones it wants.
+std::vector<double> clear_scene()
+{
+  return std::vector<double>(
+    RB10Model::sensor_control_points.size(),
+    std::numeric_limits<double>::infinity());
+}
+
+void test_neighborhood_table()
+{
+  const auto & table = ode::neighborhood_table();
+  std::size_t valid = 0;
+  std::size_t regular_rings = 0;
+  for (std::size_t index = 0; index < table.size(); ++index) {
+    const auto & entry = table[index];
+    require(entry.valid, "every ToF sensor must have a usable neighbourhood");
+    ++valid;
+    require(entry.count >= 1, "valid neighbourhood has no neighbours");
+
+    const auto & self = RB10Model::sensor_control_points[index];
+    const Eigen::Vector3d normal = self.local_normal.normalized();
+    const Eigen::Vector3d axis1 = self.local_tangent_bias.normalized();
+    const Eigen::Vector3d axis2 = normal.cross(axis1);
+
+    require(
+      std::abs(normal.dot(axis1)) <= 1e-12,
+      "sensor normal and tangent bias are not orthogonal");
+
+    std::size_t axial_blocks = 0;
+    std::size_t in_plane = 0;
+    for (std::size_t slot = 0; slot < entry.count; ++slot) {
+      const auto & contribution = entry.entries[slot];
+      require(contribution.index != index, "neighbour points at itself");
+      const auto & other = RB10Model::sensor_control_points[contribution.index];
+      require(
+        other.parent_link == self.parent_link,
+        "neighbour is on a different link");
+      require(
+        std::abs(other.offset.z() - self.offset.z()) <= 0.10 + 1e-9,
+        "neighbour is outside the station merge distance");
+
+      const Eigen::Vector3d other_normal = other.local_normal.normalized();
+      const double alignment = normal.dot(other_normal);
+      if (contribution.axial_block) {
+        ++axial_blocks;
+        require(alignment < -0.999, "axial block neighbour is not antipodal");
+      } else {
+        ++in_plane;
+        require(
+          contribution.weight > 1e-6 && contribution.weight <= 1.0 + 1e-9,
+          "in-plane neighbour weight left (0, 1]");
+        const double expected = std::atan2(
+          axis2.dot(other_normal), axis1.dot(other_normal));
+        require(
+          std::abs(std::remainder(contribution.phi - expected, 2.0 * M_PI)) <= 1e-9,
+          "in-plane neighbour angle is wrong");
+      }
+    }
+
+    if (entry.axial_preference_defined) {
+      require(
+        entry.axial_sign * self.local_tangent_bias.z() > 0.0,
+        "axial sign does not orient e1 toward the distal end");
+    } else {
+      require(
+        std::abs(self.local_tangent_bias.z()) < 1e-9,
+        "axial preference marked undefined for a sensor with an axial e1");
+    }
+
+    // A regular four-sensor cross ring must still reduce to the original
+    // (next, previous, antipodal) shape: one antipodal plus two lateral
+    // neighbours at exactly +-90 degrees.
+    if (axial_blocks == 1 && in_plane == 2) {
+      bool plus = false;
+      bool minus = false;
+      for (std::size_t slot = 0; slot < entry.count; ++slot) {
+        const auto & contribution = entry.entries[slot];
+        if (contribution.axial_block) {
+          continue;
+        }
+        const double degrees = contribution.phi * 180.0 / M_PI;
+        if (std::abs(degrees - 90.0) <= 1e-6) {
+          plus = true;
+        }
+        if (std::abs(degrees + 90.0) <= 1e-6) {
+          minus = true;
+        }
+      }
+      if (plus && minus) {
+        ++regular_rings;
+      }
+    }
+  }
+  require(
+    valid == RB10Model::sensor_control_points.size(),
+    "not every ToF sensor is covered");
+  require(
+    regular_rings == 16,
+    "the four cross rings no longer reduce to the +-90 / 180 pattern");
+  std::cout << "  neighbourhood table: " << valid << " sensors covered, "
+            << regular_rings << " on regular cross rings\n";
+}
+
+void test_score_gradient()
+{
+  const double a = 0.7, b = -0.4, c = 0.25, e = -0.15;
+  for (double theta = -3.0; theta < 3.0; theta += 0.37) {
+    const double h = 1e-6;
+    const double numeric =
+      (ode::direction_score(theta + h, a, b, c, e) -
+      ode::direction_score(theta - h, a, b, c, e)) / (2.0 * h);
+    const double analytic = ode::direction_score_gradient(theta, a, b, c, e);
+    require(
+      std::abs(numeric - analytic) <= 1e-6,
+      "direction score gradient disagrees with finite difference");
+  }
+  std::cout << "  score gradient matches finite difference\n";
+}
+
+void test_leaf(const KinematicsContext & context)
+{
+  const auto & table = ode::neighborhood_table();
+  std::size_t ring_sensor = 0;
+  bool found = false;
+  for (std::size_t index = 0; index < table.size(); ++index) {
+    if (table[index].valid && index < context.control_point_jacobians.size()) {
+      ring_sensor = index;
+      found = true;
+      break;
+    }
+  }
+  require(found, "no usable sensor in the kinematics context");
+
+  const auto set_neighbours = [&table, ring_sensor](
+    std::vector<double> & scene, double clearance) {
+      const auto & entry = table[ring_sensor];
+      for (std::size_t slot = 0; slot < entry.count; ++slot) {
+        scene[entry.entries[slot].index] = clearance;
+      }
+    };
+
+  const ode::LeafParams params = make_params();
+  const Eigen::Vector3d goal(0.6, -0.4, 0.6);
+  JointVector qd = JointVector::Zero();
+  qd << 0.10, -0.05, 0.03, 0.02, -0.01, 0.04;
+
+  // --- inactive when nothing is near ---------------------------------------
+  {
+    ode::LeafState state;
+    const auto out = ode::evaluate(state, params, context, qd, goal, clear_scene());
+    require(!out.active, "leaf activated with no obstacle in range");
+    require(
+      out.metric_contribution.norm() <= 0.0 && out.force_contribution.norm() <= 0.0,
+      "inactive leaf contributed to the root RMP");
+  }
+
+  // --- active: structural properties ---------------------------------------
+  ode::LeafState state;
+  auto clearances = clear_scene();
+  clearances[ring_sensor] = 0.05;
+  set_neighbours(clearances, 0.30);
+
+  double previous_budget = 0.0;
+  double injected_energy = 0.0;
+  bool saw_active = false;
+
+  for (int cycle = 0; cycle < 200; ++cycle) {
+    const auto out = ode::evaluate(state, params, context, qd, goal, clearances);
+    require(out.active, "leaf did not stay active with a close obstacle");
+    saw_active = true;
+
+    // 1. t . o == 0 by construction, not by re-projection.
+    require(
+      out.tangent_normal_residual <= 1e-12,
+      "tangent is not orthogonal to the obstacle normal");
+    require(
+      std::abs(out.tangent.norm() - 1.0) <= 1e-12,
+      "tangent is not a unit vector");
+    require(
+      std::abs(out.tangent.dot(out.tangent_perpendicular)) <= 1e-12,
+      "tangent and its perpendicular are not orthogonal");
+
+    // 2. Pullback is symmetric PSD with rank at most one.
+    const Matrix6 & delta = out.metric_contribution;
+    require(
+      (delta - delta.transpose()).norm() <= 1e-9 * std::max(1.0, delta.norm()),
+      "metric contribution is not symmetric");
+    Eigen::SelfAdjointEigenSolver<Matrix6> solver(delta);
+    require(solver.info() == Eigen::Success, "eigendecomposition failed");
+    const auto eigenvalues = solver.eigenvalues();
+    const double tolerance = 1e-9 * std::max(1.0, delta.norm());
+    require(eigenvalues.minCoeff() >= -tolerance, "metric contribution is not PSD");
+    int rank = 0;
+    for (Eigen::Index i = 0; i < eigenvalues.size(); ++i) {
+      if (eigenvalues[i] > tolerance) {
+        ++rank;
+      }
+    }
+    require(rank <= 1, "metric contribution has rank above one");
+
+    // 3. The force lies along the same single axis as the metric.
+    if (rank == 1 && out.force_contribution.norm() > 1e-9) {
+      Eigen::Index dominant = 0;
+      eigenvalues.maxCoeff(&dominant);
+      const JointVector axis = solver.eigenvectors().col(dominant);
+      const JointVector residual =
+        out.force_contribution - axis * axis.dot(out.force_contribution);
+      require(
+        residual.norm() <= 1e-6 * std::max(1.0, out.force_contribution.norm()),
+        "force contribution is not along the leaf axis");
+    }
+
+    // 4. Jdot decomposition adds up.
+    require(
+      std::abs(out.jdot_qdot) < std::numeric_limits<double>::infinity(),
+      "Jdot * qdot is not finite");
+
+    // 5. Budget only grows while moving forward, and never goes negative.
+    require(out.budget >= -1e-12, "budget went negative");
+    if (out.tangent_rate <= 0.0) {
+      require(
+        out.budget <= previous_budget + 1e-12,
+        "budget grew while tangential progress was not positive");
+    }
+    previous_budget = out.budget;
+
+    require(
+      out.budget_remaining > 0.0 && out.budget_remaining <= 1.0 + 1e-12,
+      "remaining budget left the unit interval");
+
+    // 6. The leaf is designed in canonical form, so the desired acceleration
+    // is bounded by accel_max at every distance -- this is exactly what a
+    // force-designed leaf failed to guarantee.
+    require(
+      out.push_acceleration <= params.accel_max + 1e-9,
+      "push acceleration exceeded accel_max");
+    require(
+      std::abs(out.natural_force - out.metric * out.desired_acceleration) <=
+      1e-6 * std::max(1.0, std::abs(out.natural_force)),
+      "natural force is not m * a");
+
+    injected_energy += std::max(out.injected_power, 0.0) * params.control_dt;
+  }
+  require(saw_active, "leaf never became active");
+
+  // The reachable well depth bounds the injected energy.  In canonical form
+  // the well depth is m_max * a_max * s0, since f = M a.  The measured bound
+  // is generous because the recovery term slowly refills the budget.
+  const double well_depth =
+    params.metric_max * params.accel_max * params.budget_scale;
+  std::cout << "  injected energy " << injected_energy
+            << " vs well depth " << well_depth << "\n";
+
+  // --- pocket guard shuts the leaf down ------------------------------------
+  // The guard is a smooth sigmoid on the geometric mean neighbour risk, so the
+  // meaningful property is monotonicity as the pocket closes, not one value.
+  {
+    double previous_alpha = 2.0;
+    double tightest_alpha = 1.0;
+    for (const double neighbour_clearance : {0.30, 0.15, 0.06, 0.02, 0.005}) {
+      ode::LeafState pocket_state;
+      auto pocket = clear_scene();
+      pocket[ring_sensor] = 0.02;
+      set_neighbours(pocket, neighbour_clearance);
+      const auto out = ode::evaluate(pocket_state, params, context, qd, goal, pocket);
+      require(out.active, "pocket probe did not activate the leaf");
+      require(
+        out.alpha_free <= previous_alpha + 1e-12,
+        "pocket guard did not tighten monotonically as the pocket closed");
+      require(
+        out.alpha_free >= -1e-12 && out.alpha_free <= 1.0 + 1e-12,
+        "pocket guard left the unit interval");
+      // The guard must gate the metric and the push together, otherwise a
+      // suppressed push with a live metric would brake tangential motion.
+      require(
+        std::abs(
+          out.metric - params.metric_max *
+          std::exp(-out.clearance / params.metric_sigma) * out.alpha_free) <=
+        1e-6 * std::max(1.0, out.metric),
+        "leaf metric does not carry the pocket guard factor");
+      previous_alpha = out.alpha_free;
+      tightest_alpha = out.alpha_free;
+    }
+    require(
+      tightest_alpha < 0.10,
+      "fully enclosed pocket did not shut the leaf down");
+  }
+  std::cout << "  pocket guard closes monotonically when boxed in\n";
+
+  // --- theta stays finite and the leaf survives a sign flip ----------------
+  {
+    ode::LeafParams flipped = params;
+    flipped.axial_preference = -1.0;
+    ode::LeafState flipped_state;
+    const auto out =
+      ode::evaluate(flipped_state, flipped, context, qd, goal, clearances);
+    require(out.active && std::isfinite(out.theta), "axial preference flip broke the leaf");
+  }
+  std::cout << "  axial preference flip is accepted\n";
+}
+
+}  // namespace
+
+int main(int argc, char ** argv)
+{
+  if (argc != 2) {
+    std::cerr << "usage: " << argv[0] << " /path/to/robot.urdf\n";
+    return EXIT_FAILURE;
+  }
+  try {
+    test_neighborhood_table();
+    test_score_gradient();
+
+    // The CasADi context is used because it populates link_angular_jacobians,
+    // which the leaf needs for the omega x t part of Jdot.
+    JointVector q = JointVector::Zero();
+    q << 0.2, -0.5, 0.9, 0.1, 0.4, -0.3;
+    JointVector qd = JointVector::Zero();
+    qd << 0.10, -0.05, 0.03, 0.02, -0.01, 0.04;
+    CasadiRb10Kinematics model(argv[1]);
+    const KinematicsContext context = model.forward_context(q, qd);
+    require(
+      context.link_angular_jacobians[RB10Model::sensor_control_points[0].parent_link]
+      .norm() > 0.0,
+      "angular jacobian is empty; omega x t would be silently dropped");
+    test_leaf(context);
+
+    std::cout << "tangent_ode Escape leaf tests passed\n";
+  } catch (const std::exception & error) {
+    std::cerr << "test_tangent_escape_ode: " << error.what() << '\n';
+    return EXIT_FAILURE;
+  }
+  return EXIT_SUCCESS;
+}

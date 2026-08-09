@@ -9,6 +9,7 @@
 #include <Eigen/Dense>
 
 #include "rb10_rmpflow_rviz/rmp_eigen_solver.hpp"
+#include "rb10_rmpflow_rviz/tangent_escape_ode.hpp"
 
 namespace rb10_rmpflow_rviz
 {
@@ -58,7 +59,8 @@ private:
   {
     CanonicalVelocity = 0,
     RiskDamped = 1,
-    TangentPlane = 2
+    TangentPlane = 2,
+    TangentOde = 3
   };
 
   enum class CanonicalPhase : int
@@ -140,6 +142,16 @@ private:
     std::vector<ClearanceRateState> clearance_rate_states{};
   };
 
+  void evaluate_ode(
+    const KinematicsContext & context,
+    const JointVector & qd,
+    const Eigen::Vector3d & goal,
+    const std::vector<ObstacleSphere> & obstacles,
+    Matrix6 & metric,
+    JointVector & force,
+    TangentEscapeCommand & command,
+    std::vector<double> * debug_data) const;
+
   void evaluate_impl(
     CanonicalState & state,
     AccelerationModel model,
@@ -166,6 +178,7 @@ private:
   mutable CanonicalState canonical_state_{};
   mutable CanonicalState risk_damped_state_{};
   mutable CanonicalState tangent_plane_state_{};
+  mutable tangent_escape_ode::LeafState ode_state_{};
 };
 
 }  // namespace rb10_rmpflow_rviz

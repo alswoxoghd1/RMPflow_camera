@@ -2053,6 +2053,30 @@ public:
     declare_parameter("tangent_escape_rmp_risk_stuck_ramp_time", 0.30);
     // "tangent_plane" model only.  Non-positive distances inherit the gate one
     // level up: push inherits safe/influence, metric inherits push.
+    // Escape RMP v2 ("tangent_ode"); ignored by the other three models.
+    declare_parameter("tangent_escape_ode_metric_max", 100000.0);
+    declare_parameter("tangent_escape_ode_metric_sigma", 0.03);
+    declare_parameter("tangent_escape_ode_accel_max", 50.0);
+    declare_parameter("tangent_escape_ode_accel_sigma", 0.08);
+    declare_parameter("tangent_escape_ode_budget_scale", 1.0);
+    declare_parameter("tangent_escape_ode_budget_recovery_time", 3.0);
+    declare_parameter("tangent_escape_ode_tangent_damping", 40.0);
+    declare_parameter("tangent_escape_ode_direction_rate", 3.0);
+    declare_parameter("tangent_escape_ode_risk_sigma", 0.06);
+    declare_parameter("tangent_escape_ode_weight_goal", 1.0);
+    declare_parameter("tangent_escape_ode_weight_velocity", 0.3);
+    declare_parameter("tangent_escape_ode_weight_risk", 1.0);
+    declare_parameter("tangent_escape_ode_weight_curvature", 1.5);
+    declare_parameter("tangent_escape_ode_velocity_epsilon", 0.0001);
+    declare_parameter("tangent_escape_ode_axial_preference", 1.0);
+    declare_parameter("tangent_escape_ode_pocket_threshold", 0.6);
+    declare_parameter("tangent_escape_ode_pocket_epsilon", 0.1);
+    declare_parameter("tangent_escape_ode_activation_distance", 0.3);
+    declare_parameter("tangent_escape_ode_release_distance", 0.4);
+    declare_parameter("tangent_escape_ode_switch_hysteresis", 0.005);
+    declare_parameter("tangent_escape_ode_weight_stall", 2.0);
+    declare_parameter("tangent_escape_ode_stall_time_constant", 1.5);
+    declare_parameter("tangent_escape_ode_stall_speed", 0.02);
     declare_parameter("tangent_escape_rmp_metric_isotropy", 1.0);
     declare_parameter("tangent_escape_rmp_push_safe_distance", 0.0);
     declare_parameter("tangent_escape_rmp_push_influence_distance", 0.0);
@@ -2970,11 +2994,13 @@ private:
     if (
       config.tangent_escape.acceleration_model != "canonical_velocity" &&
       config.tangent_escape.acceleration_model != "risk_damped" &&
-      config.tangent_escape.acceleration_model != "tangent_plane")
+      config.tangent_escape.acceleration_model != "tangent_plane" &&
+      config.tangent_escape.acceleration_model != "tangent_ode")
     {
       throw std::runtime_error(
               "tangent_escape_rmp_acceleration_model must be "
-              "'canonical_velocity', 'risk_damped', or 'tangent_plane'");
+              "'canonical_velocity', 'risk_damped', 'tangent_plane', or "
+              "'tangent_ode'");
     }
     config.tangent_escape.metric_scalar =
       get_parameter("tangent_escape_rmp_metric_scalar").as_double();
@@ -3093,6 +3119,52 @@ private:
       get_parameter("tangent_escape_rmp_risk_stuck_dwell_time").as_double();
     config.tangent_escape.risk_stuck_ramp_time =
       get_parameter("tangent_escape_rmp_risk_stuck_ramp_time").as_double();
+    config.tangent_escape_ode.metric_max =
+      get_parameter("tangent_escape_ode_metric_max").as_double();
+    config.tangent_escape_ode.metric_sigma =
+      get_parameter("tangent_escape_ode_metric_sigma").as_double();
+    config.tangent_escape_ode.accel_max =
+      get_parameter("tangent_escape_ode_accel_max").as_double();
+    config.tangent_escape_ode.accel_sigma =
+      get_parameter("tangent_escape_ode_accel_sigma").as_double();
+    config.tangent_escape_ode.budget_scale =
+      get_parameter("tangent_escape_ode_budget_scale").as_double();
+    config.tangent_escape_ode.budget_recovery_time =
+      get_parameter("tangent_escape_ode_budget_recovery_time").as_double();
+    config.tangent_escape_ode.tangent_damping =
+      get_parameter("tangent_escape_ode_tangent_damping").as_double();
+    config.tangent_escape_ode.direction_rate =
+      get_parameter("tangent_escape_ode_direction_rate").as_double();
+    config.tangent_escape_ode.risk_sigma =
+      get_parameter("tangent_escape_ode_risk_sigma").as_double();
+    config.tangent_escape_ode.weight_goal =
+      get_parameter("tangent_escape_ode_weight_goal").as_double();
+    config.tangent_escape_ode.weight_velocity =
+      get_parameter("tangent_escape_ode_weight_velocity").as_double();
+    config.tangent_escape_ode.weight_risk =
+      get_parameter("tangent_escape_ode_weight_risk").as_double();
+    config.tangent_escape_ode.weight_curvature =
+      get_parameter("tangent_escape_ode_weight_curvature").as_double();
+    config.tangent_escape_ode.velocity_epsilon =
+      get_parameter("tangent_escape_ode_velocity_epsilon").as_double();
+    config.tangent_escape_ode.axial_preference =
+      get_parameter("tangent_escape_ode_axial_preference").as_double();
+    config.tangent_escape_ode.pocket_threshold =
+      get_parameter("tangent_escape_ode_pocket_threshold").as_double();
+    config.tangent_escape_ode.pocket_epsilon =
+      get_parameter("tangent_escape_ode_pocket_epsilon").as_double();
+    config.tangent_escape_ode.activation_distance =
+      get_parameter("tangent_escape_ode_activation_distance").as_double();
+    config.tangent_escape_ode.release_distance =
+      get_parameter("tangent_escape_ode_release_distance").as_double();
+    config.tangent_escape_ode.switch_hysteresis =
+      get_parameter("tangent_escape_ode_switch_hysteresis").as_double();
+    config.tangent_escape_ode.weight_stall =
+      get_parameter("tangent_escape_ode_weight_stall").as_double();
+    config.tangent_escape_ode.stall_time_constant =
+      get_parameter("tangent_escape_ode_stall_time_constant").as_double();
+    config.tangent_escape_ode.stall_speed =
+      get_parameter("tangent_escape_ode_stall_speed").as_double();
     config.tangent_escape.metric_isotropy =
       get_parameter("tangent_escape_rmp_metric_isotropy").as_double();
     config.tangent_escape.push_safe_distance =
@@ -4567,7 +4639,21 @@ private:
         label.pose.orientation.w = 1.0;
         label.scale.z = 0.035;
         label.color = color(1.0F, 1.0F, 1.0F, 0.98F);
-        if (risk_damped_schema && canonical.size() >= 68) {
+        // Escape v2 has no activation filter, no handoff ramp, and no state
+        // machine, so the canonical/risk labels would be pure fiction here.
+        const bool ode_schema = escape_schema == 9;
+        if (ode_schema && canonical.size() >= 56) {
+          label.text =
+            "ESC ODE cp=" + std::to_string(static_cast<int>(canonical[1])) +
+            " d=" + std::to_string(canonical[2]).substr(0, 6) +
+            " M=" + std::to_string(metric).substr(0, 7) +
+            " a=" + std::to_string(scalar_accel).substr(0, 7) +
+            " aPush=" + std::to_string(canonical[28]).substr(0, 7) +
+            " th=" + std::to_string(canonical[3]).substr(0, 6) +
+            " bud=" + std::to_string(canonical[6]).substr(0, 5) +
+            " free=" + std::to_string(canonical[15]).substr(0, 5) +
+            " v=" + std::to_string(scalar_velocity).substr(0, 6);
+        } else if (risk_damped_schema && canonical.size() >= 68) {
           label.text =
             "ESC RISK " + state_name +
             " phase=" + std::to_string(phase_id) +

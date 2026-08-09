@@ -3,6 +3,7 @@
 import atexit
 import copy
 import os
+import re
 import shutil
 import tempfile
 
@@ -130,6 +131,32 @@ def _parameter_file(node_fqn, values):
     return path
 
 
+# RViz2's RobotModel display has no colour override, and the arm's visual
+# meshes are COLLADA, which carry their own materials.  To tint a ghost we
+# therefore rewrite its robot_description: swap the visual meshes to the STL
+# variants that ship alongside them, then force one material on every visual.
+# Each slot publishes its own robot_description, so this only affects the ghost.
+def _recoloured_description(urdf, rgba, material_name):
+    def replace(match):
+        opening, body = match.group(1), match.group(2)
+        body = re.sub(r"<material\b.*?</material>", "", body, flags=re.S)
+        body = re.sub(r"<material\b[^>]*/>", "", body)
+        # The STL twins live in collision/, not next to the COLLADA files, so
+        # the directory has to change with the extension.
+        body = re.sub(
+            r'(<mesh\b[^>]*filename="[^"]*?)/visual/([^"/]+)\.dae(")',
+            r"\1/collision/\2.stl\3",
+            body,
+        )
+        material = (
+            f'<material name="{material_name}">'
+            f'<color rgba="{rgba}"/></material>'
+        )
+        return f"{opening}{body}{material}</visual>"
+
+    return re.sub(r"(<visual\b[^>]*>)(.*?)</visual>", replace, urdf, flags=re.S)
+
+
 def _resolve_optional_override(context, name, current_value, value_type):
     value = LaunchConfiguration(name).perform(context).strip()
     if value == "params":
@@ -220,6 +247,26 @@ def _launch_setup(context):
         ("escape_beta_on", "tangent_escape_rmp_goal_block_beta_on"),
         ("escape_beta_full", "tangent_escape_rmp_goal_block_beta_full"),
         ("escape_influence_distance", "tangent_escape_rmp_influence_distance"),
+        # tangent_ode (v2) knobs; ignored by the other three models.
+        ("escape_ode_metric_max", "tangent_escape_ode_metric_max"),
+        ("escape_ode_metric_sigma", "tangent_escape_ode_metric_sigma"),
+        ("escape_ode_accel_max", "tangent_escape_ode_accel_max"),
+        ("escape_ode_accel_sigma", "tangent_escape_ode_accel_sigma"),
+        ("escape_ode_budget_scale", "tangent_escape_ode_budget_scale"),
+        ("escape_ode_budget_recovery_time", "tangent_escape_ode_budget_recovery_time"),
+        ("escape_ode_tangent_damping", "tangent_escape_ode_tangent_damping"),
+        ("escape_ode_direction_rate", "tangent_escape_ode_direction_rate"),
+        ("escape_ode_risk_sigma", "tangent_escape_ode_risk_sigma"),
+        ("escape_ode_weight_goal", "tangent_escape_ode_weight_goal"),
+        ("escape_ode_weight_velocity", "tangent_escape_ode_weight_velocity"),
+        ("escape_ode_weight_risk", "tangent_escape_ode_weight_risk"),
+        ("escape_ode_weight_curvature", "tangent_escape_ode_weight_curvature"),
+        ("escape_ode_axial_preference", "tangent_escape_ode_axial_preference"),
+        ("escape_ode_pocket_threshold", "tangent_escape_ode_pocket_threshold"),
+        ("escape_ode_pocket_epsilon", "tangent_escape_ode_pocket_epsilon"),
+        ("escape_ode_activation_distance", "tangent_escape_ode_activation_distance"),
+        ("escape_ode_release_distance", "tangent_escape_ode_release_distance"),
+        ("escape_ode_switch_hysteresis", "tangent_escape_ode_switch_hysteresis"),
         # tangent_plane-only knobs; ignored by the other two models.
         ("escape_metric_isotropy", "tangent_escape_rmp_metric_isotropy"),
         ("escape_push_influence_distance", "tangent_escape_rmp_push_influence_distance"),
@@ -231,143 +278,148 @@ def _launch_setup(context):
             float,
         )
 
-    controller_on = copy.deepcopy(controller_common)
-    controller_on.update(
-        {
-            "enable_tangent_escape_rmp": True,
-            "publish_visualization": True,
-            "publish_tangent_escape_rmp_data": True,
-            "publish_tangent_escape_dual_solve_data": True,
-            "publish_tangent_escape_geometry_debug": True,
-            "tangent_escape_rmp_data_topic": "tangent_escape_rmp_data",
-            "tangent_escape_dual_solve_topic": "tangent_escape_dual_solve",
-            "tangent_escape_geometry_data_topic": "tangent_escape_geometry_data",
-            "tangent_escape_geometry_marker_topic": (
-                "tangent_escape_geometry_markers"
-            ),
-            "publish_rmp_ee_pose": True,
-        }
-    )
+    # Overlay slots.  The namespaces and TF prefixes are fixed because the RViz
+    # config and run_fixed_obstacle_escape_benchmark.py address them by name;
+    # only what runs inside each slot is configurable.  Slot 0 owns the
+    # unprefixed frames and /rmp_ee_pose.
+    # (namespace, TF prefix, ghost colour).  None keeps the original meshes.
+    overlay_slots = [
+        ("escape_on", "", None),
+        ("escape_off", "escape_off/", "0.45 0.45 0.45 1.0"),
+        ("escape_alt", "escape_alt/", "1.0 0.1 0.1 1.0"),
+    ]
 
-    controller_off = copy.deepcopy(controller_common)
-    controller_off.update(
-        {
-            "enable_tangent_escape_rmp": False,
-            "publish_visualization": False,
-            "publish_tangent_escape_rmp_data": False,
-            "publish_tangent_escape_geometry_debug": False,
-            "publish_rmp_ee_pose": True,
-        }
-    )
+    variants = [
+        token.strip()
+        for token in LaunchConfiguration("variants").perform(context).split(",")
+        if token.strip()
+    ]
+    if not variants:
+        raise RuntimeError('launch argument "variants" is empty')
+    if len(variants) > len(overlay_slots):
+        raise RuntimeError(
+            f"at most {len(overlay_slots)} overlay variants are supported, got "
+            f"{len(variants)}: {variants}"
+        )
+
+    known_models = {
+        "canonical_velocity",
+        "risk_damped",
+        "tangent_plane",
+        "tangent_ode",
+    }
+    for variant in variants:
+        if variant not in known_models and variant not in {"on", "off"}:
+            raise RuntimeError(
+                f'unknown overlay variant "{variant}"; use "off", "on", or one of '
+                f"{sorted(known_models)}"
+            )
 
     shared_input_remappings = [
         ("goal_pose", "/goal_pose"),
         ("goal_position", "/goal_position"),
         ("obstacles", "/obstacles"),
     ]
-    controller_on_remappings = [
-        *shared_input_remappings,
-        ("rmp_ee_pose", "/rmp_ee_pose"),
-    ]
 
-    controller_on_node = Node(
-        package="rb10_rmpflow_rviz",
-        executable="rmpflow_controller",
-        namespace="escape_on",
-        name="rmpflow_controller",
-        output="screen",
-        parameters=[
-            _parameter_file(
-                "/escape_on/rmpflow_controller",
-                controller_on,
+    actions = []
+    for slot_index, variant in enumerate(variants):
+        namespace, frame_prefix, ghost_colour = overlay_slots[slot_index]
+        primary = slot_index == 0
+
+        controller = copy.deepcopy(controller_common)
+        if variant == "off":
+            controller.update(
+                {
+                    "enable_tangent_escape_rmp": False,
+                    "publish_visualization": False,
+                    "publish_tangent_escape_rmp_data": False,
+                    "publish_tangent_escape_geometry_debug": False,
+                    "publish_rmp_ee_pose": True,
+                }
             )
-        ],
-        remappings=controller_on_remappings,
-    )
-    controller_off_node = Node(
-        package="rb10_rmpflow_rviz",
-        executable="rmpflow_controller",
-        namespace="escape_off",
-        name="rmpflow_controller",
-        output="screen",
-        parameters=[
-            _parameter_file(
-                "/escape_off/rmpflow_controller",
-                controller_off,
+        else:
+            controller.update(
+                {
+                    "enable_tangent_escape_rmp": True,
+                    # Every escape variant publishes its own diagnostics; the
+                    # topics are namespaced, so a three-way run can be compared
+                    # sample by sample.
+                    "publish_visualization": True,
+                    "publish_tangent_escape_rmp_data": True,
+                    "publish_tangent_escape_dual_solve_data": True,
+                    "publish_tangent_escape_geometry_debug": True,
+                    "tangent_escape_rmp_data_topic": "tangent_escape_rmp_data",
+                    "tangent_escape_dual_solve_topic": "tangent_escape_dual_solve",
+                    "tangent_escape_geometry_data_topic": (
+                        "tangent_escape_geometry_data"
+                    ),
+                    "tangent_escape_geometry_marker_topic": (
+                        "tangent_escape_geometry_markers"
+                    ),
+                    "publish_rmp_ee_pose": True,
+                }
             )
-        ],
-        remappings=shared_input_remappings,
-    )
+            if variant != "on":
+                controller["tangent_escape_rmp_acceleration_model"] = variant
 
-    robot_state_on = Node(
-        package="robot_state_publisher",
-        executable="robot_state_publisher",
-        namespace="escape_on",
-        name="robot_state_publisher",
-        output="screen",
-        parameters=[
-            {
-                "robot_description": robot_description,
-                "publish_frequency": 50.0,
-                "frame_prefix": "",
-            }
-        ],
-        remappings=[
-            ("joint_states", "/escape_on/joint_states"),
-            ("robot_description", "/escape_on/robot_description"),
-        ],
-    )
-    robot_state_off = Node(
-        package="robot_state_publisher",
-        executable="robot_state_publisher",
-        namespace="escape_off",
-        name="robot_state_publisher",
-        output="screen",
-        parameters=[
-            {
-                "robot_description": robot_description,
-                "publish_frequency": 50.0,
-                "frame_prefix": "escape_off/",
-            }
-        ],
-        remappings=[
-            ("joint_states", "/escape_off/joint_states"),
-            ("robot_description", "/escape_off/robot_description"),
-        ],
-    )
+        remappings = list(shared_input_remappings)
+        if primary:
+            remappings.append(("rmp_ee_pose", "/rmp_ee_pose"))
 
-    off_base_anchor = Node(
-        package="tf2_ros",
-        executable="static_transform_publisher",
-        name="escape_off_base_anchor",
-        output="screen",
-        arguments=[
-            "--x",
-            "0",
-            "--y",
-            "0",
-            "--z",
-            "0",
-            "--roll",
-            "0",
-            "--pitch",
-            "0",
-            "--yaw",
-            "0",
-            "--frame-id",
-            "base_link",
-            "--child-frame-id",
-            "escape_off/base_link",
-        ],
-    )
-
-    actions = [
-        robot_state_on,
-        robot_state_off,
-        off_base_anchor,
-        controller_on_node,
-        controller_off_node,
-    ]
+        actions.append(
+            Node(
+                package="rb10_rmpflow_rviz",
+                executable="rmpflow_controller",
+                namespace=namespace,
+                name="rmpflow_controller",
+                output="screen",
+                parameters=[
+                    _parameter_file(f"/{namespace}/rmpflow_controller", controller)
+                ],
+                remappings=remappings,
+            )
+        )
+        actions.append(
+            Node(
+                package="robot_state_publisher",
+                executable="robot_state_publisher",
+                namespace=namespace,
+                name="robot_state_publisher",
+                output="screen",
+                parameters=[
+                    {
+                        "robot_description": (
+                            robot_description if ghost_colour is None else
+                            _recoloured_description(
+                                robot_description, ghost_colour, f"{namespace}_tint")
+                        ),
+                        "publish_frequency": 50.0,
+                        "frame_prefix": frame_prefix,
+                    }
+                ],
+                remappings=[
+                    ("joint_states", f"/{namespace}/joint_states"),
+                    ("robot_description", f"/{namespace}/robot_description"),
+                ],
+            )
+        )
+        if not primary:
+            # Pin the ghost's base to the real base so the arms are drawn on
+            # top of each other instead of side by side.
+            actions.append(
+                Node(
+                    package="tf2_ros",
+                    executable="static_transform_publisher",
+                    name=f"{namespace}_base_anchor",
+                    output="screen",
+                    arguments=[
+                        "--x", "0", "--y", "0", "--z", "0",
+                        "--roll", "0", "--pitch", "0", "--yaw", "0",
+                        "--frame-id", "base_link",
+                        "--child-frame-id", f"{frame_prefix}base_link",
+                    ],
+                )
+            )
 
     merged_obstacle_topics = []
     if show_fixed_obstacle:
@@ -524,6 +576,17 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument("use_rviz", default_value="true"),
+            DeclareLaunchArgument(
+                "variants",
+                default_value="on,off",
+                description=(
+                    "Comma-separated overlay slots, at most three. Each is "
+                    "\"off\", \"on\" (escape enabled with the params.yaml model), "
+                    "or an explicit acceleration model: canonical_velocity, "
+                    "risk_damped, tangent_plane, tangent_ode. Slot order maps "
+                    "to namespaces escape_on / escape_off / escape_alt."
+                ),
+            ),
             DeclareLaunchArgument("use_interactive_goal", default_value="true"),
             DeclareLaunchArgument("use_proximity_bridge", default_value="true"),
             DeclareLaunchArgument("show_fixed_obstacle", default_value="true"),
@@ -597,6 +660,44 @@ def generate_launch_description():
                 default_value="params",
                 description="Outer edge of the alpha_d gate band.",
             ),
+            DeclareLaunchArgument(
+                "escape_ode_metric_max", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_metric_sigma", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_accel_max", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_accel_sigma", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_budget_scale", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_budget_recovery_time", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_tangent_damping", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_direction_rate", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_risk_sigma", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_weight_goal", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_weight_velocity", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_weight_risk", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_weight_curvature", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_axial_preference", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_pocket_threshold", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_pocket_epsilon", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_activation_distance", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_release_distance", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_switch_hysteresis", default_value="params"),
             DeclareLaunchArgument(
                 "escape_metric_isotropy",
                 default_value="params",

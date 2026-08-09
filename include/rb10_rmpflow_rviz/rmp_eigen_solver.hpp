@@ -223,6 +223,36 @@ struct TangentEscapeRmpParams
   double metric_influence_distance{0.0};
 };
 
+// Escape RMP v2.  Selected with acceleration_model == "tangent_ode".
+// Field-by-field documentation lives in tangent_escape_ode.hpp.
+struct TangentEscapeOdeParams
+{
+  double metric_max{100000.0};
+  double metric_sigma{0.03};
+  double accel_max{50.0};
+  double accel_sigma{0.08};
+  double budget_scale{1.0};
+  double budget_recovery_time{3.0};
+  double tangent_damping{40.0};
+  double direction_rate{3.0};
+  double risk_sigma{0.06};
+  double weight_goal{1.0};
+  double weight_velocity{0.3};
+  double weight_risk{1.0};
+  double weight_curvature{1.5};
+  double velocity_epsilon{1e-4};
+  double axial_preference{1.0};
+  double pocket_threshold{0.6};
+  double pocket_epsilon{0.1};
+  double activation_distance{0.20};
+  double release_distance{0.25};
+  double switch_hysteresis{0.005};
+  double direction_memory_time{1.0};
+  double weight_stall{2.0};
+  double stall_time_constant{1.5};
+  double stall_speed{0.02};
+};
+
 struct EscapeEnergyCertificateParams
 {
   // This guard limits the positive interconnection energy injected by Escape.
@@ -397,6 +427,7 @@ struct EigenRmpConfig
   AxisTargetParams wrist_axis_target{};
   CollisionRmpParams collision{};
   TangentEscapeRmpParams tangent_escape{};
+  TangentEscapeOdeParams tangent_escape_ode{};
   EscapeEnergyCertificateParams escape_energy_certificate{};
   DampingRmpParams damping{};
   std::vector<BodyObstacle> body_obstacles;

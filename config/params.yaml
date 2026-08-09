@@ -193,6 +193,46 @@ rmpflow_controller:
     tangent_escape_rmp_risk_stuck_dwell_time: 0.30
     tangent_escape_rmp_risk_stuck_ramp_time: 0.30
 
+    # --- Escape RMP v2 ("tangent_ode") -------------------------------------
+    # Designed in canonical (a, M) form.  accel_max is a real tangential
+    # acceleration [m/s^2] and tangent_damping is a rate [1/s], so 1/b_e is the
+    # settling time and must stay far above the 5 ms control period.
+    # accel_sigma is wide (prevention) while metric_sigma is narrow (authority);
+    # gating the acceleration rather than the force is what keeps a bounded.
+    tangent_escape_ode_metric_max: 100000.0
+    tangent_escape_ode_metric_sigma: 0.03
+    tangent_escape_ode_accel_max: 500.0
+    tangent_escape_ode_accel_sigma: 0.08
+    tangent_escape_ode_budget_scale: 1.0
+    tangent_escape_ode_budget_recovery_time: 3.0
+    tangent_escape_ode_tangent_damping: 40.0
+    tangent_escape_ode_direction_rate: 3.0
+    tangent_escape_ode_risk_sigma: 0.06
+    tangent_escape_ode_weight_goal: 1.0
+    tangent_escape_ode_weight_velocity: 0.3
+    tangent_escape_ode_weight_risk: 1.0
+    tangent_escape_ode_weight_curvature: 1.5
+    tangent_escape_ode_axial_preference: 1.0
+    tangent_escape_ode_pocket_threshold: 0.6
+    tangent_escape_ode_pocket_epsilon: 0.1
+    tangent_escape_ode_activation_distance: 0.15
+    tangent_escape_ode_release_distance: 0.45
+    tangent_escape_ode_switch_hysteresis: 0.005
+    tangent_escape_ode_direction_memory_time: 1.0
+    # Stall memory: pushing hard while going nowhere accumulates a penalty
+    # on the directions already tried, so theta leaves a failing region
+    # instead of oscillating between two maxima of the score.
+    tangent_escape_ode_weight_stall: 2.0
+    tangent_escape_ode_stall_time_constant: 1.5
+    tangent_escape_ode_stall_speed: 0.02
+
+    # tangent_plane-only; listed so the overlay's "params" sentinel resolves.
+    tangent_escape_rmp_metric_isotropy: 1.0
+    tangent_escape_rmp_push_safe_distance: 0.0
+    tangent_escape_rmp_push_influence_distance: 0.0
+    tangent_escape_rmp_metric_safe_distance: 0.0
+    tangent_escape_rmp_metric_influence_distance: 0.0
+
     # Compatibility/shared supervisor block. risk_damped ignores the old z-LPF,
     # desired-velocity, drive-ramp, and RELEASE parameters, while it still uses
     # intent, scoring, latch/handoff, max_speed, and failure-monitor settings.

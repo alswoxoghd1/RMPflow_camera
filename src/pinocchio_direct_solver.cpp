@@ -560,11 +560,34 @@ PinocchioDirectRmpSolver::PinocchioDirectRmpSolver(
   if (
     tangent_escape.acceleration_model != "canonical_velocity" &&
     tangent_escape.acceleration_model != "risk_damped" &&
-    tangent_escape.acceleration_model != "tangent_plane")
+    tangent_escape.acceleration_model != "tangent_plane" &&
+    tangent_escape.acceleration_model != "tangent_ode")
   {
     throw std::runtime_error(
             "tangent_escape acceleration_model must be canonical_velocity, "
-            "risk_damped, or tangent_plane");
+            "risk_damped, tangent_plane, or tangent_ode");
+  }
+  if (tangent_escape.enabled && tangent_escape.acceleration_model == "tangent_ode") {
+    const auto & ode = config_.tangent_escape_ode;
+    const bool finite =
+      std::isfinite(ode.metric_max) && std::isfinite(ode.metric_sigma) &&
+      std::isfinite(ode.accel_max) && std::isfinite(ode.accel_sigma) &&
+      std::isfinite(ode.budget_scale) && std::isfinite(ode.budget_recovery_time) &&
+      std::isfinite(ode.tangent_damping) && std::isfinite(ode.direction_rate) &&
+      std::isfinite(ode.risk_sigma) && std::isfinite(ode.pocket_epsilon) &&
+      std::isfinite(ode.activation_distance) && std::isfinite(ode.release_distance);
+    if (
+      !finite ||
+      ode.metric_max < 0.0 || ode.metric_sigma <= 0.0 ||
+      ode.accel_max < 0.0 || ode.accel_sigma <= 0.0 ||
+      ode.budget_scale <= 0.0 || ode.budget_recovery_time <= 0.0 ||
+      ode.tangent_damping < 0.0 || ode.direction_rate < 0.0 ||
+      ode.risk_sigma <= 0.0 || ode.pocket_epsilon <= 0.0 ||
+      ode.activation_distance <= 0.0 ||
+      ode.release_distance < ode.activation_distance)
+    {
+      throw std::runtime_error("Invalid tangent_ode Tangent Escape parameters");
+    }
   }
   if (tangent_escape.enabled && tangent_escape.acceleration_model == "tangent_plane") {
     const auto resolve_gate = [](double override_value, double fallback) {

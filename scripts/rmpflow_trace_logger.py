@@ -602,6 +602,43 @@ class RmpflowTraceLogger(Node):
             return
         row["tangent_escape_rmp_schema_id"] = self._fmt(schema_id)
         schema = int(round(schema_id))
+        if schema == 9:
+            # Escape RMP v2 ("tangent_ode").  A one-dimensional leaf with its
+            # own slot layout; it shares nothing but slot 26 with schemas 6-8.
+            if len(values) < 56:
+                return
+            for field, index in [
+                ("tangent_escape_ode_sensor_index", 1),
+                ("tangent_escape_ode_clearance_m", 2),
+                ("tangent_escape_ode_theta_rad", 3),
+                ("tangent_escape_ode_theta_rate_rad_s", 4),
+                ("tangent_escape_ode_budget_m", 5),
+                ("tangent_escape_ode_budget_remaining", 6),
+                ("tangent_escape_ode_tangent_rate_m_s", 7),
+                ("tangent_escape_ode_score_a", 8),
+                ("tangent_escape_ode_desired_accel_m_s2", 9),
+                ("tangent_escape_ode_metric", 10),
+                ("tangent_escape_ode_score_b", 14),
+                ("tangent_escape_ode_alpha_free", 15),
+                ("tangent_escape_ode_injected_power", 16),
+                ("tangent_escape_ode_tangent_x", 20),
+                ("tangent_escape_ode_tangent_y", 21),
+                ("tangent_escape_ode_tangent_z", 22),
+                ("tangent_escape_ode_score_c", 27),
+                ("tangent_escape_ode_push_accel_m_s2", 28),
+                ("tangent_escape_ode_score_e", 30),
+                ("tangent_escape_ode_damping_accel_m_s2", 31),
+                ("tangent_escape_ode_natural_force", 32),
+                ("tangent_escape_ode_jdot_qdot", 34),
+                ("tangent_escape_ode_jdot_theta_term", 35),
+                ("tangent_escape_ode_jdot_omega_term", 36),
+                ("tangent_escape_ode_tangent_normal_residual", 37),
+                ("tangent_escape_ode_leaf_jacobian_norm", 38),
+                ("tangent_escape_ode_metric_contribution_norm", 39),
+                ("tangent_escape_ode_force_contribution_norm", 40),
+            ]:
+                row[field] = self._fmt(values[index])
+            return
         prefix_size = (
             61 if schema == 6 else 68 if schema == 7 else 76 if schema == 8 else 0
         )
@@ -1188,6 +1225,32 @@ class RmpflowTraceLogger(Node):
                 "tangent_escape_rmp_risk_accel_m_s2",
                 "tangent_escape_rmp_tangent_damping_accel_m_s2",
                 "tangent_escape_rmp_accel_input_m_s2",
+                "tangent_escape_ode_sensor_index",
+                "tangent_escape_ode_clearance_m",
+                "tangent_escape_ode_theta_rad",
+                "tangent_escape_ode_theta_rate_rad_s",
+                "tangent_escape_ode_budget_m",
+                "tangent_escape_ode_budget_remaining",
+                "tangent_escape_ode_tangent_rate_m_s",
+                "tangent_escape_ode_score_a",
+                "tangent_escape_ode_score_b",
+                "tangent_escape_ode_score_c",
+                "tangent_escape_ode_push_accel_m_s2",
+                "tangent_escape_ode_damping_accel_m_s2",
+                "tangent_escape_ode_natural_force",
+                "tangent_escape_ode_metric",
+                "tangent_escape_ode_alpha_free",
+                "tangent_escape_ode_injected_power",
+                "tangent_escape_ode_jdot_qdot",
+                "tangent_escape_ode_jdot_theta_term",
+                "tangent_escape_ode_jdot_omega_term",
+                "tangent_escape_ode_tangent_normal_residual",
+                "tangent_escape_ode_tangent_x",
+                "tangent_escape_ode_tangent_y",
+                "tangent_escape_ode_tangent_z",
+                "tangent_escape_ode_leaf_jacobian_norm",
+                "tangent_escape_ode_metric_contribution_norm",
+                "tangent_escape_ode_force_contribution_norm",
                 "tangent_escape_rmp_push_activation",
                 "tangent_escape_rmp_metric_activation",
                 "tangent_escape_rmp_push_accel_m_s2",
