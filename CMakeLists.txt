@@ -64,7 +64,7 @@ add_library(rb10_casadi_graph
   src/casadi_task_graph.cpp
   src/casadi_rb10_kinematics.cpp
   src/casadi_rmp2_solver.cpp
-  src/tangent_escape_canonical.cpp
+  src/tangent_escape_supervisor.cpp
   src/tangent_escape_ode.cpp
 )
 target_include_directories(rb10_casadi_graph PUBLIC include)
@@ -352,27 +352,6 @@ install(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-
-  add_executable(
-    test_tangent_escape_canonical
-    test/test_tangent_escape_canonical.cpp
-  )
-  target_include_directories(test_tangent_escape_canonical PRIVATE include)
-  set_target_properties(
-    test_tangent_escape_canonical PROPERTIES
-    BUILD_RPATH "${CASADI_ROOT}/lib"
-  )
-  target_link_libraries(
-    test_tangent_escape_canonical
-    Eigen3::Eigen
-    rb10_casadi_graph
-  )
-  add_test(
-    NAME tangent_escape_canonical
-    COMMAND
-      test_tangent_escape_canonical
-      "${CMAKE_CURRENT_SOURCE_DIR}/urdf/rb10_1300e.urdf"
-  )
 
   add_executable(
     test_tangent_escape_ode

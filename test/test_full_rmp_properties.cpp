@@ -182,51 +182,8 @@ EigenRmpConfig operational_config(bool escape_enabled)
 
   auto & escape = config.tangent_escape;
   escape.enabled = escape_enabled;
-  escape.acceleration_model = "risk_damped";
-  escape.metric_scalar = 100000.0;
   escape.clearance_margin = 0.0;
-  escape.safe_distance = 0.08;
-  escape.influence_distance = 0.24;
-  escape.max_accel = 4.0;
-  escape.max_speed = 0.20;
-  escape.goal_block_beta_on = 0.5;
-  escape.goal_block_beta_full = 0.94;
-  escape.nominal_prediction_dt = 0.01;
-  escape.candidate_lookahead = 0.08;
-  escape.goal_weight = 2.0;
-  escape.continuity_weight = 0.3;
-  escape.sector_risk_weight = 1.5;
-  escape.min_activation = 0.05;
-  escape.min_tangent_norm = 1e-4;
-  escape.normal_tolerance = 0.20;
   escape.control_dt = 0.005;
-  escape.handoff_duration = 0.25;
-  escape.minimum_drive_duration = 2.0;
-  escape.pair_switch_margin = 0.10;
-  escape.direction_switch_margin = 0.08;
-  escape.goal_score_scale = 0.02;
-  escape.sector_risk_scale = 1.0;
-  escape.sector_risk_hard_limit = 0.98;
-  escape.sector_risk_change_threshold = 0.10;
-  escape.accel_jump_weight = 0.20;
-  escape.accel_jump_scale = 10.0;
-  escape.blocked_memory_sigma = 0.35;
-  escape.blocked_memory_penalty_weight = 2.0;
-  escape.candidate_min_displacement = 1e-5;
-  escape.refinement_iterations = 5;
-  escape.command_test_distance = 0.02;
-  escape.minimum_move_ratio = 0.30;
-  escape.goal_change_reset_distance = 0.02;
-  escape.intent_on_speed = 0.005;
-  escape.intent_full_speed = 0.03;
-  escape.risk_distance_gain = 8.00;
-  escape.risk_distance_scale = 0.08;
-  escape.risk_approach_gain = 0.50;
-  escape.risk_approach_distance_scale = 0.08;
-  escape.risk_approach_epsilon = 0.25;
-  escape.risk_velocity_gate_scale = 0.03;
-  escape.risk_clearance_rate_filter_time_constant = 0.05;
-  escape.risk_tangent_damping_gain = 10.0;
 
   return config;
 }
@@ -305,7 +262,7 @@ BlockingScenario find_blocking_scenario(
     for (std::size_t index = 0; index < context.control_points.size(); ++index) {
       const Eigen::Vector3d motion =
         context.control_point_jacobians[index] *
-        (qd + no_escape_config.tangent_escape.nominal_prediction_dt * result.qdd);
+        (qd + 0.01 * result.qdd);
       if (motion.norm() > best_speed) {
         best_speed = motion.norm();
         best_goal = goal;
@@ -376,12 +333,6 @@ TEST(FullRmpProperties, ProofProfileFullGraphHasClosureCertificate)
   // activation probe permissive enough to exercise the Escape leaf itself.
   // The disabled joint-velocity leaf remains absent from the proof graph.
   enabled_config.joint_velocity_cap.max_velocity = 1e6;
-  enabled_config.tangent_escape.min_activation = 0.0;
-  enabled_config.tangent_escape.intent_on_speed = 1e-10;
-  enabled_config.tangent_escape.intent_full_speed = 1e-8;
-  enabled_config.tangent_escape.sector_risk_hard_limit = 1.0;
-  enabled_config.tangent_escape.candidate_min_displacement = 1e-9;
-  enabled_config.tangent_escape.accel_jump_scale = 1e6;
   const PinocchioDirectRmpSolver enabled_solver(enabled_config, test_urdf_path());
   bool saw_active_escape = false;
   bool saw_nonzero_rank_one_escape = false;

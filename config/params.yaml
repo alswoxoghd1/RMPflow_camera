@@ -151,47 +151,15 @@ rmpflow_controller:
     tcp_accel_marker_max_length: 0.15
     tcp_accel_marker_norm_for_max_length: 2.0
     tcp_accel_marker_min_norm: 0.001
-
-    # Score-supervised rank-one tangent canonical RMP.
-    # risk_damped is the active design.  canonical_velocity remains compiled
-    # only for controlled A/B rollback and is not selected by this profile.
     enable_tangent_escape_rmp: false
-    tangent_escape_rmp_acceleration_model: "risk_damped"
     # Independent numeric values. The fixed-cylinder ON/OFF profile now gives
     # Escape the same base metric scale as Collision. The clearance margin
     # remains independent from Collision parameters at runtime.
-    tangent_escape_rmp_metric_scalar: 100000.0
     tangent_escape_rmp_clearance_margin: 0.0
     # In risk_damped mode its effective rank-one metric is m_t * lambda * B.
     # canonical_velocity-only compatibility gain (unused by risk_damped).
-    tangent_escape_rmp_velocity_gain: 20.0
     # This is a Cartesian tangent-task limit (m/s^2). The resolved joint
     # acceleration still follows the independent global max_joint_accel limit.
-    tangent_escape_rmp_max_accel: 4.0
-    tangent_escape_rmp_goal_block_beta_on: 0.5
-    tangent_escape_rmp_goal_block_beta_full: 0.94
-    tangent_escape_rmp_nominal_prediction_dt: 0.01
-    tangent_escape_rmp_normal_tolerance: 0.20
-
-    # Active risk-damped acceleration:
-    #   a_base = k_p exp(-d+/sigma_p)
-    #          + g_v(dot_d) k_v max(0,-dot_d)/(d+/sigma_v+eps)
-    #   a_stuck = alpha_stuck * ramp(t_active) * a_floor
-    #   a_risk = hypot(a_base, a_stuck)
-    #   a_y = sat(a_risk - b_t v_t),  m_y = m_t lambda B.
-    # The floor ramps in only after a blocked episode remains stuck. Only the
-    # clearance derivative is filtered; B is never filtered.
-    tangent_escape_rmp_risk_distance_gain: 8.00
-    tangent_escape_rmp_risk_distance_scale: 0.08
-    tangent_escape_rmp_risk_approach_gain: 0.50
-    tangent_escape_rmp_risk_approach_distance_scale: 0.08
-    tangent_escape_rmp_risk_approach_epsilon: 0.25
-    tangent_escape_rmp_risk_velocity_gate_scale: 0.03
-    tangent_escape_rmp_risk_clearance_rate_filter_time_constant: 0.05
-    tangent_escape_rmp_risk_tangent_damping_gain: 10.0
-    tangent_escape_rmp_risk_stuck_accel_floor: 0.20
-    tangent_escape_rmp_risk_stuck_dwell_time: 0.30
-    tangent_escape_rmp_risk_stuck_ramp_time: 0.30
 
     # --- Escape RMP v2 ("tangent_ode") -------------------------------------
     # Designed in canonical (a, M) form.  accel_max is a real tangential
@@ -227,77 +195,25 @@ rmpflow_controller:
     tangent_escape_ode_stall_speed: 0.02
 
     # tangent_plane-only; listed so the overlay's "params" sentinel resolves.
-    tangent_escape_rmp_metric_isotropy: 1.0
-    tangent_escape_rmp_push_safe_distance: 0.0
-    tangent_escape_rmp_push_influence_distance: 0.0
-    tangent_escape_rmp_metric_safe_distance: 0.0
-    tangent_escape_rmp_metric_influence_distance: 0.0
 
     # Compatibility/shared supervisor block. risk_damped ignores the old z-LPF,
     # desired-velocity, drive-ramp, and RELEASE parameters, while it still uses
     # intent, scoring, latch/handoff, max_speed, and failure-monitor settings.
     # The ignored values remain parsed only so canonical_velocity can be used
     # for an explicit rollback/A-B run; it is not selected by this profile.
-    tangent_escape_rmp_prevent_weight: 0.5
-    tangent_escape_rmp_activation_time_constant: 0.15
-    tangent_escape_rmp_activation_rise_rate: 4.0
-    tangent_escape_rmp_activation_fall_rate: 2.0
-    tangent_escape_rmp_progress_filter_time_constant: 0.25
-    tangent_escape_rmp_progress_low_threshold: 0.001
-    tangent_escape_rmp_progress_ok_threshold: 0.02
-    tangent_escape_rmp_still_speed_threshold: 0.01
-    tangent_escape_rmp_moving_speed_threshold: 0.08
     # Ignore nominal directions below intent_on_speed. Between on/full,
     # smoothly raise the confidence that the base RMP intends to move this CP.
-    tangent_escape_rmp_intent_on_speed: 0.005
-    tangent_escape_rmp_intent_full_speed: 0.03
-    tangent_escape_rmp_prevent_speed: 0.018
-    tangent_escape_rmp_recovery_speed: 0.05
-    tangent_escape_rmp_max_speed: 0.20
-    tangent_escape_rmp_desired_velocity_time_constant: 0.22
-    tangent_escape_rmp_release_stop_speed: 0.01
-    tangent_escape_rmp_release_hold_speed: 0.06
-    tangent_escape_rmp_drive_ramp_duration: 0.25
-    tangent_escape_rmp_handoff_duration: 0.25
-    tangent_escape_rmp_minimum_drive_duration: 2.0
     # Bound one continuously active Escape episode. The timeout uses the same
     # smooth lambda-down handoff as other releases; normal observed episodes
     # currently finish within 5.44 s, so 12 s is a failsafe-only threshold.
-    tangent_escape_rmp_maximum_active_duration: 12.0
-    tangent_escape_rmp_timeout_reentry_cooldown: 1.0
-    tangent_escape_rmp_release_blockage_threshold: 0.03
-    tangent_escape_rmp_pair_switch_margin: 0.10
-    tangent_escape_rmp_direction_switch_margin: 0.08
-    tangent_escape_rmp_goal_score_scale: 0.02
-    tangent_escape_rmp_sector_risk_scale: 1.0
-    tangent_escape_rmp_sector_risk_hard_limit: 0.98
-    tangent_escape_rmp_sector_risk_change_threshold: 0.10
-    tangent_escape_rmp_accel_jump_weight: 0.20
-    tangent_escape_rmp_accel_jump_scale: 10.0
-    tangent_escape_rmp_blocked_memory_sigma: 0.35
-    tangent_escape_rmp_blocked_memory_penalty_weight: 2.0
-    tangent_escape_rmp_candidate_min_displacement: 0.00001
-    tangent_escape_rmp_refinement_iterations: 5
-    tangent_escape_rmp_command_test_distance: 0.02
-    tangent_escape_rmp_minimum_move_ratio: 0.30
-    tangent_escape_rmp_goal_change_reset_distance: 0.02
 
     publish_tangent_escape_rmp_data: false
-    tangent_escape_rmp_data_topic: "/tangent_escape_rmp_data"
     publish_tangent_escape_dual_solve_data: false
     tangent_escape_dual_solve_topic: "/tangent_escape_dual_solve"
     publish_leaf_ablation_data: false
     leaf_ablation_topic: "/rmp_leaf_ablation"
 
     # Tangent escape activation and candidate selection.
-    tangent_escape_rmp_safe_distance: 0.08
-    tangent_escape_rmp_influence_distance: 0.24
-    tangent_escape_rmp_candidate_lookahead: 0.08
-    tangent_escape_rmp_goal_weight: 2.0
-    tangent_escape_rmp_continuity_weight: 0.3
-    tangent_escape_rmp_sector_risk_weight: 1.5
-    tangent_escape_rmp_min_activation: 0.05
-    tangent_escape_rmp_min_tangent_norm: 0.0001
 
     # Escape/base stability certificate. Disabled in the normal production
     # profile; the dedicated proof launch enables the finite-energy guard.

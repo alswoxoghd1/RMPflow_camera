@@ -57,34 +57,8 @@ Visualization Manager:
       Mass Properties:
         Inertia: false
         Mass: false
-      Name: Slot 2 - escape_off (grey ghost)
+      Name: Escape OFF (grey ghost)
       TF Prefix: escape_off
-      Update Interval: 0
-      Value: true
-      Visual Enabled: true
-    - Alpha: 0.55
-      Class: rviz_default_plugins/RobotModel
-      Collision Enabled: false
-      Description File: ""
-      Description Source: Topic
-      Description Topic:
-        Depth: 5
-        Durability Policy: Transient Local
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /escape_alt/robot_description
-      Enabled: true
-      Links:
-        All Links Enabled: true
-        Expand Joint Details: false
-        Expand Link Details: false
-        Expand Tree: false
-        Link Tree Style: Links in Alphabetic Order
-      Mass Properties:
-        Inertia: false
-        Mass: false
-      Name: Slot 3 - escape_alt (RED ghost)
-      TF Prefix: escape_alt
       Update Interval: 0
       Value: true
       Visual Enabled: true
@@ -109,7 +83,7 @@ Visualization Manager:
       Mass Properties:
         Inertia: false
         Mass: false
-      Name: Slot 1 - escape_on (solid)
+      Name: Escape ON (real colours)
       TF Prefix: ""
       Update Interval: 0
       Value: true
@@ -199,13 +173,6 @@ Visualization Manager:
       Name: OFF TCP Frame
       Radius: 0.005
       Reference Frame: escape_off/tcp_rmp
-      Value: true
-    - Class: rviz_default_plugins/Axes
-      Enabled: true
-      Length: 0.12
-      Name: ALT TCP Frame
-      Radius: 0.005
-      Reference Frame: escape_alt/tcp_rmp
       Value: true
     - Class: rviz_default_plugins/InteractiveMarkers
       Enable Transparency: true

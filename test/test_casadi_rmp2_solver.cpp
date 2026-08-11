@@ -95,44 +95,7 @@ EigenRmpConfig escape_parity_config(bool enabled)
 
   auto & escape = config.tangent_escape;
   escape.enabled = enabled;
-  escape.acceleration_model = "risk_damped";
-  escape.metric_scalar = 20.0;
-  escape.safe_distance = 0.10;
-  escape.influence_distance = 0.40;
-  escape.goal_block_beta_on = 0.10;
-  escape.goal_block_beta_full = 0.60;
-  escape.nominal_prediction_dt = 0.05;
-  escape.min_activation = 0.0;
-  escape.min_tangent_norm = 1e-8;
-  escape.normal_tolerance = 0.25;
   escape.control_dt = 0.01;
-  escape.activation_time_constant = 0.01;
-  escape.activation_rise_rate = 100.0;
-  escape.activation_fall_rate = 100.0;
-  escape.intent_on_speed = 1e-10;
-  escape.intent_full_speed = 1e-8;
-  escape.handoff_duration = 0.0;
-  escape.candidate_lookahead = 0.10;
-  escape.refinement_iterations = 2;
-  escape.pair_switch_margin = 1.0;
-  escape.direction_switch_margin = 1.0;
-  escape.sector_risk_scale = 1e6;
-  escape.sector_risk_hard_limit = 1.0;
-  escape.accel_jump_scale = 1e6;
-  escape.candidate_min_displacement = 1e-7;
-  escape.command_test_distance = 10.0;
-  escape.minimum_move_ratio = 0.0;
-  escape.goal_change_reset_distance = 10.0;
-  escape.max_accel = 1.0;
-  escape.max_speed = 0.20;
-  escape.risk_distance_gain = 0.40;
-  escape.risk_distance_scale = 0.08;
-  escape.risk_approach_gain = 0.50;
-  escape.risk_approach_distance_scale = 0.08;
-  escape.risk_approach_epsilon = 0.25;
-  escape.risk_velocity_gate_scale = 0.03;
-  escape.risk_clearance_rate_filter_time_constant = 0.01;
-  escape.risk_tangent_damping_gain = 4.0;
   return config;
 }
 
@@ -335,7 +298,7 @@ TEST(CasadiRmp2Solver, EscapeSupervisorProducesTangentRankOneContribution)
     const auto nominal = nominal_solver.solve(q, qd, {{"goal", goal}}, {});
     for (std::size_t point = 0; point < context.control_points.size(); ++point) {
       const Eigen::Vector3d motion = context.control_point_jacobians[point] *
-        (qd + disabled_config.tangent_escape.nominal_prediction_dt * nominal.qdd);
+        (qd + 0.01 * nominal.qdd);
       const double speed = motion.norm();
       if (speed <= 1e-10) {
         continue;

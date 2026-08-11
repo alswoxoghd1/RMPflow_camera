@@ -124,103 +124,10 @@ struct CollisionRmpParams
 struct TangentEscapeRmpParams
 {
   bool enabled{false};
-  // "canonical_velocity" preserves the previous velocity-reference and
-  // residual-release implementation.  "risk_damped" is the active design:
-  // a distance/closing-rate drive opposed by signed tangent damping.
-  // "tangent_plane" replaces the closing-rate drive with a distance-only push
-  // and widens the rank-one axis metric into the obstacle tangent plane.
-  std::string acceleration_model{"canonical_velocity"};
-  double metric_scalar{50000.0};
   // Independent numeric copy of the Collision clearance margin.  Do not read
   // config_.collision.margin in the Escape leaf.
   double clearance_margin{0.0};
-  double safe_distance{0.08};
-  double influence_distance{0.20};
-  double velocity_gain{20.0};
-  double max_accel{0.6};
-  double goal_block_beta_on{0.5};
-  double goal_block_beta_full{0.94};
-  double nominal_prediction_dt{0.01};
-  double candidate_lookahead{0.08};
-  double goal_weight{2.0};
-  double continuity_weight{0.3};
-  double sector_risk_weight{1.5};
-  double min_activation{0.05};
-  double min_tangent_norm{1e-4};
-  double normal_tolerance{0.20};
   double control_dt{0.01};
-  double blocked_memory_penalty_weight{2.0};
-  double prevent_weight{0.25};
-  double activation_time_constant{0.15};
-  double activation_rise_rate{4.0};
-  double activation_fall_rate{2.0};
-  double progress_filter_time_constant{0.25};
-  double progress_low_threshold{0.001};
-  double progress_ok_threshold{0.01};
-  double still_speed_threshold{0.003};
-  double moving_speed_threshold{0.02};
-  double intent_on_speed{0.005};
-  double intent_full_speed{0.03};
-  double prevent_speed{0.02};
-  double recovery_speed{0.06};
-  double max_speed{0.06};
-  double desired_velocity_time_constant{0.12};
-  double release_stop_speed{0.003};
-  double release_hold_speed{0.02};
-  double drive_ramp_duration{0.15};
-  double handoff_duration{0.15};
-  double minimum_drive_duration{0.2};
-  // Zero disables the hard episode timeout for explicit rollback profiles.
-  double maximum_active_duration{0.0};
-  double timeout_reentry_cooldown{1.0};
-  double release_blockage_threshold{0.03};
-  double pair_switch_margin{0.10};
-  double direction_switch_margin{0.08};
-  double goal_score_scale{0.02};
-  double sector_risk_scale{1.0};
-  double sector_risk_hard_limit{0.98};
-  double sector_risk_change_threshold{0.10};
-  double accel_jump_weight{0.20};
-  double accel_jump_scale{10.0};
-  double blocked_memory_sigma{0.35};
-  double candidate_min_displacement{1e-5};
-  int refinement_iterations{5};
-  double command_test_distance{0.01};
-  double minimum_move_ratio{0.20};
-  double goal_change_reset_distance{0.02};
-  double risk_distance_gain{0.30};
-  double risk_distance_scale{0.08};
-  double risk_approach_gain{0.50};
-  double risk_approach_distance_scale{0.08};
-  double risk_approach_epsilon{0.25};
-  double risk_velocity_gate_scale{0.03};
-  double risk_clearance_rate_filter_time_constant{0.05};
-  double risk_tangent_damping_gain{10.0};
-  double risk_stuck_accel_floor{0.20};
-  double risk_stuck_dwell_time{0.30};
-  double risk_stuck_ramp_time{0.30};
-
-  // --- "tangent_plane" model only -------------------------------------------
-  // In-plane isotropy of the leaf metric.  With the latched tangent re-projected
-  // into the obstacle tangent plane as t and P_T = I - n n^T,
-  //
-  //   M_leaf = m [ (1 - gamma) t t^T + gamma P_T ].
-  //
-  // Both terms are PSD for gamma in [0,1], so M_leaf is PSD with rank <= 2.
-  // gamma = 0 reproduces the rank-one axis metric of the other two models;
-  // gamma = 1 removes the selected direction from the metric entirely, so a
-  // score-driven direction change no longer perturbs the pullback metric.
-  double metric_isotropy{1.0};
-  // Distance gate for the escape push, alpha_a.  Non-positive values inherit
-  // safe_distance / influence_distance.
-  double push_safe_distance{0.0};
-  double push_influence_distance{0.0};
-  // Distance gate for the leaf metric, alpha_M.  Non-positive values inherit
-  // the push gate.  The implementation additionally clamps alpha_M <= alpha_a:
-  // a metric that leads the push would demand zero tangent-plane acceleration
-  // at full weight, which brakes every other leaf inside the tangent plane.
-  double metric_safe_distance{0.0};
-  double metric_influence_distance{0.0};
 };
 
 // Escape RMP v2.  Selected with acceleration_model == "tangent_ode".

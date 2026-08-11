@@ -1993,64 +1993,9 @@ public:
     declare_parameter(
       "tangent_escape_rmp_acceleration_model",
       std::string("canonical_velocity"));
-    declare_parameter("tangent_escape_rmp_metric_scalar", 50000.0);
     declare_parameter("tangent_escape_rmp_clearance_margin", 0.0);
-    declare_parameter("tangent_escape_rmp_velocity_gain", 20.0);
-    declare_parameter("tangent_escape_rmp_max_accel", 0.6);
-    declare_parameter("tangent_escape_rmp_goal_block_beta_on", 0.5);
-    declare_parameter("tangent_escape_rmp_goal_block_beta_full", 0.94);
-    declare_parameter("tangent_escape_rmp_nominal_prediction_dt", 0.01);
-    declare_parameter("tangent_escape_rmp_normal_tolerance", 0.20);
-    declare_parameter("tangent_escape_rmp_blocked_memory_penalty_weight", 2.0);
-    declare_parameter("tangent_escape_rmp_prevent_weight", 0.5);
-    declare_parameter("tangent_escape_rmp_activation_time_constant", 0.15);
-    declare_parameter("tangent_escape_rmp_activation_rise_rate", 4.0);
-    declare_parameter("tangent_escape_rmp_activation_fall_rate", 2.0);
-    declare_parameter("tangent_escape_rmp_progress_filter_time_constant", 0.25);
-    declare_parameter("tangent_escape_rmp_progress_low_threshold", 0.001);
-    declare_parameter("tangent_escape_rmp_progress_ok_threshold", 0.01);
-    declare_parameter("tangent_escape_rmp_still_speed_threshold", 0.003);
-    declare_parameter("tangent_escape_rmp_moving_speed_threshold", 0.02);
-    declare_parameter("tangent_escape_rmp_intent_on_speed", 0.005);
-    declare_parameter("tangent_escape_rmp_intent_full_speed", 0.03);
-    declare_parameter("tangent_escape_rmp_prevent_speed", 0.02);
-    declare_parameter("tangent_escape_rmp_recovery_speed", 0.06);
-    declare_parameter("tangent_escape_rmp_max_speed", 0.06);
-    declare_parameter("tangent_escape_rmp_desired_velocity_time_constant", 0.12);
-    declare_parameter("tangent_escape_rmp_release_stop_speed", 0.003);
-    declare_parameter("tangent_escape_rmp_release_hold_speed", 0.02);
-    declare_parameter("tangent_escape_rmp_drive_ramp_duration", 0.15);
-    declare_parameter("tangent_escape_rmp_handoff_duration", 0.15);
-    declare_parameter("tangent_escape_rmp_minimum_drive_duration", 0.2);
-    declare_parameter("tangent_escape_rmp_maximum_active_duration", 0.0);
-    declare_parameter("tangent_escape_rmp_timeout_reentry_cooldown", 1.0);
-    declare_parameter("tangent_escape_rmp_release_blockage_threshold", 0.03);
-    declare_parameter("tangent_escape_rmp_pair_switch_margin", 0.10);
-    declare_parameter("tangent_escape_rmp_direction_switch_margin", 0.08);
-    declare_parameter("tangent_escape_rmp_goal_score_scale", 0.02);
-    declare_parameter("tangent_escape_rmp_sector_risk_scale", 1.0);
-    declare_parameter("tangent_escape_rmp_sector_risk_hard_limit", 0.98);
-    declare_parameter("tangent_escape_rmp_sector_risk_change_threshold", 0.10);
-    declare_parameter("tangent_escape_rmp_accel_jump_weight", 0.20);
-    declare_parameter("tangent_escape_rmp_accel_jump_scale", 10.0);
-    declare_parameter("tangent_escape_rmp_blocked_memory_sigma", 0.35);
-    declare_parameter("tangent_escape_rmp_candidate_min_displacement", 1e-5);
-    declare_parameter("tangent_escape_rmp_refinement_iterations", 5);
-    declare_parameter("tangent_escape_rmp_command_test_distance", 0.01);
-    declare_parameter("tangent_escape_rmp_minimum_move_ratio", 0.20);
-    declare_parameter("tangent_escape_rmp_goal_change_reset_distance", 0.02);
-    declare_parameter("tangent_escape_rmp_risk_distance_gain", 0.30);
-    declare_parameter("tangent_escape_rmp_risk_distance_scale", 0.08);
-    declare_parameter("tangent_escape_rmp_risk_approach_gain", 0.50);
-    declare_parameter("tangent_escape_rmp_risk_approach_distance_scale", 0.08);
-    declare_parameter("tangent_escape_rmp_risk_approach_epsilon", 0.25);
-    declare_parameter("tangent_escape_rmp_risk_velocity_gate_scale", 0.03);
     declare_parameter(
       "tangent_escape_rmp_risk_clearance_rate_filter_time_constant", 0.05);
-    declare_parameter("tangent_escape_rmp_risk_tangent_damping_gain", 10.0);
-    declare_parameter("tangent_escape_rmp_risk_stuck_accel_floor", 0.20);
-    declare_parameter("tangent_escape_rmp_risk_stuck_dwell_time", 0.30);
-    declare_parameter("tangent_escape_rmp_risk_stuck_ramp_time", 0.30);
     // "tangent_plane" model only.  Non-positive distances inherit the gate one
     // level up: push inherits safe/influence, metric inherits push.
     // Escape RMP v2 ("tangent_ode"); ignored by the other three models.
@@ -2074,22 +2019,10 @@ public:
     declare_parameter("tangent_escape_ode_activation_distance", 0.3);
     declare_parameter("tangent_escape_ode_release_distance", 0.4);
     declare_parameter("tangent_escape_ode_switch_hysteresis", 0.005);
+    declare_parameter("tangent_escape_ode_direction_memory_time", 1.0);
     declare_parameter("tangent_escape_ode_weight_stall", 2.0);
     declare_parameter("tangent_escape_ode_stall_time_constant", 1.5);
     declare_parameter("tangent_escape_ode_stall_speed", 0.02);
-    declare_parameter("tangent_escape_rmp_metric_isotropy", 1.0);
-    declare_parameter("tangent_escape_rmp_push_safe_distance", 0.0);
-    declare_parameter("tangent_escape_rmp_push_influence_distance", 0.0);
-    declare_parameter("tangent_escape_rmp_metric_safe_distance", 0.0);
-    declare_parameter("tangent_escape_rmp_metric_influence_distance", 0.0);
-    declare_parameter("tangent_escape_rmp_safe_distance", 0.08);
-    declare_parameter("tangent_escape_rmp_influence_distance", 0.20);
-    declare_parameter("tangent_escape_rmp_candidate_lookahead", 0.08);
-    declare_parameter("tangent_escape_rmp_goal_weight", 2.0);
-    declare_parameter("tangent_escape_rmp_continuity_weight", 0.3);
-    declare_parameter("tangent_escape_rmp_sector_risk_weight", 1.5);
-    declare_parameter("tangent_escape_rmp_min_activation", 0.05);
-    declare_parameter("tangent_escape_rmp_min_tangent_norm", 1e-4);
     declare_parameter("publish_tangent_escape_rmp_data", false);
     declare_parameter("tangent_escape_rmp_data_topic", "/tangent_escape_rmp_data");
     declare_parameter("publish_tangent_escape_dual_solve_data", false);
@@ -2989,136 +2922,10 @@ private:
       get_parameter("collision_rmp_gds_damping_velocity_scale").as_double();
 
     config.tangent_escape.enabled = get_parameter("enable_tangent_escape_rmp").as_bool();
-    config.tangent_escape.acceleration_model =
-      get_parameter("tangent_escape_rmp_acceleration_model").as_string();
-    if (
-      config.tangent_escape.acceleration_model != "canonical_velocity" &&
-      config.tangent_escape.acceleration_model != "risk_damped" &&
-      config.tangent_escape.acceleration_model != "tangent_plane" &&
-      config.tangent_escape.acceleration_model != "tangent_ode")
-    {
-      throw std::runtime_error(
-              "tangent_escape_rmp_acceleration_model must be "
-              "'canonical_velocity', 'risk_damped', 'tangent_plane', or "
-              "'tangent_ode'");
-    }
-    config.tangent_escape.metric_scalar =
-      get_parameter("tangent_escape_rmp_metric_scalar").as_double();
     config.tangent_escape.clearance_margin =
       get_parameter("tangent_escape_rmp_clearance_margin").as_double();
-    config.tangent_escape.velocity_gain =
-      get_parameter("tangent_escape_rmp_velocity_gain").as_double();
-    config.tangent_escape.max_accel =
-      get_parameter("tangent_escape_rmp_max_accel").as_double();
-    config.tangent_escape.goal_block_beta_on =
-      get_parameter("tangent_escape_rmp_goal_block_beta_on").as_double();
-    config.tangent_escape.goal_block_beta_full =
-      get_parameter("tangent_escape_rmp_goal_block_beta_full").as_double();
-    config.tangent_escape.nominal_prediction_dt =
-      get_parameter("tangent_escape_rmp_nominal_prediction_dt").as_double();
-    config.tangent_escape.normal_tolerance =
-      get_parameter("tangent_escape_rmp_normal_tolerance").as_double();
     config.tangent_escape.control_dt =
       control_rate_hz_ > 1e-9 ? 1.0 / control_rate_hz_ : 0.01;
-    config.tangent_escape.blocked_memory_penalty_weight =
-      get_parameter("tangent_escape_rmp_blocked_memory_penalty_weight").as_double();
-    config.tangent_escape.prevent_weight =
-      get_parameter("tangent_escape_rmp_prevent_weight").as_double();
-    config.tangent_escape.activation_time_constant =
-      get_parameter("tangent_escape_rmp_activation_time_constant").as_double();
-    config.tangent_escape.activation_rise_rate =
-      get_parameter("tangent_escape_rmp_activation_rise_rate").as_double();
-    config.tangent_escape.activation_fall_rate =
-      get_parameter("tangent_escape_rmp_activation_fall_rate").as_double();
-    config.tangent_escape.progress_filter_time_constant =
-      get_parameter("tangent_escape_rmp_progress_filter_time_constant").as_double();
-    config.tangent_escape.progress_low_threshold =
-      get_parameter("tangent_escape_rmp_progress_low_threshold").as_double();
-    config.tangent_escape.progress_ok_threshold =
-      get_parameter("tangent_escape_rmp_progress_ok_threshold").as_double();
-    config.tangent_escape.still_speed_threshold =
-      get_parameter("tangent_escape_rmp_still_speed_threshold").as_double();
-    config.tangent_escape.moving_speed_threshold =
-      get_parameter("tangent_escape_rmp_moving_speed_threshold").as_double();
-    config.tangent_escape.intent_on_speed =
-      get_parameter("tangent_escape_rmp_intent_on_speed").as_double();
-    config.tangent_escape.intent_full_speed =
-      get_parameter("tangent_escape_rmp_intent_full_speed").as_double();
-    config.tangent_escape.prevent_speed =
-      get_parameter("tangent_escape_rmp_prevent_speed").as_double();
-    config.tangent_escape.recovery_speed =
-      get_parameter("tangent_escape_rmp_recovery_speed").as_double();
-    config.tangent_escape.max_speed =
-      get_parameter("tangent_escape_rmp_max_speed").as_double();
-    config.tangent_escape.desired_velocity_time_constant =
-      get_parameter("tangent_escape_rmp_desired_velocity_time_constant").as_double();
-    config.tangent_escape.release_stop_speed =
-      get_parameter("tangent_escape_rmp_release_stop_speed").as_double();
-    config.tangent_escape.release_hold_speed =
-      get_parameter("tangent_escape_rmp_release_hold_speed").as_double();
-    config.tangent_escape.drive_ramp_duration =
-      get_parameter("tangent_escape_rmp_drive_ramp_duration").as_double();
-    config.tangent_escape.handoff_duration =
-      get_parameter("tangent_escape_rmp_handoff_duration").as_double();
-    config.tangent_escape.minimum_drive_duration =
-      get_parameter("tangent_escape_rmp_minimum_drive_duration").as_double();
-    config.tangent_escape.maximum_active_duration =
-      get_parameter("tangent_escape_rmp_maximum_active_duration").as_double();
-    config.tangent_escape.timeout_reentry_cooldown =
-      get_parameter("tangent_escape_rmp_timeout_reentry_cooldown").as_double();
-    config.tangent_escape.release_blockage_threshold =
-      get_parameter("tangent_escape_rmp_release_blockage_threshold").as_double();
-    config.tangent_escape.pair_switch_margin =
-      get_parameter("tangent_escape_rmp_pair_switch_margin").as_double();
-    config.tangent_escape.direction_switch_margin =
-      get_parameter("tangent_escape_rmp_direction_switch_margin").as_double();
-    config.tangent_escape.goal_score_scale =
-      get_parameter("tangent_escape_rmp_goal_score_scale").as_double();
-    config.tangent_escape.sector_risk_scale =
-      get_parameter("tangent_escape_rmp_sector_risk_scale").as_double();
-    config.tangent_escape.sector_risk_hard_limit =
-      get_parameter("tangent_escape_rmp_sector_risk_hard_limit").as_double();
-    config.tangent_escape.sector_risk_change_threshold =
-      get_parameter("tangent_escape_rmp_sector_risk_change_threshold").as_double();
-    config.tangent_escape.accel_jump_weight =
-      get_parameter("tangent_escape_rmp_accel_jump_weight").as_double();
-    config.tangent_escape.accel_jump_scale =
-      get_parameter("tangent_escape_rmp_accel_jump_scale").as_double();
-    config.tangent_escape.blocked_memory_sigma =
-      get_parameter("tangent_escape_rmp_blocked_memory_sigma").as_double();
-    config.tangent_escape.candidate_min_displacement =
-      get_parameter("tangent_escape_rmp_candidate_min_displacement").as_double();
-    config.tangent_escape.refinement_iterations =
-      static_cast<int>(get_parameter("tangent_escape_rmp_refinement_iterations").as_int());
-    config.tangent_escape.command_test_distance =
-      get_parameter("tangent_escape_rmp_command_test_distance").as_double();
-    config.tangent_escape.minimum_move_ratio =
-      get_parameter("tangent_escape_rmp_minimum_move_ratio").as_double();
-    config.tangent_escape.goal_change_reset_distance =
-      get_parameter("tangent_escape_rmp_goal_change_reset_distance").as_double();
-    config.tangent_escape.risk_distance_gain =
-      get_parameter("tangent_escape_rmp_risk_distance_gain").as_double();
-    config.tangent_escape.risk_distance_scale =
-      get_parameter("tangent_escape_rmp_risk_distance_scale").as_double();
-    config.tangent_escape.risk_approach_gain =
-      get_parameter("tangent_escape_rmp_risk_approach_gain").as_double();
-    config.tangent_escape.risk_approach_distance_scale =
-      get_parameter("tangent_escape_rmp_risk_approach_distance_scale").as_double();
-    config.tangent_escape.risk_approach_epsilon =
-      get_parameter("tangent_escape_rmp_risk_approach_epsilon").as_double();
-    config.tangent_escape.risk_velocity_gate_scale =
-      get_parameter("tangent_escape_rmp_risk_velocity_gate_scale").as_double();
-    config.tangent_escape.risk_clearance_rate_filter_time_constant =
-      get_parameter(
-      "tangent_escape_rmp_risk_clearance_rate_filter_time_constant").as_double();
-    config.tangent_escape.risk_tangent_damping_gain =
-      get_parameter("tangent_escape_rmp_risk_tangent_damping_gain").as_double();
-    config.tangent_escape.risk_stuck_accel_floor =
-      get_parameter("tangent_escape_rmp_risk_stuck_accel_floor").as_double();
-    config.tangent_escape.risk_stuck_dwell_time =
-      get_parameter("tangent_escape_rmp_risk_stuck_dwell_time").as_double();
-    config.tangent_escape.risk_stuck_ramp_time =
-      get_parameter("tangent_escape_rmp_risk_stuck_ramp_time").as_double();
     config.tangent_escape_ode.metric_max =
       get_parameter("tangent_escape_ode_metric_max").as_double();
     config.tangent_escape_ode.metric_sigma =
@@ -3159,22 +2966,14 @@ private:
       get_parameter("tangent_escape_ode_release_distance").as_double();
     config.tangent_escape_ode.switch_hysteresis =
       get_parameter("tangent_escape_ode_switch_hysteresis").as_double();
+    config.tangent_escape_ode.direction_memory_time =
+      get_parameter("tangent_escape_ode_direction_memory_time").as_double();
     config.tangent_escape_ode.weight_stall =
       get_parameter("tangent_escape_ode_weight_stall").as_double();
     config.tangent_escape_ode.stall_time_constant =
       get_parameter("tangent_escape_ode_stall_time_constant").as_double();
     config.tangent_escape_ode.stall_speed =
       get_parameter("tangent_escape_ode_stall_speed").as_double();
-    config.tangent_escape.metric_isotropy =
-      get_parameter("tangent_escape_rmp_metric_isotropy").as_double();
-    config.tangent_escape.push_safe_distance =
-      get_parameter("tangent_escape_rmp_push_safe_distance").as_double();
-    config.tangent_escape.push_influence_distance =
-      get_parameter("tangent_escape_rmp_push_influence_distance").as_double();
-    config.tangent_escape.metric_safe_distance =
-      get_parameter("tangent_escape_rmp_metric_safe_distance").as_double();
-    config.tangent_escape.metric_influence_distance =
-      get_parameter("tangent_escape_rmp_metric_influence_distance").as_double();
 
     config.escape_energy_certificate.enabled =
       get_parameter("escape_stability_guard_enabled").as_bool();
@@ -3192,22 +2991,6 @@ private:
       get_parameter("escape_stability_scale_search_iterations").as_int());
     config.escape_energy_certificate.power_tolerance =
       get_parameter("escape_stability_power_tolerance").as_double();
-    config.tangent_escape.safe_distance =
-      get_parameter("tangent_escape_rmp_safe_distance").as_double();
-    config.tangent_escape.influence_distance =
-      get_parameter("tangent_escape_rmp_influence_distance").as_double();
-    config.tangent_escape.candidate_lookahead =
-      get_parameter("tangent_escape_rmp_candidate_lookahead").as_double();
-    config.tangent_escape.goal_weight =
-      get_parameter("tangent_escape_rmp_goal_weight").as_double();
-    config.tangent_escape.continuity_weight =
-      get_parameter("tangent_escape_rmp_continuity_weight").as_double();
-    config.tangent_escape.sector_risk_weight =
-      get_parameter("tangent_escape_rmp_sector_risk_weight").as_double();
-    config.tangent_escape.min_activation =
-      get_parameter("tangent_escape_rmp_min_activation").as_double();
-    config.tangent_escape.min_tangent_norm =
-      get_parameter("tangent_escape_rmp_min_tangent_norm").as_double();
 
     if (!config.tangent_escape.enabled) {
       for (auto & node : config.graph_nodes) {
@@ -5024,15 +4807,13 @@ private:
         Eigen::Vector3d::UnitZ(),
         -Eigen::Vector3d::UnitZ()};
       const double obstacle_radius = 0.04;
+      // Probe well inside the band where the leaf owns the tangent, so the
+      // audit exercises a genuinely active leaf.
       const double probe_clearance =
-        enabled_audit_config.tangent_escape.safe_distance +
-        0.25 *
-        (
-        enabled_audit_config.tangent_escape.influence_distance -
-        enabled_audit_config.tangent_escape.safe_distance);
+        0.5 * enabled_audit_config.tangent_escape_ode.activation_distance;
       const int audit_cycles = std::clamp(
         static_cast<int>(std::ceil(
-            enabled_audit_config.tangent_escape.handoff_duration /
+            enabled_audit_config.tangent_escape_ode.direction_memory_time /
             std::max(enabled_audit_config.tangent_escape.control_dt, 1e-4))) + 3,
         4,
         256);
@@ -5055,8 +4836,7 @@ private:
             audit_context.control_point_jacobians[sensor_index] *
             (
             audit_qd +
-            enabled_audit_config.tangent_escape.nominal_prediction_dt *
-            nominal_result.qdd);
+            0.01 * nominal_result.qdd);
           if (predicted_motion.norm() > best_predicted_speed) {
             best_predicted_speed = predicted_motion.norm();
             if (predicted_motion.norm() > 1e-12) {
@@ -5071,9 +4851,11 @@ private:
         sensor_probe["name"] =
           RB10Model::sensor_control_points[sensor_index].frame_name;
         sensor_probe["best_nominal_speed_m_s"] = best_predicted_speed;
+        // v2 has no nominal-intent gate; the probe only needs the control
+        // point to be moving enough for the tangent rate to be meaningful.
         const bool feasible =
           best_predicted_speed >=
-          std::max(enabled_audit_config.tangent_escape.intent_on_speed, 1e-9);
+          std::max(enabled_audit_config.tangent_escape_ode.stall_speed, 1e-9);
         sensor_probe["feasible_intent"] = feasible;
         if (!feasible || best_targets.empty()) {
           sensor_probe["activated"] = false;
@@ -5496,15 +5278,7 @@ private:
       "This is natural-form compatibility, not a structured-GDS closure claim "
       "for the stateful hybrid Escape policy.";
 
-    const std::string escape_acceleration_model =
-      get_parameter("tangent_escape_rmp_acceleration_model").as_string();
-    // risk_damped and tangent_plane both drive entry from raw blockage rather
-    // than the filtered min_activation of the canonical model.
-    const double escape_entry_threshold =
-      (escape_acceleration_model == "risk_damped" ||
-      escape_acceleration_model == "tangent_plane") ?
-      1e-12 :
-      std::max(get_parameter("tangent_escape_rmp_min_activation").as_double(), 0.0);
+    const double escape_entry_threshold = 1e-12;
     const double escape_safe_distance =
       get_parameter("tangent_escape_rmp_safe_distance").as_double();
     const double escape_influence_distance =

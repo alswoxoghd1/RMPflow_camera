@@ -229,25 +229,7 @@ def _launch_setup(context):
         str,
     )
     for launch_name, parameter_name in [
-        ("escape_metric_scalar", "tangent_escape_rmp_metric_scalar"),
-        ("escape_risk_distance_gain", "tangent_escape_rmp_risk_distance_gain"),
-        ("escape_risk_distance_scale", "tangent_escape_rmp_risk_distance_scale"),
-        ("escape_stuck_accel_floor", "tangent_escape_rmp_risk_stuck_accel_floor"),
-        ("escape_stuck_dwell_time", "tangent_escape_rmp_risk_stuck_dwell_time"),
-        ("escape_stuck_ramp_time", "tangent_escape_rmp_risk_stuck_ramp_time"),
-        # Escape strength.  The leaf saturates its push at b_t * max_speed and
-        # then bounds a_y with tanh at max_accel, so these three together set
-        # the whole tangential acceleration envelope:
-        #   a_y <= b_t * (max_speed - v_t),  bounded by max_accel.
-        ("escape_max_speed", "tangent_escape_rmp_max_speed"),
-        ("escape_tangent_damping_gain", "tangent_escape_rmp_risk_tangent_damping_gain"),
-        ("escape_max_accel", "tangent_escape_rmp_max_accel"),
-        # alpha_d gate band, shared by all models.
-        ("escape_safe_distance", "tangent_escape_rmp_safe_distance"),
-        ("escape_beta_on", "tangent_escape_rmp_goal_block_beta_on"),
-        ("escape_beta_full", "tangent_escape_rmp_goal_block_beta_full"),
-        ("escape_influence_distance", "tangent_escape_rmp_influence_distance"),
-        # tangent_ode (v2) knobs; ignored by the other three models.
+        # Escape v2 knobs.  "params" keeps whatever params.yaml holds.
         ("escape_ode_metric_max", "tangent_escape_ode_metric_max"),
         ("escape_ode_metric_sigma", "tangent_escape_ode_metric_sigma"),
         ("escape_ode_accel_max", "tangent_escape_ode_accel_max"),
@@ -261,15 +243,16 @@ def _launch_setup(context):
         ("escape_ode_weight_velocity", "tangent_escape_ode_weight_velocity"),
         ("escape_ode_weight_risk", "tangent_escape_ode_weight_risk"),
         ("escape_ode_weight_curvature", "tangent_escape_ode_weight_curvature"),
+        ("escape_ode_weight_stall", "tangent_escape_ode_weight_stall"),
+        ("escape_ode_stall_time_constant", "tangent_escape_ode_stall_time_constant"),
+        ("escape_ode_stall_speed", "tangent_escape_ode_stall_speed"),
         ("escape_ode_axial_preference", "tangent_escape_ode_axial_preference"),
         ("escape_ode_pocket_threshold", "tangent_escape_ode_pocket_threshold"),
         ("escape_ode_pocket_epsilon", "tangent_escape_ode_pocket_epsilon"),
         ("escape_ode_activation_distance", "tangent_escape_ode_activation_distance"),
         ("escape_ode_release_distance", "tangent_escape_ode_release_distance"),
         ("escape_ode_switch_hysteresis", "tangent_escape_ode_switch_hysteresis"),
-        # tangent_plane-only knobs; ignored by the other two models.
-        ("escape_metric_isotropy", "tangent_escape_rmp_metric_isotropy"),
-        ("escape_push_influence_distance", "tangent_escape_rmp_push_influence_distance"),
+        ("escape_ode_direction_memory_time", "tangent_escape_ode_direction_memory_time"),
     ]:
         controller_common[parameter_name] = _resolve_optional_override(
             context,
@@ -282,11 +265,11 @@ def _launch_setup(context):
     # config and run_fixed_obstacle_escape_benchmark.py address them by name;
     # only what runs inside each slot is configurable.  Slot 0 owns the
     # unprefixed frames and /rmp_ee_pose.
-    # (namespace, TF prefix, ghost colour).  None keeps the original meshes.
+    # (namespace, TF prefix, ghost colour).  None keeps the original meshes,
+    # so slot 0 is drawn in the robot's real colours.  Escape v2 belongs there.
     overlay_slots = [
         ("escape_on", "", None),
         ("escape_off", "escape_off/", "0.45 0.45 0.45 1.0"),
-        ("escape_alt", "escape_alt/", "1.0 0.1 0.1 1.0"),
     ]
 
     variants = [
@@ -302,17 +285,11 @@ def _launch_setup(context):
             f"{len(variants)}: {variants}"
         )
 
-    known_models = {
-        "canonical_velocity",
-        "risk_damped",
-        "tangent_plane",
-        "tangent_ode",
-    }
     for variant in variants:
-        if variant not in known_models and variant not in {"on", "off"}:
+        if variant not in {"on", "off"}:
             raise RuntimeError(
-                f'unknown overlay variant "{variant}"; use "off", "on", or one of '
-                f"{sorted(known_models)}"
+                f'unknown overlay variant "{variant}"; use "on" (Escape enabled) '
+                f'or "off" (Escape disabled)'
             )
 
     shared_input_remappings = [
@@ -359,8 +336,6 @@ def _launch_setup(context):
                     "publish_rmp_ee_pose": True,
                 }
             )
-            if variant != "on":
-                controller["tangent_escape_rmp_acceleration_model"] = variant
 
         remappings = list(shared_input_remappings)
         if primary:
@@ -580,11 +555,10 @@ def generate_launch_description():
                 "variants",
                 default_value="on,off",
                 description=(
-                    "Comma-separated overlay slots, at most three. Each is "
-                    "\"off\", \"on\" (escape enabled with the params.yaml model), "
-                    "or an explicit acceleration model: canonical_velocity, "
-                    "risk_damped, tangent_plane, tangent_ode. Slot order maps "
-                    "to namespaces escape_on / escape_off / escape_alt."
+                    "Comma-separated overlay slots, at most two: \"on\" (Escape "
+                    "enabled) and \"off\" (Escape disabled). Slot 0 -> escape_on, "
+                    "drawn in the robot's real colours; slot 1 -> escape_off, "
+                    "drawn as a grey ghost."
                 ),
             ),
             DeclareLaunchArgument("use_interactive_goal", default_value="true"),
@@ -612,53 +586,6 @@ def generate_launch_description():
                 description=(
                     "Use 'params' to retain params.yaml, or provide a solver name."
                 ),
-            ),
-            DeclareLaunchArgument("escape_metric_scalar", default_value="params"),
-            DeclareLaunchArgument("escape_risk_distance_gain", default_value="params"),
-            DeclareLaunchArgument("escape_risk_distance_scale", default_value="params"),
-            DeclareLaunchArgument("escape_stuck_accel_floor", default_value="params"),
-            DeclareLaunchArgument("escape_stuck_dwell_time", default_value="params"),
-            DeclareLaunchArgument("escape_stuck_ramp_time", default_value="params"),
-            DeclareLaunchArgument(
-                "escape_max_speed",
-                default_value="params",
-                description=(
-                    "Tangent speed ceiling. It also sets the push saturation "
-                    "b_t * max_speed, so it bounds the escape acceleration too."
-                ),
-            ),
-            DeclareLaunchArgument(
-                "escape_tangent_damping_gain",
-                default_value="params",
-                description=(
-                    "b_t. Converts the remaining speed headroom into "
-                    "acceleration: a_y <= b_t * (max_speed - v_t)."
-                ),
-            ),
-            DeclareLaunchArgument(
-                "escape_max_accel",
-                default_value="params",
-                description="tanh saturation of the escape acceleration.",
-            ),
-            DeclareLaunchArgument(
-                "escape_beta_on",
-                default_value="params",
-                description="cos(angle) where alpha_b starts. 0.5=60deg, 0.2=78deg.",
-            ),
-            DeclareLaunchArgument(
-                "escape_beta_full",
-                default_value="params",
-                description="cos(angle) where alpha_b reaches 1. 0.94=20deg.",
-            ),
-            DeclareLaunchArgument(
-                "escape_safe_distance",
-                default_value="params",
-                description="Inner edge of the alpha_d gate band (not a safety threshold).",
-            ),
-            DeclareLaunchArgument(
-                "escape_influence_distance",
-                default_value="params",
-                description="Outer edge of the alpha_d gate band.",
             ),
             DeclareLaunchArgument(
                 "escape_ode_metric_max", default_value="params"),
@@ -699,15 +626,13 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "escape_ode_switch_hysteresis", default_value="params"),
             DeclareLaunchArgument(
-                "escape_metric_isotropy",
-                default_value="params",
-                description="tangent_plane only; ignored by the other models.",
-            ),
+                "escape_ode_direction_memory_time", default_value="params"),
             DeclareLaunchArgument(
-                "escape_push_influence_distance",
-                default_value="params",
-                description="tangent_plane only; ignored by the other models.",
-            ),
+                "escape_ode_weight_stall", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_stall_time_constant", default_value="params"),
+            DeclareLaunchArgument(
+                "escape_ode_stall_speed", default_value="params"),
             OpaqueFunction(function=_launch_setup),
         ]
     )

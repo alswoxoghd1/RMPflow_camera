@@ -557,17 +557,7 @@ PinocchioDirectRmpSolver::PinocchioDirectRmpSolver(
             "joint_limit_policy must be lula_canonical or paper_gds");
   }
   const auto & tangent_escape = config_.tangent_escape;
-  if (
-    tangent_escape.acceleration_model != "canonical_velocity" &&
-    tangent_escape.acceleration_model != "risk_damped" &&
-    tangent_escape.acceleration_model != "tangent_plane" &&
-    tangent_escape.acceleration_model != "tangent_ode")
-  {
-    throw std::runtime_error(
-            "tangent_escape acceleration_model must be canonical_velocity, "
-            "risk_damped, tangent_plane, or tangent_ode");
-  }
-  if (tangent_escape.enabled && tangent_escape.acceleration_model == "tangent_ode") {
+  if (tangent_escape.enabled) {
     const auto & ode = config_.tangent_escape_ode;
     const bool finite =
       std::isfinite(ode.metric_max) && std::isfinite(ode.metric_sigma) &&
@@ -587,93 +577,6 @@ PinocchioDirectRmpSolver::PinocchioDirectRmpSolver(
       ode.release_distance < ode.activation_distance)
     {
       throw std::runtime_error("Invalid tangent_ode Tangent Escape parameters");
-    }
-  }
-  if (tangent_escape.enabled && tangent_escape.acceleration_model == "tangent_plane") {
-    const auto resolve_gate = [](double override_value, double fallback) {
-        return override_value > 0.0 ? override_value : fallback;
-      };
-    const double push_safe =
-      resolve_gate(tangent_escape.push_safe_distance, tangent_escape.safe_distance);
-    const double push_influence = resolve_gate(
-      tangent_escape.push_influence_distance,
-      tangent_escape.influence_distance);
-    const double metric_safe = resolve_gate(tangent_escape.metric_safe_distance, push_safe);
-    const double metric_influence = resolve_gate(
-      tangent_escape.metric_influence_distance,
-      push_influence);
-    const bool finite =
-      std::isfinite(tangent_escape.metric_scalar) &&
-      std::isfinite(tangent_escape.clearance_margin) &&
-      std::isfinite(tangent_escape.max_accel) &&
-      std::isfinite(tangent_escape.max_speed) &&
-      std::isfinite(tangent_escape.control_dt) &&
-      std::isfinite(tangent_escape.handoff_duration) &&
-      std::isfinite(tangent_escape.risk_tangent_damping_gain) &&
-      std::isfinite(tangent_escape.metric_isotropy) &&
-      std::isfinite(push_safe) && std::isfinite(push_influence) &&
-      std::isfinite(metric_safe) && std::isfinite(metric_influence);
-    if (
-      !finite ||
-      tangent_escape.metric_scalar < 0.0 ||
-      tangent_escape.clearance_margin < 0.0 ||
-      tangent_escape.max_accel <= 0.0 ||
-      tangent_escape.max_speed <= 0.0 ||
-      tangent_escape.control_dt <= 0.0 ||
-      tangent_escape.handoff_duration < 0.0 ||
-      tangent_escape.risk_tangent_damping_gain <= 0.0 ||
-      tangent_escape.metric_isotropy < 0.0 ||
-      tangent_escape.metric_isotropy > 1.0 ||
-      push_safe < 0.0 ||
-      push_influence <= push_safe ||
-      metric_safe < 0.0 ||
-      metric_influence <= metric_safe)
-    {
-      throw std::runtime_error("Invalid tangent-plane Tangent Escape parameters");
-    }
-  }
-  if (tangent_escape.enabled && tangent_escape.acceleration_model == "risk_damped") {
-    const bool finite =
-      std::isfinite(tangent_escape.metric_scalar) &&
-      std::isfinite(tangent_escape.clearance_margin) &&
-      std::isfinite(tangent_escape.safe_distance) &&
-      std::isfinite(tangent_escape.influence_distance) &&
-      std::isfinite(tangent_escape.max_accel) &&
-      std::isfinite(tangent_escape.max_speed) &&
-      std::isfinite(tangent_escape.control_dt) &&
-      std::isfinite(tangent_escape.handoff_duration) &&
-      std::isfinite(tangent_escape.maximum_active_duration) &&
-      std::isfinite(tangent_escape.timeout_reentry_cooldown) &&
-      std::isfinite(tangent_escape.risk_distance_gain) &&
-      std::isfinite(tangent_escape.risk_distance_scale) &&
-      std::isfinite(tangent_escape.risk_approach_gain) &&
-      std::isfinite(tangent_escape.risk_approach_distance_scale) &&
-      std::isfinite(tangent_escape.risk_approach_epsilon) &&
-      std::isfinite(tangent_escape.risk_velocity_gate_scale) &&
-      std::isfinite(tangent_escape.risk_clearance_rate_filter_time_constant) &&
-      std::isfinite(tangent_escape.risk_tangent_damping_gain);
-    if (
-      !finite ||
-      tangent_escape.metric_scalar < 0.0 ||
-      tangent_escape.clearance_margin < 0.0 ||
-      tangent_escape.safe_distance < 0.0 ||
-      tangent_escape.influence_distance <= tangent_escape.safe_distance ||
-      tangent_escape.max_accel <= 0.0 ||
-      tangent_escape.max_speed <= 0.0 ||
-      tangent_escape.control_dt <= 0.0 ||
-      tangent_escape.handoff_duration < 0.0 ||
-      tangent_escape.maximum_active_duration < 0.0 ||
-      tangent_escape.timeout_reentry_cooldown < 0.0 ||
-      tangent_escape.risk_distance_gain < 0.0 ||
-      tangent_escape.risk_distance_scale <= 0.0 ||
-      tangent_escape.risk_approach_gain < 0.0 ||
-      tangent_escape.risk_approach_distance_scale <= 0.0 ||
-      tangent_escape.risk_approach_epsilon <= 0.0 ||
-      tangent_escape.risk_velocity_gate_scale <= 0.0 ||
-      tangent_escape.risk_clearance_rate_filter_time_constant < 0.0 ||
-      tangent_escape.risk_tangent_damping_gain <= 0.0)
-    {
-      throw std::runtime_error("Invalid risk-damped Tangent Escape parameters");
     }
   }
   const auto & energy = config_.escape_energy_certificate;
