@@ -1990,39 +1990,57 @@ public:
     declare_parameter("tcp_accel_marker_norm_for_max_length", 2.0);
     declare_parameter("tcp_accel_marker_min_norm", 0.001);
     declare_parameter("enable_tangent_escape_rmp", false);
-    declare_parameter(
-      "tangent_escape_rmp_acceleration_model",
-      std::string("canonical_velocity"));
     declare_parameter("tangent_escape_rmp_clearance_margin", 0.0);
-    declare_parameter(
-      "tangent_escape_rmp_risk_clearance_rate_filter_time_constant", 0.05);
     // "tangent_plane" model only.  Non-positive distances inherit the gate one
     // level up: push inherits safe/influence, metric inherits push.
     // Escape RMP v2 ("tangent_ode"); ignored by the other three models.
-    declare_parameter("tangent_escape_ode_metric_max", 100000.0);
-    declare_parameter("tangent_escape_ode_metric_sigma", 0.03);
-    declare_parameter("tangent_escape_ode_accel_max", 50.0);
-    declare_parameter("tangent_escape_ode_accel_sigma", 0.08);
-    declare_parameter("tangent_escape_ode_budget_scale", 1.0);
-    declare_parameter("tangent_escape_ode_budget_recovery_time", 3.0);
-    declare_parameter("tangent_escape_ode_tangent_damping", 40.0);
-    declare_parameter("tangent_escape_ode_direction_rate", 3.0);
-    declare_parameter("tangent_escape_ode_risk_sigma", 0.06);
-    declare_parameter("tangent_escape_ode_weight_goal", 1.0);
-    declare_parameter("tangent_escape_ode_weight_velocity", 0.3);
-    declare_parameter("tangent_escape_ode_weight_risk", 1.0);
-    declare_parameter("tangent_escape_ode_weight_curvature", 1.5);
-    declare_parameter("tangent_escape_ode_velocity_epsilon", 0.0001);
-    declare_parameter("tangent_escape_ode_axial_preference", 1.0);
-    declare_parameter("tangent_escape_ode_pocket_threshold", 0.6);
-    declare_parameter("tangent_escape_ode_pocket_epsilon", 0.1);
-    declare_parameter("tangent_escape_ode_activation_distance", 0.3);
-    declare_parameter("tangent_escape_ode_release_distance", 0.4);
-    declare_parameter("tangent_escape_ode_switch_hysteresis", 0.005);
-    declare_parameter("tangent_escape_ode_direction_memory_time", 1.0);
-    declare_parameter("tangent_escape_ode_weight_stall", 2.0);
-    declare_parameter("tangent_escape_ode_stall_time_constant", 1.5);
-    declare_parameter("tangent_escape_ode_stall_speed", 0.02);
+    declare_parameter("tg_rmp_metric_mu", 100000.0);
+    declare_parameter("tg_rmp_metric_length", 0.03);
+    declare_parameter("tg_rmp_accel_gain", 50.0);
+    declare_parameter("tg_rmp_accel_length", 0.08);
+    declare_parameter("tg_rmp_progress_scale", 1.0);
+    declare_parameter("tg_rmp_progress_recovery_time", 3.0);
+    declare_parameter("tg_rmp_tangent_damping", 40.0);
+    declare_parameter("tg_rmp_direction_rate", 3.0);
+    declare_parameter("tg_rmp_risk_length", 0.06);
+    declare_parameter("tg_rmp_weight_goal", 1.0);
+    declare_parameter("tg_rmp_weight_continuity", 0.3);
+    declare_parameter("tg_rmp_weight_risk", 1.0);
+    declare_parameter("tg_rmp_weight_axis", 1.5);
+    declare_parameter("tg_rmp_velocity_epsilon", 0.0001);
+    declare_parameter("tg_rmp_axial_preference", 1.0);
+    declare_parameter("tg_rmp_weight_axial_block", 0.0);
+    declare_parameter("tg_rmp_pocket_length", 0.06);
+    declare_parameter("tg_rmp_pocket_threshold", 0.6);
+    declare_parameter("tg_rmp_pocket_epsilon", 0.1);
+    declare_parameter("tg_rmp_alpha_on_distance", 0.3);
+    declare_parameter("tg_rmp_alpha_off_distance", 0.4);
+    declare_parameter("tg_rmp_owner_hysteresis", 0.005);
+    declare_parameter("tg_rmp_weight_stall", 2.0);
+    declare_parameter("tg_rmp_stall_time_constant", 1.5);
+    declare_parameter("tg_rmp_stall_speed", 0.02);
+    declare_parameter("tg_rmp_observe_only", false);
+    declare_parameter("tg_rmp_metric_epsilon", 0.1);
+    declare_parameter("tg_rmp_metric_rate_scale", 0.05);
+    declare_parameter("tg_rmp_accel_saturation", 500.0);
+    declare_parameter("tg_rmp_closing_gain", 0.0);
+    declare_parameter("tg_rmp_closing_length", 0.05);
+    declare_parameter("tg_rmp_closing_epsilon", 0.1);
+    declare_parameter("tg_rmp_closing_rate_scale", 0.05);
+    declare_parameter("tg_rmp_use_obstacle_motion", true);
+    declare_parameter(
+      "tg_rmp_clearance_rate_filter_tau", 0.05);
+    declare_parameter("tg_rmp_clearance_rate_deadband", 0.005);
+    declare_parameter("tg_rmp_enable_progress_attenuation", false);
+    declare_parameter("tg_rmp_weight_i1", 0.0);
+    declare_parameter("tg_rmp_i1_length", 0.10);
+    declare_parameter("tg_rmp_i1_damping", 0.05);
+    declare_parameter("tg_rmp_i1_exclude_parent_link", true);
+    declare_parameter("tg_rmp_block_on_dot", 0.0);
+    declare_parameter("tg_rmp_block_off_dot", 0.3);
+    declare_parameter("tg_rmp_nominal_motion_epsilon", 0.001);
+    declare_parameter(
+      "tg_rmp_nominal_filter_tau", 0.15);
     declare_parameter("publish_tangent_escape_rmp_data", false);
     declare_parameter("tangent_escape_rmp_data_topic", "/tangent_escape_rmp_data");
     declare_parameter("publish_tangent_escape_dual_solve_data", false);
@@ -2926,54 +2944,99 @@ private:
       get_parameter("tangent_escape_rmp_clearance_margin").as_double();
     config.tangent_escape.control_dt =
       control_rate_hz_ > 1e-9 ? 1.0 / control_rate_hz_ : 0.01;
-    config.tangent_escape_ode.metric_max =
-      get_parameter("tangent_escape_ode_metric_max").as_double();
-    config.tangent_escape_ode.metric_sigma =
-      get_parameter("tangent_escape_ode_metric_sigma").as_double();
-    config.tangent_escape_ode.accel_max =
-      get_parameter("tangent_escape_ode_accel_max").as_double();
-    config.tangent_escape_ode.accel_sigma =
-      get_parameter("tangent_escape_ode_accel_sigma").as_double();
-    config.tangent_escape_ode.budget_scale =
-      get_parameter("tangent_escape_ode_budget_scale").as_double();
-    config.tangent_escape_ode.budget_recovery_time =
-      get_parameter("tangent_escape_ode_budget_recovery_time").as_double();
+    config.tangent_escape_ode.metric_mu =
+      get_parameter("tg_rmp_metric_mu").as_double();
+    config.tangent_escape_ode.metric_length =
+      get_parameter("tg_rmp_metric_length").as_double();
+    config.tangent_escape_ode.accel_gain =
+      get_parameter("tg_rmp_accel_gain").as_double();
+    config.tangent_escape_ode.accel_length =
+      get_parameter("tg_rmp_accel_length").as_double();
+    config.tangent_escape_ode.progress_scale =
+      get_parameter("tg_rmp_progress_scale").as_double();
+    config.tangent_escape_ode.progress_recovery_time =
+      get_parameter("tg_rmp_progress_recovery_time").as_double();
     config.tangent_escape_ode.tangent_damping =
-      get_parameter("tangent_escape_ode_tangent_damping").as_double();
+      get_parameter("tg_rmp_tangent_damping").as_double();
     config.tangent_escape_ode.direction_rate =
-      get_parameter("tangent_escape_ode_direction_rate").as_double();
-    config.tangent_escape_ode.risk_sigma =
-      get_parameter("tangent_escape_ode_risk_sigma").as_double();
+      get_parameter("tg_rmp_direction_rate").as_double();
+    config.tangent_escape_ode.risk_length =
+      get_parameter("tg_rmp_risk_length").as_double();
     config.tangent_escape_ode.weight_goal =
-      get_parameter("tangent_escape_ode_weight_goal").as_double();
-    config.tangent_escape_ode.weight_velocity =
-      get_parameter("tangent_escape_ode_weight_velocity").as_double();
+      get_parameter("tg_rmp_weight_goal").as_double();
+    config.tangent_escape_ode.weight_continuity =
+      get_parameter("tg_rmp_weight_continuity").as_double();
     config.tangent_escape_ode.weight_risk =
-      get_parameter("tangent_escape_ode_weight_risk").as_double();
-    config.tangent_escape_ode.weight_curvature =
-      get_parameter("tangent_escape_ode_weight_curvature").as_double();
+      get_parameter("tg_rmp_weight_risk").as_double();
+    config.tangent_escape_ode.weight_axis =
+      get_parameter("tg_rmp_weight_axis").as_double();
     config.tangent_escape_ode.velocity_epsilon =
-      get_parameter("tangent_escape_ode_velocity_epsilon").as_double();
+      get_parameter("tg_rmp_velocity_epsilon").as_double();
     config.tangent_escape_ode.axial_preference =
-      get_parameter("tangent_escape_ode_axial_preference").as_double();
+      get_parameter("tg_rmp_axial_preference").as_double();
+    config.tangent_escape_ode.weight_axial_block =
+      get_parameter("tg_rmp_weight_axial_block").as_double();
+    config.tangent_escape_ode.pocket_length =
+      get_parameter("tg_rmp_pocket_length").as_double();
     config.tangent_escape_ode.pocket_threshold =
-      get_parameter("tangent_escape_ode_pocket_threshold").as_double();
+      get_parameter("tg_rmp_pocket_threshold").as_double();
     config.tangent_escape_ode.pocket_epsilon =
-      get_parameter("tangent_escape_ode_pocket_epsilon").as_double();
-    config.tangent_escape_ode.activation_distance =
-      get_parameter("tangent_escape_ode_activation_distance").as_double();
-    config.tangent_escape_ode.release_distance =
-      get_parameter("tangent_escape_ode_release_distance").as_double();
-    config.tangent_escape_ode.switch_hysteresis =
-      get_parameter("tangent_escape_ode_switch_hysteresis").as_double();
-    config.tangent_escape_ode.direction_memory_time =
-      get_parameter("tangent_escape_ode_direction_memory_time").as_double();
+      get_parameter("tg_rmp_pocket_epsilon").as_double();
+    config.tangent_escape_ode.alpha_on_distance =
+      get_parameter("tg_rmp_alpha_on_distance").as_double();
+    config.tangent_escape_ode.alpha_off_distance =
+      get_parameter("tg_rmp_alpha_off_distance").as_double();
+    config.tangent_escape_ode.owner_hysteresis =
+      get_parameter("tg_rmp_owner_hysteresis").as_double();
     config.tangent_escape_ode.weight_stall =
-      get_parameter("tangent_escape_ode_weight_stall").as_double();
+      get_parameter("tg_rmp_weight_stall").as_double();
     config.tangent_escape_ode.stall_time_constant =
-      get_parameter("tangent_escape_ode_stall_time_constant").as_double();
+      get_parameter("tg_rmp_stall_time_constant").as_double();
     config.tangent_escape_ode.stall_speed =
-      get_parameter("tangent_escape_ode_stall_speed").as_double();
+      get_parameter("tg_rmp_stall_speed").as_double();
+    config.tangent_escape_ode.observe_only =
+      get_parameter("tg_rmp_observe_only").as_bool();
+    config.tangent_escape_ode.metric_epsilon =
+      get_parameter("tg_rmp_metric_epsilon").as_double();
+    config.tangent_escape_ode.metric_rate_scale =
+      get_parameter("tg_rmp_metric_rate_scale").as_double();
+    config.tangent_escape_ode.accel_saturation =
+      get_parameter("tg_rmp_accel_saturation").as_double();
+    config.tangent_escape_ode.closing_gain =
+      get_parameter("tg_rmp_closing_gain").as_double();
+    config.tangent_escape_ode.closing_length =
+      get_parameter("tg_rmp_closing_length").as_double();
+    config.tangent_escape_ode.closing_epsilon =
+      get_parameter("tg_rmp_closing_epsilon").as_double();
+    config.tangent_escape_ode.closing_rate_scale =
+      get_parameter("tg_rmp_closing_rate_scale").as_double();
+    config.tangent_escape_ode.use_obstacle_motion =
+      get_parameter("tg_rmp_use_obstacle_motion").as_bool();
+    config.tangent_escape_ode.clearance_rate_filter_tau =
+      get_parameter(
+      "tg_rmp_clearance_rate_filter_tau").as_double();
+    config.tangent_escape_ode.clearance_rate_deadband =
+      get_parameter("tg_rmp_clearance_rate_deadband").as_double();
+    config.tangent_escape_ode.enable_progress_attenuation =
+      get_parameter(
+      "tg_rmp_enable_progress_attenuation").as_bool();
+    config.tangent_escape_ode.weight_i1 =
+      get_parameter("tg_rmp_weight_i1").as_double();
+    config.tangent_escape_ode.i1_length =
+      get_parameter("tg_rmp_i1_length").as_double();
+    config.tangent_escape_ode.i1_damping =
+      get_parameter("tg_rmp_i1_damping").as_double();
+    config.tangent_escape_ode.i1_exclude_parent_link =
+      get_parameter("tg_rmp_i1_exclude_parent_link").as_bool();
+    config.tangent_escape_ode.block_on_dot =
+      get_parameter("tg_rmp_block_on_dot").as_double();
+    config.tangent_escape_ode.block_off_dot =
+      get_parameter("tg_rmp_block_off_dot").as_double();
+    config.tangent_escape_ode.nominal_motion_epsilon =
+      get_parameter("tg_rmp_nominal_motion_epsilon").as_double();
+    config.tangent_escape_ode.nominal_filter_tau =
+      get_parameter(
+      "tg_rmp_nominal_filter_tau").as_double();
 
     config.escape_energy_certificate.enabled =
       get_parameter("escape_stability_guard_enabled").as_bool();
@@ -4326,6 +4389,71 @@ private:
           0.13,
           color(1.0F, 0.55F, 0.0F, 0.95F));
 
+        // The escape arrow on its own says which way the leaf went but not
+        // what it went with or against.  Draw the frame theta is measured in
+        // and the goal reference beside it, so the angle that matters -- how
+        // far the escape sits from where the goal wants this point to go -- is
+        // read straight off the screen instead of off a log.
+        constexpr std::size_t kBasisSlot = tangent_escape_debug::kBasis;
+        if (canonical.size() >= tangent_escape_debug::kSize) {
+          const Eigen::Vector3d basis_e1(
+            canonical[kBasisSlot], canonical[kBasisSlot + 1],
+            canonical[kBasisSlot + 2]);
+          const Eigen::Vector3d basis_e2(
+            canonical[kBasisSlot + 3], canonical[kBasisSlot + 4],
+            canonical[kBasisSlot + 5]);
+          const Eigen::Vector3d goal_in_plane(
+            canonical[kBasisSlot + 6], canonical[kBasisSlot + 7],
+            canonical[kBasisSlot + 8]);
+          if (basis_e1.allFinite() && basis_e2.allFinite() &&
+            goal_in_plane.allFinite())
+          {
+            // Two arrows of the same colour cannot be told apart on screen,
+            // and which one is theta = 0 is the whole point of drawing them.
+            // Distinct colours plus a text tag at each tip.
+            constexpr double kBasisLength = 0.10;
+            auto append_basis =
+              [&](const std::string & name,
+                const Eigen::Vector3d & direction,
+                const std::string & text,
+                const std_msgs::msg::ColorRGBA & rgba)
+              {
+                if (direction.norm() <= 1e-9) {
+                  return;
+                }
+                append_arrow(name, selected_cp, direction, kBasisLength, rgba);
+                visualization_msgs::msg::Marker label;
+                label.header.frame_id = "base_link";
+                label.header.stamp = stamp;
+                label.ns = name + "_label";
+                label.id = marker_id++;
+                label.type = visualization_msgs::msg::Marker::TEXT_VIEW_FACING;
+                label.action = visualization_msgs::msg::Marker::ADD;
+                label.pose.position = to_point(
+                  selected_cp + direction.normalized() * (kBasisLength + 0.02));
+                label.pose.orientation.w = 1.0;
+                label.scale.z = 0.03;
+                label.color = rgba;
+                label.text = text;
+                markers.markers.push_back(label);
+              };
+            append_basis(
+              "tangent_escape_basis_e1", basis_e1, "0",
+              color(1.0F, 0.25F, 0.25F, 0.95F));
+            append_basis(
+              "tangent_escape_basis_e2", basis_e2, "90",
+              color(0.25F, 0.55F, 1.0F, 0.95F));
+            // Length carries the tangential projection, so a goal that mostly
+            // points into the obstacle draws short -- that is the case where
+            // the tangent plane has little goal alignment left to offer.
+            append_arrow(
+              "tangent_escape_goal_reference",
+              selected_cp, goal_in_plane,
+              0.18 * std::clamp(goal_in_plane.norm(), 0.0, 1.0),
+              color(1.0F, 0.85F, 0.05F, 0.95F));
+          }
+        }
+
         if (selected_tangent.norm() > 1e-9) {
           visualization_msgs::msg::Marker tangent_marker;
           tangent_marker.header.frame_id = "base_link";
@@ -4810,10 +4938,13 @@ private:
       // Probe well inside the band where the leaf owns the tangent, so the
       // audit exercises a genuinely active leaf.
       const double probe_clearance =
-        0.5 * enabled_audit_config.tangent_escape_ode.activation_distance;
+        0.5 * enabled_audit_config.tangent_escape_ode.alpha_on_distance;
+      // One second of cycles, which was what the deleted direction-memory
+      // timer used to set here.  The audit only needs enough cycles for the
+      // direction ODE to settle before the pullback is checked.
       const int audit_cycles = std::clamp(
         static_cast<int>(std::ceil(
-            enabled_audit_config.tangent_escape_ode.direction_memory_time /
+            1.0 /
             std::max(enabled_audit_config.tangent_escape.control_dt, 1e-4))) + 3,
         4,
         256);

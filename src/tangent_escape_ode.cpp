@@ -14,7 +14,6 @@ namespace
 {
 
 constexpr double kPi = 3.14159265358979323846;
-constexpr std::size_t kSensorCount = RB10Model::sensor_control_points.size();
 constexpr std::size_t kRingSize = 4;
 
 double sigmoid(double value)
@@ -152,6 +151,16 @@ const std::array<SensorNeighborhood, kSensorCount> & neighborhood_table()
   return table;
 }
 
+double distance_activation(double clearance, double on, double off)
+{
+  if (!std::isfinite(clearance)) {
+    return 0.0;
+  }
+  // The quintic is flat to second order at both ends, so the gate it will
+  // eventually multiply reaches zero without a kink in its time derivative.
+  return 1.0 - smoothstep(clearance, on, off);
+}
+
 double direction_score(double theta, double a, double b, double c, double e)
 {
   return a * std::cos(theta) + b * std::sin(theta) +
@@ -169,8 +178,10 @@ LeafOutput evaluate(
   const LeafParams & params,
   const KinematicsContext & context,
   const JointVector & qd,
+  const JointVector & nominal_qdd,
   const Eigen::Vector3d & goal,
-  const std::vector<double> & clearances)
+  const std::vector<double> & clearances,
+  const std::vector<double> & clearance_rates)
 {
   LeafOutput output;
 
@@ -185,7 +196,7 @@ LeafOutput evaluate(
       kSensorCount
     });
 
-  if (!params.enabled || params.metric_max <= 0.0 || point_count == 0) {
+  if (!params.enabled || params.metric_mu <= 0.0 || point_count == 0) {
     state = LeafState{};
     return output;
   }
@@ -211,27 +222,68 @@ LeafOutput evaluate(
     }
   }
 
-  // Deactivating keeps the direction and the spent budget for a short while.
-  // Wiping them immediately makes the release boundary a relaxation
-  // oscillator: the leaf pushes out of the band, switches off, gets pulled
-  // back in, re-seeds a fresh direction with a refunded budget, and repeats.
-  const auto deactivate = [&state, &params, dt]() {
-      state.active = false;
-      state.inactive_time += dt;
-      if (state.inactive_time > std::max(params.direction_memory_time, 0.0)) {
-        state.theta_valid = false;
-        state.budget = 0.0;
-      }
+  const auto reset = [&state]() {
+      state = LeafState{};
     };
 
-  const double release = std::max(params.release_distance, params.activation_distance);
-  if (!found || closest_clearance > release) {
-    deactivate();
+  if (!found) {
+    reset();
     return output;
   }
-  if (!state.active && closest_clearance > params.activation_distance) {
-    // Inside the release band but not yet close enough to engage.
-    deactivate();
+
+  // --- blockage observation ------------------------------------------------
+  // Deliberately ahead of the activation gate and covering every sensor, not
+  // just the owner: the question this answers is which reference direction
+  // detects a blocked path, and the interesting part of that is the approach,
+  // before any gate has fired, on links that are not the closest one.
+  for (std::size_t k = 0; k < point_count; ++k) {
+    const double sensor_clearance = clearances[k] - params.clearance_margin;
+    if (!std::isfinite(sensor_clearance)) {
+      continue;
+    }
+    const auto & sensor = RB10Model::sensor_control_points[k];
+    const Eigen::Vector3d normal =
+      (context.link_rotations[sensor.parent_link] * sensor.local_normal).normalized();
+    const Eigen::Vector3d position = context.control_points[k].position;
+
+    const Eigen::Vector3d to_goal = goal - position;
+    const double to_goal_norm = to_goal.norm();
+
+    // Where the goal-driven policy accelerates this very point once every
+    // obstacle is removed.  The obstacles have to be removed: a local minimum
+    // is target pull and obstacle push cancelling, so a reference taken from
+    // the full solve would collapse to zero exactly where it is needed.
+    const Eigen::Vector3d nominal_acceleration =
+      context.control_point_jacobians[k] * nominal_qdd +
+      context.control_point_curvatures[k];
+    const double nominal_norm = nominal_acceleration.norm();
+
+    output.sensor_clearance[k] = sensor_clearance;
+    output.sensor_dot_goal_tcp[k] =
+      to_goal_norm > 1e-9 ? normal.dot(to_goal) / to_goal_norm : 0.0;
+    output.sensor_dot_goal_nominal[k] =
+      nominal_norm > std::max(params.nominal_motion_epsilon, 1e-12) ?
+      normal.dot(nominal_acceleration) / nominal_norm :
+      0.0;
+    output.sensor_nominal_magnitude[k] = nominal_norm;
+    ++output.observation_count;
+  }
+  output.observation_valid = output.observation_count > 0;
+  output.alpha_distance = distance_activation(
+    closest_clearance, params.alpha_on_distance, params.alpha_off_distance);
+
+  // Past alpha_off the activation is identically zero, so the metric is too and
+  // the leaf has no say whatever its internal state says.  That is what lets
+  // the state be dropped right here with no discontinuity in the command, and
+  // it is why the old direction-memory timer is gone: the memory existed only
+  // to stop a hard release edge from turning the band into a relaxation
+  // oscillator, and there is no edge left to oscillate on.  The overshoot is
+  // just to keep the leaf from re-seeding every cycle while it sits on the
+  // boundary; the metric is zero across it either way.
+  const double release = std::max(params.alpha_off_distance, params.alpha_on_distance) +
+    std::max(params.owner_hysteresis, 0.0);
+  if (closest_clearance > release) {
+    reset();
     return output;
   }
 
@@ -245,7 +297,7 @@ LeafOutput evaluate(
   const bool switch_owner =
     !state.active ||
     !std::isfinite(owner_clearance) ||
-    (owner_clearance - closest_clearance) > std::max(params.switch_hysteresis, 0.0);
+    (owner_clearance - closest_clearance) > std::max(params.owner_hysteresis, 0.0);
 
   // --- sensor frame --------------------------------------------------------
   const auto sensor_basis = [&context](std::size_t index) {
@@ -282,6 +334,12 @@ LeafOutput evaluate(
   const Eigen::Vector3d & axis2 = basis[2];
 
   const double clearance = std::max(clearances[index] - params.clearance_margin, 0.0);
+  // An absent or non-finite rate reads as zero, which makes the closing-rate
+  // term vanish instead of firing on a number nobody supplied.
+  const double clearance_rate =
+    index < clearance_rates.size() && std::isfinite(clearance_rates[index]) ?
+    clearance_rates[index] :
+    0.0;
 
   // --- neighbour risk, reduced to tangent-plane angles ---------------------
   // Each neighbour argues against the direction its own normal points at, as a
@@ -303,9 +361,10 @@ LeafOutput evaluate(
     if (contribution.index >= clearances.size()) {
       continue;
     }
-    const double weight = risk_weight(
-      clearances[contribution.index] - params.clearance_margin, params.risk_sigma);
-    pocket_product *= weight;
+    const double neighbour_clearance =
+      clearances[contribution.index] - params.clearance_margin;
+    const double weight = risk_weight(neighbour_clearance, params.risk_length);
+    pocket_product *= risk_weight(neighbour_clearance, params.pocket_length);
     ++pocket_count;
 
     if (contribution.axial_block) {
@@ -325,13 +384,123 @@ LeafOutput evaluate(
   const Eigen::Vector3d velocity = context.control_point_velocities[index];
   const Eigen::Vector3d to_goal = goal - context.control_points[index].position;
 
+  // Where the goal-driven policy accelerates THIS control point once every
+  // obstacle is removed.  Also what the blockage gate reads further down.
+  //
+  // The obstacles have to be removed: a local minimum is target pull and
+  // obstacle push cancelling, so a reference taken from the full solve would
+  // collapse to zero at exactly the configuration this leaf exists for.
+  const Eigen::Vector3d nominal_acceleration =
+    point_jacobian * nominal_qdd + context.control_point_curvatures[index];
+  const double nominal_norm = nominal_acceleration.norm();
+  const bool nominal_usable =
+    nominal_norm > std::max(params.nominal_motion_epsilon, 1e-12);
+
+  // The goal term used to be the straight line from this sensor to the TCP
+  // goal.  For a link-2 or link-3 point that is a place it is never asked to
+  // reach, and measuring both on one run showed the difference is not
+  // academic: the two disagree in sign on 52% of the cycles tof3_1_E owns the
+  // leaf and on all 139 that tof6_1_L owns it.  The disagreement is per
+  // sensor, not per link -- averaging over a link hides it.
+  //
+  // Near the goal the nominal acceleration vanishes and its direction is
+  // noise; the TCP line is the fallback there, being at least well defined.
   const Eigen::Vector3d goal_direction =
-    to_goal.norm() > 1e-9 ? Eigen::Vector3d(to_goal.normalized()) : Eigen::Vector3d::Zero();
+    nominal_usable ?
+    Eigen::Vector3d(nominal_acceleration / nominal_norm) :
+    (to_goal.norm() > 1e-9 ?
+    Eigen::Vector3d(to_goal.normalized()) :
+    Eigen::Vector3d::Zero());
   const Eigen::Vector3d velocity_direction =
     velocity.norm() > std::max(params.velocity_epsilon, 1e-12) ?
     Eigen::Vector3d(velocity.normalized()) :
     Eigen::Vector3d::Zero();
 
+
+  // --- I1: whole-body kinematic consequence --------------------------------
+  // Local risk asks what the obstacles look like around this sensor.  I1 asks
+  // a different question: if the leaf pushes the owner along t, where does the
+  // rest of the arm go, and does any of it go into something.
+  //
+  //   qdot_theta = Ji# t(theta)          the joint motion that would realise t
+  //   v_k        = Jk qdot_theta         what that does to control point k
+  //   z_k        = o_k . v_k             ...toward k's own obstacle, or away
+  //   S_I1       = -w_I sum_k rho_k z_k  penalise sending a body part inward
+  //
+  // z_k is linear in t(theta), so S_I1 is a pure dipole and folds into a and b
+  // with no new harmonic.  Expanding t = cos e1 + sin e2 gives the two
+  // coefficients directly.
+  //
+  // Ji# t is the minimum-norm joint velocity that realises t, not the motion
+  // the robot will actually make -- that comes out of the whole root solve.
+  // I1 is therefore a score, not a prediction, and it only has to rank
+  // candidate directions against each other.
+  //
+  // Cost: one 3x3 solve and two 6-vectors for the owner, then a single 6x3
+  // product and two dot products per body sensor.  Gki is never formed.
+  double score_a_i1 = 0.0;
+  double score_b_i1 = 0.0;
+  std::size_t i1_count = 0;
+  double i1_largest_gain = 0.0;
+  {
+    const double damping = std::max(params.i1_damping, 1e-6);
+    const Eigen::Matrix3d gram =
+      point_jacobian * point_jacobian.transpose() +
+      damping * damping * Eigen::Matrix3d::Identity();
+    // Ji# = Ji^T (Ji Ji^T + lambda^2 I)^-1, applied to the two basis tangents.
+    const Eigen::Matrix<double, 6, 3> damped_pseudoinverse =
+      point_jacobian.transpose() * gram.inverse();
+    const JointVector joint_motion_e1 = damped_pseudoinverse * axis1;
+    const JointVector joint_motion_e2 = damped_pseudoinverse * axis2;
+
+    const std::size_t owner_link =
+      RB10Model::sensor_control_points[index].parent_link;
+    for (std::size_t k = 0; k < point_count; ++k) {
+      if (k == index) {
+        continue;
+      }
+      // The owner's own ring is what local risk already speaks for.  Leaving
+      // it out is what keeps the two terms answering different questions
+      // instead of double-counting the same neighbours.
+      bool in_owner_group = false;
+      for (std::size_t slot = 0; slot < neighbours.count; ++slot) {
+        if (neighbours.entries[slot].index == k) {
+          in_owner_group = true;
+          break;
+        }
+      }
+      if (in_owner_group) {
+        continue;
+      }
+      const auto & body_sensor = RB10Model::sensor_control_points[k];
+      if (params.i1_exclude_parent_link && body_sensor.parent_link == owner_link) {
+        continue;
+      }
+      const double body_clearance = clearances[k] - params.clearance_margin;
+      if (!std::isfinite(body_clearance)) {
+        continue;
+      }
+      const double proximity = risk_weight(body_clearance, params.i1_length);
+      if (proximity <= 0.0) {
+        continue;
+      }
+      const Eigen::Vector3d body_normal =
+        (context.link_rotations[body_sensor.parent_link] *
+        body_sensor.local_normal).normalized();
+      // o_k^T Jk Ji# e = (Jk^T o_k) . (Ji# e), so Gki never has to be built.
+      const JointVector body_row =
+        context.control_point_jacobians[k].transpose() * body_normal;
+      const double gain_e1 = body_row.dot(joint_motion_e1);
+      const double gain_e2 = body_row.dot(joint_motion_e2);
+      score_a_i1 -= proximity * gain_e1;
+      score_b_i1 -= proximity * gain_e2;
+      i1_largest_gain =
+        std::max(i1_largest_gain, std::hypot(gain_e1, gain_e2));
+      ++i1_count;
+    }
+    score_a_i1 *= params.weight_i1;
+    score_b_i1 *= params.weight_i1;
+  }
 
   // A sensor whose e1 carries no axial component has no meaningful "toward the
   // distal end", so it takes no axial preference from a blocked far side.
@@ -339,17 +508,35 @@ LeafOutput evaluate(
     neighbours.axial_sign * (params.axial_preference >= 0.0 ? 1.0 : -1.0) :
     0.0;
 
-  double score_a =
-    params.weight_goal * axis1.dot(goal_direction) +
-    params.weight_velocity * axis1.dot(velocity_direction) +
-    params.weight_risk * (risk_a + axial_sign * axial_block_risk);
-  double score_b =
-    params.weight_goal * axis2.dot(goal_direction) +
-    params.weight_velocity * axis2.dot(velocity_direction) +
-    params.weight_risk * risk_b;
+  const double score_a_goal = params.weight_goal * axis1.dot(goal_direction);
+  const double score_b_goal = params.weight_goal * axis2.dot(goal_direction);
+  const double score_a_velocity =
+    params.weight_continuity * axis1.dot(velocity_direction);
+  const double score_b_velocity =
+    params.weight_continuity * axis2.dot(velocity_direction);
+  const double score_a_risk =
+    params.weight_risk * risk_a +
+    params.weight_axial_block * axial_sign * axial_block_risk;
+  const double score_b_risk = params.weight_risk * risk_b;
+
+  double score_a = score_a_goal + score_a_velocity + score_a_risk + score_a_i1;
+  double score_b = score_b_goal + score_b_velocity + score_b_risk + score_b_i1;
+  // The axial block now ADDS to c.  c cos(2 theta) is +c along e1 and -c along
+  // e2, so preferring the link axis -- which is what a blocked far side is
+  // supposed to argue for, and what the dipole term above already does with
+  // the same signal -- needs c positive.  Subtracting sent it the other way,
+  // to the lateral axis, so the two uses of one signal disagreed about which
+  // axis to leave along.
+  //
+  // It was not a small disagreement.  In a run that locked up, c came to
+  // -0.580 with -0.407 of that from the antipodal sensor alone: 70% of the
+  // axis decision was made by the one neighbour that carries no tangent-plane
+  // direction at all.  The lateral axis it picked happened to be vertical in
+  // that pose, which is why the arm kept escaping downwards instead of round.
   const double score_c =
-    params.weight_curvature * (risk_c - axial_block_risk);
-  const double score_e = params.weight_curvature * risk_e;
+    params.weight_axis * risk_c +
+    params.weight_axial_block * axial_block_risk;
+  const double score_e = params.weight_axis * risk_e;
 
   // --- direction state -----------------------------------------------------
   if (!state.active) {
@@ -370,25 +557,24 @@ LeafOutput evaluate(
     }
     if (!state.theta_valid) {
       state.theta = best_theta;
-      state.budget = 0.0;
+      state.progress = 0.0;
     }
     state.active = true;
     state.theta_valid = true;
-    state.inactive_time = 0.0;
   }
   state.sensor_index = index;
 
   // Stall: the leaf is commanding a push but the control point is not making
   // tangential progress.  Uses the previous cycle's tangent rate, which is the
   // motion the previous command actually produced.
-  // The distance-driven part of the push is already known here; the budget and
+  // The distance-driven part of the push is already known here; the progress and
   // pocket factors only scale it down, so this is the right "is it trying"
   // signal without reordering the rest of the cycle.
   const double commanded_push =
-    std::max(params.accel_max, 0.0) *
-    std::exp(-clearance / std::max(params.accel_sigma, 1e-9));
+    std::max(params.accel_gain, 0.0) *
+    std::exp(-clearance / std::max(params.accel_length, 1e-9));
   const double commanding = smoothstep(
-    commanded_push, 0.0, std::max(params.accel_max, 1e-9) * 0.05);
+    commanded_push, 0.0, std::max(params.accel_gain, 1e-9) * 0.05);
   const double moving = smoothstep(
     std::abs(state.previous_tangent_rate), 0.0,
     std::max(params.stall_speed, 1e-9));
@@ -403,8 +589,10 @@ LeafOutput evaluate(
   const double stall_penalty = std::hypot(state.stall_x, state.stall_y);
 
   // Subtract the dipole: same algebra as the neighbour risk terms.
-  score_a -= std::max(params.weight_stall, 0.0) * state.stall_x;
-  score_b -= std::max(params.weight_stall, 0.0) * state.stall_y;
+  const double score_a_stall = std::max(params.weight_stall, 0.0) * state.stall_x;
+  const double score_b_stall = std::max(params.weight_stall, 0.0) * state.stall_y;
+  score_a -= score_a_stall;
+  score_b -= score_b_stall;
 
   const double theta_rate = std::max(params.direction_rate, 0.0) *
     direction_score_gradient(state.theta, score_a, score_b, score_c, score_e);
@@ -425,16 +613,16 @@ LeafOutput evaluate(
 
   state.previous_tangent_rate = tangent_rate;
 
-  // --- budget --------------------------------------------------------------
-  // Only forward progress spends the budget; being pushed backwards does not
+  // --- progress --------------------------------------------------------------
+  // Only forward progress spends the progress; being pushed backwards does not
   // refund it.  The slow recovery term lets a new obstacle episode start with
   // authority again without ever making the well infinitely deep.
-  const double recovery = state.budget /
-    std::max(params.budget_recovery_time, 1e-6);
-  state.budget += (std::max(0.0, tangent_rate) - recovery) * dt;
-  state.budget = std::max(state.budget, 0.0);
-  const double budget_scale = std::max(params.budget_scale, 1e-6);
-  const double budget_remaining = std::exp(-state.budget / budget_scale);
+  const double recovery = state.progress /
+    std::max(params.progress_recovery_time, 1e-6);
+  state.progress += (std::max(0.0, tangent_rate) - recovery) * dt;
+  state.progress = std::max(state.progress, 0.0);
+  const double progress_scale = std::max(params.progress_scale, 1e-6);
+  const double progress_remaining = std::exp(-state.progress / progress_scale);
 
   // --- pocket guard --------------------------------------------------------
   // Geometric mean over however many neighbours this sensor actually has, so
@@ -448,6 +636,38 @@ LeafOutput evaluate(
     std::max(params.pocket_epsilon, 1e-9)),
     0.0,
     1.0);
+
+  // --- blockage gate -------------------------------------------------------
+  // Is this control point actually being driven into its own obstacle?  The
+  // reference is where the goal-driven policy accelerates this point with the
+  // obstacles removed -- not the line from here to the TCP goal, which is a
+  // place a link-2 or link-3 point is never asked to reach.  Measured on this
+  // scenario the two disagree in sign on 52% of the cycles tof3_1_E owns the
+  // leaf and on all 139 that tof6_1_L owns it.
+  //
+  // This is not the old velocity gate coming back.  That one died because
+  // qdot -> 0 at a local minimum, so it switched the leaf off exactly where it
+  // was needed.  Neither half of that applies here: this is an acceleration,
+  // which the policy keeps commanding while the robot stands still, and it is
+  // taken with the obstacles removed, so the target pull has nothing left to
+  // cancel against.
+  const double blockage = nominal_usable ?
+    obstacle_direction.dot(nominal_acceleration) / nominal_norm :
+    0.0;
+  // Fail open.  Near the goal the nominal acceleration vanishes and its
+  // direction is noise; answering "not blocked" there would reproduce the very
+  // failure the velocity gate was deleted for.  When the signal cannot be
+  // read, the gate does not close.
+  const double alpha_block = nominal_usable ?
+    smoothstep(blockage, params.block_on_dot, params.block_off_dot) :
+    1.0;
+
+  // From the owner, which the hand-off hysteresis may hold a little further
+  // out than the closest sensor.  The same distance drives the push and the
+  // metric, so the whole leaf has to speak about one sensor.
+  const double alpha_distance = distance_activation(
+    clearance, params.alpha_on_distance, params.alpha_off_distance);
+  const double alpha_total = alpha_distance * alpha_block * alpha_free;
 
   // --- Jdot_e * qdot, analytic ---------------------------------------------
   // tdot = theta_dot * t_perp + omega x t.  The direction only changes because
@@ -472,19 +692,74 @@ LeafOutput evaluate(
   // than the metric gate, the implied desired acceleration f/m grows like
   // exp(+d (1/sigma_m - 1/sigma_a)) and blows up with distance -- a meaningless
   // policy, and a 0/0 as the metric vanishes.  Gating the acceleration instead
-  // keeps a bounded by accel_max everywhere while the metric stays narrow.
-  const double push_acceleration =
-    std::max(params.accel_max, 0.0) *
-    std::exp(-clearance / std::max(params.accel_sigma, 1e-9)) *
-    budget_remaining * alpha_free;
+  // keeps a bounded by accel_gain everywhere while the metric stays narrow.
+  // No activation factor here.  f = M a, so gating both the acceleration and
+  // the metric puts alpha into the transported force twice; worse, the damping
+  // term is not gated at all, so as alpha shrank the leaf's desired
+  // acceleration collapsed onto -b_e ydot and it braked tangential motion
+  // instead of yielding.  Activation belongs on the metric alone: it decides
+  // how much authority the leaf has, not what it is asking for.
+  const double distance_push =
+    std::max(params.accel_gain, 0.0) *
+    std::exp(-clearance / std::max(params.accel_length, 1e-9)) *
+    (params.enable_progress_attenuation ? progress_remaining : 1.0);
+
+  // Closing-rate term.  gamma_v is a soft rectifier on the closing direction,
+  // and the 1/(d/l + eps) factor makes the same closing speed count for more
+  // the nearer it happens; eps is what keeps it finite at contact.
+  const double closing_gate =
+    1.0 - sigmoid(clearance_rate / std::max(params.closing_rate_scale, 1e-9));
+  const double closing_shape = std::max(
+    -closing_gate * clearance_rate /
+    (clearance / std::max(params.closing_length, 1e-9) +
+    std::max(params.closing_epsilon, 1e-9)),
+    0.0);
+  const double closing_term = std::max(params.closing_gain, 0.0) * closing_shape;
+
+  // Saturation covers the push only.  The damping below has to stay outside
+  // it: clamping the sum to [0, a_max] would delete every negative value the
+  // leaf can produce, and -b_e ydot is the only dissipation it has left now
+  // that the progress attenuation is off.  A leaf that can never decelerate
+  // tangential motion can inject energy along y without bound.
+  const double push_acceleration = std::clamp(
+    distance_push + closing_term, 0.0, std::max(params.accel_saturation, 0.0));
   // b_e is a rate here, not a force gain: 1/b_e is the tangential settling
   // time and must stay well above the control period.
   const double damping_acceleration =
     std::max(params.tangent_damping, 0.0) * tangent_rate;
   const double desired_acceleration = push_acceleration - damping_acceleration;
+  // Metric.  Hyperbolic in d rather than exponential, with its own closing-rate
+  // gate, so that authority tracks both how close the obstacle is and whether
+  // the point is actually driving into it.
+  //
+  //   m = alpha_TG gamma_m(ddot) mu / (d / l_m + eps_m)
+  //
+  // The distance shaping is deliberately not repeated: alpha_d already decides
+  // the range over which the leaf exists at all, and this factor only grades
+  // proximity inside it.  eps_m is what bounds m at contact -- the peak is
+  // mu / eps_m, not mu.
+  //
+  // The tail is far fatter than the old exponential, which is the reason the
+  // Schmitt trigger had to become alpha_d first: this metric does not vanish
+  // on its own anywhere, so without a smooth gate it would step to zero at the
+  // release edge.
+  // gamma_m, rescaled so that standing still counts as full authority.
+  //
+  // The plain 1 - sigmoid(ddot/v_m) is exactly 0.5 at ddot = 0, and ddot = 0 is
+  // where this leaf earns its keep: a local minimum is a robot that has stopped
+  // against an obstacle.  Measured, ddot's median over a run was 0, so the
+  // metric ran at half strength essentially all the time -- the same failure
+  // the velocity activation gate was deleted for.  Doubling and clamping keeps
+  // the intent, which is that RECEDING costs authority, and drops the
+  // side effect, which was that being stationary did too.
+  const double metric_gate = std::min(
+    2.0 * (1.0 - sigmoid(clearance_rate / std::max(params.metric_rate_scale, 1e-9))),
+    1.0);
   const double metric =
-    std::max(params.metric_max, 0.0) *
-    std::exp(-clearance / std::max(params.metric_sigma, 1e-9)) * alpha_free;
+    alpha_total * metric_gate *
+    std::max(params.metric_mu, 0.0) /
+    (clearance / std::max(params.metric_length, 1e-9) +
+    std::max(params.metric_epsilon, 1e-9));
   // f = M a is the representation change the tree transports.
   const double natural_force = metric * desired_acceleration;
 
@@ -497,13 +772,19 @@ LeafOutput evaluate(
   output.active = true;
   output.sensor_index = index;
   output.clearance = clearance;
+  output.active_link = RB10Model::sensor_control_points[index].parent_link;
+  output.alpha_distance = alpha_distance;
+  output.alpha_block = alpha_block;
+  output.alpha_total = alpha_total;
+  output.blockage = blockage;
+  output.nominal_magnitude = nominal_norm;
   output.obstacle_direction = obstacle_direction;
   output.tangent = tangent;
   output.tangent_perpendicular = tangent_perpendicular;
   output.theta = state.theta;
   output.theta_rate = theta_rate;
-  output.budget = state.budget;
-  output.budget_remaining = budget_remaining;
+  output.progress = state.progress;
+  output.progress_remaining = progress_remaining;
   output.tangent_rate = tangent_rate;
   output.score_a = score_a;
   output.score_b = score_b;
@@ -511,11 +792,31 @@ LeafOutput evaluate(
   output.score_e = score_e;
   output.stall = stall;
   output.stall_penalty = stall_penalty;
+  output.score_a_goal = score_a_goal;
+  output.score_b_goal = score_b_goal;
+  output.score_a_velocity = score_a_velocity;
+  output.score_b_velocity = score_b_velocity;
+  output.score_a_risk = score_a_risk;
+  output.score_b_risk = score_b_risk;
+  output.score_a_stall = score_a_stall;
+  output.score_b_stall = score_b_stall;
+  output.score_a_i1 = score_a_i1;
+  output.goal_e1 = axis1.dot(goal_direction);
+  output.goal_e2 = axis2.dot(goal_direction);
+  output.goal_from_nominal = nominal_usable;
+  output.score_b_i1 = score_b_i1;
+  output.i1_count = i1_count;
+  output.i1_largest_gain = i1_largest_gain;
+  output.clearance_rate = clearance_rate;
+  output.closing_gate = closing_gate;
+  output.closing_term = closing_term;
+  output.closing_shape = closing_shape;
   output.push_acceleration = push_acceleration;
   output.damping_acceleration = damping_acceleration;
   output.desired_acceleration = desired_acceleration;
   output.natural_force = natural_force;
   output.metric = metric;
+  output.metric_gate = metric_gate;
   output.alpha_free = alpha_free;
   output.injected_power = natural_force * tangent_rate;
   output.jdot_qdot = jdot_qdot;
@@ -523,6 +824,12 @@ LeafOutput evaluate(
   output.jdot_omega_term = jdot_omega_term;
   output.tangent_normal_residual = std::abs(tangent.dot(obstacle_direction));
   output.control_point = context.control_points[index].position;
+  output.tcp_position = context.tcp_position;
+  output.basis_e1 = axis1;
+  output.basis_e2 = axis2;
+  output.goal_in_plane =
+    axis1.dot(goal_direction) * axis1 + axis2.dot(goal_direction) * axis2;
+  output.goal_distance = (goal - context.tcp_position).norm();
   output.leaf_jacobian = leaf_jacobian;
 
   if (metric_contribution.allFinite() && force_contribution.allFinite()) {

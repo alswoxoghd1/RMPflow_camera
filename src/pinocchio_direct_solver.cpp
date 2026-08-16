@@ -560,21 +560,21 @@ PinocchioDirectRmpSolver::PinocchioDirectRmpSolver(
   if (tangent_escape.enabled) {
     const auto & ode = config_.tangent_escape_ode;
     const bool finite =
-      std::isfinite(ode.metric_max) && std::isfinite(ode.metric_sigma) &&
-      std::isfinite(ode.accel_max) && std::isfinite(ode.accel_sigma) &&
-      std::isfinite(ode.budget_scale) && std::isfinite(ode.budget_recovery_time) &&
+      std::isfinite(ode.metric_mu) && std::isfinite(ode.metric_length) &&
+      std::isfinite(ode.accel_gain) && std::isfinite(ode.accel_length) &&
+      std::isfinite(ode.progress_scale) && std::isfinite(ode.progress_recovery_time) &&
       std::isfinite(ode.tangent_damping) && std::isfinite(ode.direction_rate) &&
-      std::isfinite(ode.risk_sigma) && std::isfinite(ode.pocket_epsilon) &&
-      std::isfinite(ode.activation_distance) && std::isfinite(ode.release_distance);
+      std::isfinite(ode.risk_length) && std::isfinite(ode.pocket_epsilon) &&
+      std::isfinite(ode.alpha_on_distance) && std::isfinite(ode.alpha_off_distance);
     if (
       !finite ||
-      ode.metric_max < 0.0 || ode.metric_sigma <= 0.0 ||
-      ode.accel_max < 0.0 || ode.accel_sigma <= 0.0 ||
-      ode.budget_scale <= 0.0 || ode.budget_recovery_time <= 0.0 ||
+      ode.metric_mu < 0.0 || ode.metric_length <= 0.0 ||
+      ode.accel_gain < 0.0 || ode.accel_length <= 0.0 ||
+      ode.progress_scale <= 0.0 || ode.progress_recovery_time <= 0.0 ||
       ode.tangent_damping < 0.0 || ode.direction_rate < 0.0 ||
-      ode.risk_sigma <= 0.0 || ode.pocket_epsilon <= 0.0 ||
-      ode.activation_distance <= 0.0 ||
-      ode.release_distance < ode.activation_distance)
+      ode.risk_length <= 0.0 || ode.pocket_epsilon <= 0.0 ||
+      ode.alpha_on_distance <= 0.0 ||
+      ode.alpha_off_distance < ode.alpha_on_distance)
     {
       throw std::runtime_error("Invalid tangent_ode Tangent Escape parameters");
     }

@@ -230,29 +230,30 @@ def _launch_setup(context):
     )
     for launch_name, parameter_name in [
         # Escape v2 knobs.  "params" keeps whatever params.yaml holds.
-        ("escape_ode_metric_max", "tangent_escape_ode_metric_max"),
-        ("escape_ode_metric_sigma", "tangent_escape_ode_metric_sigma"),
-        ("escape_ode_accel_max", "tangent_escape_ode_accel_max"),
-        ("escape_ode_accel_sigma", "tangent_escape_ode_accel_sigma"),
-        ("escape_ode_budget_scale", "tangent_escape_ode_budget_scale"),
-        ("escape_ode_budget_recovery_time", "tangent_escape_ode_budget_recovery_time"),
-        ("escape_ode_tangent_damping", "tangent_escape_ode_tangent_damping"),
-        ("escape_ode_direction_rate", "tangent_escape_ode_direction_rate"),
-        ("escape_ode_risk_sigma", "tangent_escape_ode_risk_sigma"),
-        ("escape_ode_weight_goal", "tangent_escape_ode_weight_goal"),
-        ("escape_ode_weight_velocity", "tangent_escape_ode_weight_velocity"),
-        ("escape_ode_weight_risk", "tangent_escape_ode_weight_risk"),
-        ("escape_ode_weight_curvature", "tangent_escape_ode_weight_curvature"),
-        ("escape_ode_weight_stall", "tangent_escape_ode_weight_stall"),
-        ("escape_ode_stall_time_constant", "tangent_escape_ode_stall_time_constant"),
-        ("escape_ode_stall_speed", "tangent_escape_ode_stall_speed"),
-        ("escape_ode_axial_preference", "tangent_escape_ode_axial_preference"),
-        ("escape_ode_pocket_threshold", "tangent_escape_ode_pocket_threshold"),
-        ("escape_ode_pocket_epsilon", "tangent_escape_ode_pocket_epsilon"),
-        ("escape_ode_activation_distance", "tangent_escape_ode_activation_distance"),
-        ("escape_ode_release_distance", "tangent_escape_ode_release_distance"),
-        ("escape_ode_switch_hysteresis", "tangent_escape_ode_switch_hysteresis"),
-        ("escape_ode_direction_memory_time", "tangent_escape_ode_direction_memory_time"),
+        ("tg_metric_mu", "tg_rmp_metric_mu"),
+        ("tg_metric_length", "tg_rmp_metric_length"),
+        ("tg_accel_gain", "tg_rmp_accel_gain"),
+        ("tg_accel_length", "tg_rmp_accel_length"),
+        ("tg_progress_scale", "tg_rmp_progress_scale"),
+        ("tg_progress_recovery_time", "tg_rmp_progress_recovery_time"),
+        ("tg_tangent_damping", "tg_rmp_tangent_damping"),
+        ("tg_direction_rate", "tg_rmp_direction_rate"),
+        ("tg_risk_length", "tg_rmp_risk_length"),
+        ("tg_weight_goal", "tg_rmp_weight_goal"),
+        ("tg_weight_continuity", "tg_rmp_weight_continuity"),
+        ("tg_weight_risk", "tg_rmp_weight_risk"),
+        ("tg_weight_axis", "tg_rmp_weight_axis"),
+        ("tg_weight_stall", "tg_rmp_weight_stall"),
+        ("tg_stall_time_constant", "tg_rmp_stall_time_constant"),
+        ("tg_stall_speed", "tg_rmp_stall_speed"),
+        ("tg_axial_preference", "tg_rmp_axial_preference"),
+        ("tg_pocket_threshold", "tg_rmp_pocket_threshold"),
+        ("tg_pocket_epsilon", "tg_rmp_pocket_epsilon"),
+        ("tg_alpha_on_distance", "tg_rmp_alpha_on_distance"),
+        ("tg_alpha_off_distance", "tg_rmp_alpha_off_distance"),
+        ("tg_owner_hysteresis", "tg_rmp_owner_hysteresis"),
+        ("tg_block_on_dot", "tg_rmp_block_on_dot"),
+        ("tg_block_off_dot", "tg_rmp_block_off_dot"),
     ]:
         controller_common[parameter_name] = _resolve_optional_override(
             context,
@@ -286,10 +287,11 @@ def _launch_setup(context):
         )
 
     for variant in variants:
-        if variant not in {"on", "off"}:
+        if variant not in {"on", "off", "observe"}:
             raise RuntimeError(
-                f'unknown overlay variant "{variant}"; use "on" (Escape enabled) '
-                f'or "off" (Escape disabled)'
+                f'unknown overlay variant "{variant}"; use "on" (Escape enabled), '
+                f'"off" (Escape disabled) or "observe" (Escape evaluated and '
+                f'logged but contributing nothing)'
             )
 
     shared_input_remappings = [
@@ -334,6 +336,14 @@ def _launch_setup(context):
                         "tangent_escape_geometry_markers"
                     ),
                     "publish_rmp_ee_pose": True,
+                    # "observe" is Escape fully evaluated and fully logged, but
+                    # contributing nothing to the root RMP.  The robot moves on
+                    # the base policy alone, so the blockage signals recorded
+                    # here are not shaped by the leaf they are meant to design.
+                    # Run it as `variants:=observe,off`: both slots follow the
+                    # same base policy, so the two ghosts must overlap exactly
+                    # -- any visible gap means observe_only is leaking.
+                    "tg_rmp_observe_only": variant == "observe",
                 }
             )
 
@@ -588,51 +598,53 @@ def generate_launch_description():
                 ),
             ),
             DeclareLaunchArgument(
-                "escape_ode_metric_max", default_value="params"),
+                "tg_metric_mu", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_metric_sigma", default_value="params"),
+                "tg_metric_length", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_accel_max", default_value="params"),
+                "tg_accel_gain", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_accel_sigma", default_value="params"),
+                "tg_accel_length", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_budget_scale", default_value="params"),
+                "tg_progress_scale", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_budget_recovery_time", default_value="params"),
+                "tg_progress_recovery_time", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_tangent_damping", default_value="params"),
+                "tg_tangent_damping", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_direction_rate", default_value="params"),
+                "tg_direction_rate", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_risk_sigma", default_value="params"),
+                "tg_risk_length", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_weight_goal", default_value="params"),
+                "tg_weight_goal", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_weight_velocity", default_value="params"),
+                "tg_weight_continuity", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_weight_risk", default_value="params"),
+                "tg_weight_risk", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_weight_curvature", default_value="params"),
+                "tg_weight_axis", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_axial_preference", default_value="params"),
+                "tg_axial_preference", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_pocket_threshold", default_value="params"),
+                "tg_pocket_threshold", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_pocket_epsilon", default_value="params"),
+                "tg_pocket_epsilon", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_activation_distance", default_value="params"),
+                "tg_alpha_on_distance", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_release_distance", default_value="params"),
+                "tg_alpha_off_distance", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_switch_hysteresis", default_value="params"),
+                "tg_owner_hysteresis", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_direction_memory_time", default_value="params"),
+                "tg_block_on_dot", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_weight_stall", default_value="params"),
+                "tg_block_off_dot", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_stall_time_constant", default_value="params"),
+                "tg_weight_stall", default_value="params"),
             DeclareLaunchArgument(
-                "escape_ode_stall_speed", default_value="params"),
+                "tg_stall_time_constant", default_value="params"),
+            DeclareLaunchArgument(
+                "tg_stall_speed", default_value="params"),
             OpaqueFunction(function=_launch_setup),
         ]
     )

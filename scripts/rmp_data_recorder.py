@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import List
 
 import rclpy
+from geometry_msgs.msg import Pose
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from sensor_msgs.msg import JointState, Range
@@ -15,6 +16,15 @@ from std_srvs.srv import Trigger
 
 
 JOINT_NAMES = ["base", "shoulder", "elbow", "wrist1", "wrist2", "wrist3"]
+EE_POSE_COLUMNS = [
+    "ee_pose_x",
+    "ee_pose_y",
+    "ee_pose_z",
+    "ee_quat_x",
+    "ee_quat_y",
+    "ee_quat_z",
+    "ee_quat_w",
+]
 
 
 class RmpDataRecorder(Node):
@@ -31,6 +41,7 @@ class RmpDataRecorder(Node):
         self.declare_parameter("range_unit", "message_range")
         self.declare_parameter("auto_start", True)
         self.declare_parameter("joint_state_topic", "/joint_states")
+        self.declare_parameter("ee_pose_topic", "/rmp_ee_pose")
         self.declare_parameter(
             "range_topics",
             [f"/raw_distance{index}" for index in range(1, 21)],
@@ -43,6 +54,7 @@ class RmpDataRecorder(Node):
         self.range_unit = str(self.get_parameter("range_unit").value).strip()
         self.auto_start = self._as_bool(self.get_parameter("auto_start").value)
         self.joint_state_topic = str(self.get_parameter("joint_state_topic").value)
+        self.ee_pose_topic = str(self.get_parameter("ee_pose_topic").value).strip()
         self.range_topics = list(self.get_parameter("range_topics").value)
 
         os.makedirs(self.output_directory, exist_ok=True)
@@ -53,6 +65,7 @@ class RmpDataRecorder(Node):
 
         self.latest_joint_positions = [float("nan")] * len(JOINT_NAMES)
         self.latest_joint_velocities = [float("nan")] * len(JOINT_NAMES)
+        self.latest_ee_pose = [float("nan")] * len(EE_POSE_COLUMNS)
         self.latest_ranges = [float("nan")] * len(self.range_topics)
         self.range_column_names = [
             self._topic_column_name(topic) for topic in self.range_topics
@@ -73,6 +86,15 @@ class RmpDataRecorder(Node):
             10,
             callback_group=self.cb_group,
         )
+
+        if self.ee_pose_topic:
+            self.create_subscription(
+                Pose,
+                self.ee_pose_topic,
+                self.on_ee_pose,
+                10,
+                callback_group=self.cb_group,
+            )
 
         self.range_subs = []
         for index, topic in enumerate(self.range_topics):
@@ -108,6 +130,7 @@ class RmpDataRecorder(Node):
 
         self.get_logger().info(f"Recorder mode: {self.mode}")
         self.get_logger().info(f"Joint topic: {self.joint_state_topic}")
+        self.get_logger().info(f"EE pose topic: {self.ee_pose_topic or 'disabled'}")
         self.get_logger().info(f"Range topics: {', '.join(self.range_topics)}")
         self.get_logger().info(f"Output directory: {self.output_directory}")
 
@@ -152,6 +175,19 @@ class RmpDataRecorder(Node):
         self.prev_joint_positions = positions
         self.prev_joint_time = now_time
 
+    def on_ee_pose(self, msg: Pose) -> None:
+        pose = [
+            float(msg.position.x),
+            float(msg.position.y),
+            float(msg.position.z),
+            float(msg.orientation.x),
+            float(msg.orientation.y),
+            float(msg.orientation.z),
+            float(msg.orientation.w),
+        ]
+        with self.data_lock:
+            self.latest_ee_pose = pose
+
     def on_range(self, msg: Range, index: int) -> None:
         with self.data_lock:
             if index < len(self.latest_ranges):
@@ -184,6 +220,7 @@ class RmpDataRecorder(Node):
             self.recording_handle.write(f"# mode,{self.mode}\n")
             self.recording_handle.write(f"# started_at,{datetime.now().isoformat()}\n")
             self.recording_handle.write(f"# joint_state_topic,{self.joint_state_topic}\n")
+            self.recording_handle.write(f"# ee_pose_topic,{self.ee_pose_topic}\n")
             self.recording_handle.write(f"# range_topics,{';'.join(self.range_topics)}\n")
             self.recording_handle.write(f"# range_unit,{self.range_unit}\n")
             self.recording_writer = csv.writer(self.recording_handle)
@@ -225,6 +262,7 @@ class RmpDataRecorder(Node):
                 self.mode,
                 *self.latest_joint_positions,
                 *self.latest_joint_velocities,
+                *self.latest_ee_pose,
                 *self.latest_ranges,
             ]
 
@@ -258,6 +296,7 @@ class RmpDataRecorder(Node):
         ]
         header.extend([f"q{i + 1}" for i in range(len(JOINT_NAMES))])
         header.extend([f"qd{i + 1}" for i in range(len(JOINT_NAMES))])
+        header.extend(EE_POSE_COLUMNS)
         header.extend(self.range_column_names)
         return header
 

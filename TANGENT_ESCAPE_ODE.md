@@ -38,13 +38,54 @@ representation the pullback transports.
 J_e   = t^T Jp                                    (1 x 6)
 ydot  = J_e qdot
 
-a_e   = a_max e^{-d/sigma_a} e^{-s/s0} alpha_free  -  b_e ydot     [m/s^2]
-m     = m_max e^{-d/sigma_m} alpha_free
+gamma(r) = 1 - sigmoid(r / v)                     closing-rate gate, r = ddot
+
+a_e   = sat_[0,a_sat]( k_p e^{-d/l_p} + k_v [-gamma_v ddot]_+ / (d/l_v + eps_v) )
+        - b_e ydot                                                 [m/s^2]
+m     = alpha_TG gamma_m(ddot) mu / (d/l_m + eps_m)
 
 f_e   = m a_e                                     (representation change)
 f_q   = J_e^T (f_e - m Jdot_e qdot)
 M_q   = m J_e^T J_e                                (PSD, rank <= 1)
 ```
+
+### Activation
+
+```
+alpha_TG = alpha_d * alpha_block * alpha_free      metric only, never a_e
+```
+
+| factor | input | question |
+|---|---|---|
+| `alpha_d` | owner's own clearance | is the leaf near enough to have a say |
+| `alpha_block` | `o . normalize(J_i qdd_nominal + cdot_i)` | is this point being driven into its obstacle |
+| `alpha_free` | the owner's neighbours' clearances | is there any way out left in the tangent plane |
+
+`alpha_d` is a quintic smoothstep from 1 at `activation_distance` to 0 at
+`release_distance`. Those two numbers used to be the edges of a Schmitt
+trigger, which never released once engaged -- measured active on 11291 of
+11291 cycles. The latch also had to go before the metric can become hyperbolic
+in `d`, since such a metric does not vanish at the release edge on its own.
+
+`qdd_nominal` is the root solve over the goal-driven leaves with the obstacle
+list emptied, so `alpha_block` asks where the goal *wants* this control point
+to go, not where it is going. Both halves matter. It is an acceleration, so it
+survives `qdot -> 0` at a local minimum -- which is what killed the old
+velocity gate. And the obstacles are removed, so the target pull has nothing
+to cancel against at exactly the configuration the leaf exists to handle.
+Below `nominal_motion_epsilon` the direction is noise and the gate fails
+**open**: an unreadable signal must not switch the leaf off.
+
+The straight line from a sensor to the TCP goal was measured as the
+alternative reference and rejected. It disagrees in sign with the nominal
+motion on 52% of the cycles `tof3_1_E` owns the leaf and on all 139 that
+`tof6_1_L` owns it -- and the disagreement is per sensor, not per link, so a
+link-level average hides it.
+
+Activation multiplies the metric and nothing else. Gating `a_e` as well put
+alpha into `f = M a` twice, and since the damping term `-b_e ydot` was never
+gated, a shrinking alpha collapsed the desired acceleration onto pure damping:
+the leaf braked tangential motion instead of yielding it.
 
 ### Why canonical and not natural
 

@@ -10,13 +10,6 @@
 
 namespace rb10_rmpflow_rviz
 {
-namespace
-{
-// Fixed prefix of the schema-9 diagnostic record.  Slots 0, 9-13, 17-26, 28,
-// 29, 45 and 47 keep the meaning the controller's marker builder expects, so
-// the tangent/normal/acceleration arrows render without a second code path.
-constexpr std::size_t kTangentOdeDebugSize = 56;
-}  // namespace
 
 TangentEscapeSupervisor::TangentEscapeSupervisor(EigenRmpConfig config)
 : config_(std::move(config))
@@ -33,7 +26,6 @@ TangentEscapeCommand TangentEscapeSupervisor::evaluate(
   const JointVector & base_force) const
 {
   (void)q;
-  (void)nominal_qdd;
 
   Matrix6 metric = base_metric;
   JointVector force = base_force;
@@ -44,7 +36,9 @@ TangentEscapeCommand TangentEscapeSupervisor::evaluate(
     config_.enable_tangent_escape_dual_solve_diagnostics) ?
     &debug_data : nullptr;
 
-  evaluate_ode(context, qd, goal, obstacles, metric, force, command, debug_data_ptr);
+  evaluate_ode(
+    context, qd, nominal_qdd, goal, obstacles, metric, force, command,
+    debug_data_ptr);
 
   command.metric_contribution = metric - base_metric;
   command.force_contribution = force - base_force;
@@ -64,6 +58,7 @@ void TangentEscapeSupervisor::set_previous_qdd(const JointVector & qdd) const
 void TangentEscapeSupervisor::evaluate_ode(
   const KinematicsContext & context,
   const JointVector & qd,
+  const JointVector & nominal_qdd,
   const Eigen::Vector3d & goal,
   const std::vector<ObstacleSphere> & obstacles,
   Matrix6 & metric,
@@ -81,6 +76,10 @@ void TangentEscapeSupervisor::evaluate_ode(
     RB10Model::sensor_control_points.size());
   std::vector<double> clearances(
     point_count, std::numeric_limits<double>::infinity());
+  // The rate contributed by the robot's own motion, taken from the obstacle
+  // that actually sets the clearance.  d = |p - c| - r, so for a stationary
+  // obstacle ddot = (p - c)/|p - c| . v exactly.
+  std::vector<double> kinematic_rates(point_count, 0.0);
   for (const auto & obstacle : obstacles) {
     if (obstacle.radius <= 0.0 || !obstacle.center.allFinite()) {
       continue;
@@ -106,43 +105,115 @@ void TangentEscapeSupervisor::evaluate_ode(
       }
       const double clearance = center_distance -
         (context.control_points[index].radius + obstacle.radius);
-      clearances[index] = std::min(clearances[index], clearance);
+      if (clearance < clearances[index]) {
+        clearances[index] = clearance;
+        kinematic_rates[index] =
+          (delta / center_distance).dot(context.control_point_velocities[index]);
+      }
     }
+  }
+
+  // Residual = everything the robot's own motion does not explain.  For a
+  // stationary obstacle that is pure sensing noise, so it is low-passed and
+  // dead-banded; for a moving one it is the obstacle's own approach, which is
+  // the only way a distance-only sensor can see it at all.
+  std::vector<double> clearance_rates(point_count, 0.0);
+  const double dt = std::max(params.control_dt, 1e-4);
+  const double tau = std::max(ode.clearance_rate_filter_tau, 0.0);
+  const double blend = tau > dt ? dt / tau : 1.0;
+  for (std::size_t index = 0; index < point_count; ++index) {
+    auto & seeded = clearance_rate_state_.seeded[index];
+    auto & previous = clearance_rate_state_.previous_clearance[index];
+    auto & residual = clearance_rate_state_.filtered_residual[index];
+    const double clearance = clearances[index];
+    if (!std::isfinite(clearance)) {
+      seeded = false;
+      residual = 0.0;
+      clearance_rates[index] = 0.0;
+      continue;
+    }
+    double rate = kinematic_rates[index];
+    if (ode.use_obstacle_motion) {
+      if (seeded) {
+        const double total_rate = (clearance - previous) / dt;
+        residual += blend * (total_rate - kinematic_rates[index] - residual);
+      } else {
+        residual = 0.0;
+      }
+      rate += residual;
+    }
+    previous = clearance;
+    seeded = true;
+    if (std::abs(rate) < std::max(ode.clearance_rate_deadband, 0.0)) {
+      rate = 0.0;
+    }
+    clearance_rates[index] = rate;
   }
 
   tangent_escape_ode::LeafParams leaf_params;
   leaf_params.enabled = params.enabled;
-  leaf_params.metric_max = ode.metric_max;
-  leaf_params.metric_sigma = ode.metric_sigma;
-  leaf_params.accel_max = ode.accel_max;
-  leaf_params.accel_sigma = ode.accel_sigma;
-  leaf_params.budget_scale = ode.budget_scale;
-  leaf_params.budget_recovery_time = ode.budget_recovery_time;
+  leaf_params.metric_mu = ode.metric_mu;
+  leaf_params.metric_length = ode.metric_length;
+  leaf_params.metric_epsilon = ode.metric_epsilon;
+  leaf_params.metric_rate_scale = ode.metric_rate_scale;
+  leaf_params.accel_gain = ode.accel_gain;
+  leaf_params.accel_length = ode.accel_length;
+  leaf_params.progress_scale = ode.progress_scale;
+  leaf_params.progress_recovery_time = ode.progress_recovery_time;
   leaf_params.tangent_damping = ode.tangent_damping;
   leaf_params.direction_rate = ode.direction_rate;
-  leaf_params.risk_sigma = ode.risk_sigma;
+  leaf_params.risk_length = ode.risk_length;
+  leaf_params.pocket_length = ode.pocket_length;
   leaf_params.weight_goal = ode.weight_goal;
-  leaf_params.weight_velocity = ode.weight_velocity;
+  leaf_params.weight_continuity = ode.weight_continuity;
   leaf_params.weight_risk = ode.weight_risk;
-  leaf_params.weight_curvature = ode.weight_curvature;
+  leaf_params.weight_axis = ode.weight_axis;
   leaf_params.velocity_epsilon = ode.velocity_epsilon;
+  leaf_params.accel_saturation = ode.accel_saturation;
+  leaf_params.closing_gain = ode.closing_gain;
+  leaf_params.closing_length = ode.closing_length;
+  leaf_params.closing_epsilon = ode.closing_epsilon;
+  leaf_params.closing_rate_scale = ode.closing_rate_scale;
+  leaf_params.enable_progress_attenuation = ode.enable_progress_attenuation;
+  leaf_params.weight_i1 = ode.weight_i1;
+  leaf_params.i1_length = ode.i1_length;
+  leaf_params.i1_damping = ode.i1_damping;
+  leaf_params.i1_exclude_parent_link = ode.i1_exclude_parent_link;
   leaf_params.axial_preference = ode.axial_preference;
+  leaf_params.weight_axial_block = ode.weight_axial_block;
   leaf_params.pocket_threshold = ode.pocket_threshold;
   leaf_params.pocket_epsilon = ode.pocket_epsilon;
-  leaf_params.activation_distance = ode.activation_distance;
-  leaf_params.release_distance = ode.release_distance;
-  leaf_params.switch_hysteresis = ode.switch_hysteresis;
-  leaf_params.direction_memory_time = ode.direction_memory_time;
+  leaf_params.alpha_on_distance = ode.alpha_on_distance;
+  leaf_params.alpha_off_distance = ode.alpha_off_distance;
+  leaf_params.owner_hysteresis = ode.owner_hysteresis;
   leaf_params.weight_stall = ode.weight_stall;
   leaf_params.stall_time_constant = ode.stall_time_constant;
   leaf_params.stall_speed = ode.stall_speed;
   leaf_params.clearance_margin = params.clearance_margin;
   leaf_params.control_dt = params.control_dt;
+  leaf_params.observe_only = ode.observe_only;
+  leaf_params.block_on_dot = ode.block_on_dot;
+  leaf_params.block_off_dot = ode.block_off_dot;
+  leaf_params.nominal_motion_epsilon = ode.nominal_motion_epsilon;
+
+  const double nominal_tau =
+    std::max(ode.nominal_filter_tau, 0.0);
+  if (!nominal_qdd_seeded_ || nominal_tau <= dt) {
+    filtered_nominal_qdd_ = nominal_qdd;
+    nominal_qdd_seeded_ = true;
+  } else {
+    filtered_nominal_qdd_ +=
+      (dt / nominal_tau) * (nominal_qdd - filtered_nominal_qdd_);
+  }
 
   const auto leaf = tangent_escape_ode::evaluate(
-    ode_state_, leaf_params, context, qd, goal, clearances);
+    ode_state_, leaf_params, context, qd, filtered_nominal_qdd_, goal,
+    clearances, clearance_rates);
 
-  if (leaf.active) {
+  // Observation mode still runs the whole leaf and still logs, it just never
+  // reaches the root.  That is the point: the trajectory underneath the
+  // measurement has to be the base policy's, not one this leaf shaped.
+  if (leaf.active && !ode.observe_only) {
     metric += leaf.metric_contribution;
     force += leaf.force_contribution;
   }
@@ -157,7 +228,10 @@ void TangentEscapeSupervisor::evaluate_ode(
   if (debug_data == nullptr) {
     return;
   }
-  if (!leaf.active) {
+  // An inactive cycle still carries a blockage observation whenever any sensor
+  // sees anything, and the approach into an obstacle is precisely the part the
+  // activation comparison needs, so the record is emitted for it too.
+  if (!leaf.active && !leaf.observation_valid) {
     *debug_data = std::vector<double>{0.0};
     return;
   }
@@ -166,14 +240,14 @@ void TangentEscapeSupervisor::evaluate_ode(
   // them, so the controller's existing tangent/normal/acceleration arrow
   // markers render for v2 without a second code path.  The v2-specific
   // quantities live in the slots those schemas leave free.
-  std::vector<double> values(kTangentOdeDebugSize, 0.0);
-  values[0] = 1.0;
+  std::vector<double> values(tangent_escape_debug::kSize, 0.0);
+  values[0] = leaf.active ? 1.0 : 0.0;
   values[1] = static_cast<double>(leaf.sensor_index);
   values[2] = leaf.clearance;
   values[3] = leaf.theta;
   values[4] = leaf.theta_rate;
-  values[5] = leaf.budget;
-  values[6] = leaf.budget_remaining;
+  values[5] = leaf.progress;
+  values[6] = leaf.progress_remaining;
   values[7] = leaf.tangent_rate;
   values[8] = leaf.score_a;
   values[9] = leaf.desired_acceleration;   // shared: scalar acceleration
@@ -211,7 +285,60 @@ void TangentEscapeSupervisor::evaluate_ode(
   values[39] = leaf.metric_contribution.norm();
   values[40] = leaf.force_contribution.norm();
   values[45] = leaf.alpha_free;            // shared slot: activation ramp
-  values[47] = 1.0;                        // shared slot: high-level state
+  values[47] = leaf.active ? 1.0 : 0.0;    // shared slot: high-level state
+
+  // --- activation / blockage observation -----------------------------------
+  // Slots 42-44 and 48-50 are free in schemas 6-9; 46, 51-55 are left alone
+  // because the controller still reads 54 as `z`.
+  values[42] = leaf.alpha_distance;
+  values[43] = static_cast<double>(leaf.active_link);
+  values[44] = ode.observe_only ? 1.0 : 0.0;
+  values[46] = leaf.alpha_block;
+  values[48] = leaf.observation_valid ? 1.0 : 0.0;
+  values[49] = static_cast<double>(leaf.observation_count);
+  values[50] = static_cast<double>(tangent_escape_ode::kSensorCount);
+  values[51] = leaf.alpha_total;
+  values[52] = leaf.blockage;
+  values[53] = leaf.nominal_magnitude;
+
+  for (std::size_t k = 0; k < tangent_escape_ode::kSensorCount; ++k) {
+    const std::size_t base = tangent_escape_debug::kFixed + tangent_escape_debug::kStride * k;
+    values[base + 0] = leaf.sensor_clearance[k];
+    values[base + 1] = leaf.sensor_dot_goal_tcp[k];
+    values[base + 2] = leaf.sensor_dot_goal_nominal[k];
+    values[base + 3] = leaf.sensor_nominal_magnitude[k];
+  }
+
+  // I1 scalars ride past the per-sensor block so the block keeps its offsets.
+  values[tangent_escape_debug::kI1] = leaf.score_a_i1;
+  values[tangent_escape_debug::kI1 + 1] = leaf.score_b_i1;
+  values[tangent_escape_debug::kI1 + 2] = static_cast<double>(leaf.i1_count);
+  values[tangent_escape_debug::kI1 + 3] = leaf.i1_largest_gain;
+  values[tangent_escape_debug::kAccel] = leaf.clearance_rate;
+  values[tangent_escape_debug::kAccel + 1] = leaf.closing_gate;
+  values[tangent_escape_debug::kAccel + 2] = leaf.closing_term;
+  values[tangent_escape_debug::kAccel + 3] = leaf.closing_shape;
+  values[tangent_escape_debug::kAccel + 4] = leaf.metric_gate;
+  values[tangent_escape_debug::kAccel + 5] = leaf.goal_e1;
+  values[tangent_escape_debug::kAccel + 6] = leaf.goal_e2;
+  values[tangent_escape_debug::kAccel + 7] = leaf.goal_from_nominal ? 1.0 : 0.0;
+  values[tangent_escape_debug::kTerms] = leaf.score_a_goal;
+  values[tangent_escape_debug::kTerms + 1] = leaf.score_b_goal;
+  values[tangent_escape_debug::kTerms + 2] = leaf.score_a_velocity;
+  values[tangent_escape_debug::kTerms + 3] = leaf.score_b_velocity;
+  values[tangent_escape_debug::kTerms + 4] = leaf.score_a_risk;
+  values[tangent_escape_debug::kTerms + 5] = leaf.score_b_risk;
+  values[tangent_escape_debug::kTerms + 6] = leaf.score_a_stall;
+  values[tangent_escape_debug::kTerms + 7] = leaf.score_b_stall;
+  values[tangent_escape_debug::kProgress] = leaf.tcp_position.x();
+  values[tangent_escape_debug::kProgress + 1] = leaf.tcp_position.y();
+  values[tangent_escape_debug::kProgress + 2] = leaf.tcp_position.z();
+  values[tangent_escape_debug::kProgress + 3] = leaf.goal_distance;
+  for (int axis = 0; axis < 3; ++axis) {
+    values[tangent_escape_debug::kBasis + axis] = leaf.basis_e1[axis];
+    values[tangent_escape_debug::kBasis + 3 + axis] = leaf.basis_e2[axis];
+    values[tangent_escape_debug::kBasis + 6 + axis] = leaf.goal_in_plane[axis];
+  }
   *debug_data = std::move(values);
 }
 

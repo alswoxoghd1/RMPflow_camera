@@ -2,7 +2,7 @@
 //
 // These check the properties the design relies on rather than a trajectory:
 // exact tangent/normal orthogonality, rank-one PSD pullback, the analytic
-// Jdot decomposition, the finite energy budget, and the ring table derived
+// Jdot decomposition, the finite energy progress, and the ring table derived
 // from the sensor geometry.
 
 #include <algorithm>
@@ -49,18 +49,18 @@ ode::LeafParams make_params()
 {
   ode::LeafParams params;
   params.enabled = true;
-  params.metric_max = 1000.0;
-  params.metric_sigma = 0.03;
-  params.accel_max = 50.0;
-  params.accel_sigma = 0.08;
-  params.budget_scale = 0.2;
-  params.budget_recovery_time = 3.0;
+  params.metric_mu = 1000.0;
+  params.metric_length = 0.03;
+  params.accel_gain = 50.0;
+  params.accel_length = 0.08;
+  params.progress_scale = 0.2;
+  params.progress_recovery_time = 3.0;
   params.tangent_damping = 40.0;
   params.direction_rate = 3.0;
-  params.risk_sigma = 0.06;
-  params.activation_distance = 0.30;
-  params.release_distance = 0.40;
-  params.switch_hysteresis = 0.005;
+  params.risk_length = 0.06;
+  params.alpha_on_distance = 0.30;
+  params.alpha_off_distance = 0.40;
+  params.owner_hysteresis = 0.005;
   params.control_dt = 0.005;
   return params;
 }
@@ -210,11 +210,16 @@ void test_leaf(const KinematicsContext & context)
   const Eigen::Vector3d goal(0.6, -0.4, 0.6);
   JointVector qd = JointVector::Zero();
   qd << 0.10, -0.05, 0.03, 0.02, -0.01, 0.04;
+  // Blockage observation input only; it never reaches (a, M).
+  // Empty rates read as zero, which switches the closing-rate term off.
+  const std::vector<double> no_rates;
+  JointVector nominal_qdd = JointVector::Zero();
+  nominal_qdd << 0.5, -0.2, 0.1, 0.05, -0.03, 0.02;
 
   // --- inactive when nothing is near ---------------------------------------
   {
     ode::LeafState state;
-    const auto out = ode::evaluate(state, params, context, qd, goal, clear_scene());
+    const auto out = ode::evaluate(state, params, context, qd, nominal_qdd, goal, clear_scene(), no_rates);
     require(!out.active, "leaf activated with no obstacle in range");
     require(
       out.metric_contribution.norm() <= 0.0 && out.force_contribution.norm() <= 0.0,
@@ -232,7 +237,7 @@ void test_leaf(const KinematicsContext & context)
   bool saw_active = false;
 
   for (int cycle = 0; cycle < 200; ++cycle) {
-    const auto out = ode::evaluate(state, params, context, qd, goal, clearances);
+    const auto out = ode::evaluate(state, params, context, qd, nominal_qdd, goal, clearances, no_rates);
     require(out.active, "leaf did not stay active with a close obstacle");
     saw_active = true;
 
@@ -283,24 +288,24 @@ void test_leaf(const KinematicsContext & context)
       "Jdot * qdot is not finite");
 
     // 5. Budget only grows while moving forward, and never goes negative.
-    require(out.budget >= -1e-12, "budget went negative");
+    require(out.progress >= -1e-12, "progress went negative");
     if (out.tangent_rate <= 0.0) {
       require(
-        out.budget <= previous_budget + 1e-12,
-        "budget grew while tangential progress was not positive");
+        out.progress <= previous_budget + 1e-12,
+        "progress grew while tangential progress was not positive");
     }
-    previous_budget = out.budget;
+    previous_budget = out.progress;
 
     require(
-      out.budget_remaining > 0.0 && out.budget_remaining <= 1.0 + 1e-12,
-      "remaining budget left the unit interval");
+      out.progress_remaining > 0.0 && out.progress_remaining <= 1.0 + 1e-12,
+      "remaining progress left the unit interval");
 
     // 6. The leaf is designed in canonical form, so the desired acceleration
-    // is bounded by accel_max at every distance -- this is exactly what a
+    // is bounded by accel_gain at every distance -- this is exactly what a
     // force-designed leaf failed to guarantee.
     require(
-      out.push_acceleration <= params.accel_max + 1e-9,
-      "push acceleration exceeded accel_max");
+      out.push_acceleration <= params.accel_gain + 1e-9,
+      "push acceleration exceeded accel_gain");
     require(
       std::abs(out.natural_force - out.metric * out.desired_acceleration) <=
       1e-6 * std::max(1.0, std::abs(out.natural_force)),
@@ -310,11 +315,15 @@ void test_leaf(const KinematicsContext & context)
   }
   require(saw_active, "leaf never became active");
 
-  // The reachable well depth bounds the injected energy.  In canonical form
-  // the well depth is m_max * a_max * s0, since f = M a.  The measured bound
-  // is generous because the recovery term slowly refills the budget.
+  // The progress is still integrated but no longer attenuates the push unless
+  // enable_progress_attenuation is set, so the well depth below is what the
+  // leaf WOULD be bounded by, not what currently bounds it.  With the
+  // attenuation off the only dissipation left is the -b_e ydot damping term,
+  // which is why that term stays outside the push saturation.  Reported rather
+  // than asserted: the number is what says whether the attenuation is still
+  // needed.
   const double well_depth =
-    params.metric_max * params.accel_max * params.budget_scale;
+    params.metric_mu * params.accel_gain * params.progress_scale;
   std::cout << "  injected energy " << injected_energy
             << " vs well depth " << well_depth << "\n";
 
@@ -329,7 +338,7 @@ void test_leaf(const KinematicsContext & context)
       auto pocket = clear_scene();
       pocket[ring_sensor] = 0.02;
       set_neighbours(pocket, neighbour_clearance);
-      const auto out = ode::evaluate(pocket_state, params, context, qd, goal, pocket);
+      const auto out = ode::evaluate(pocket_state, params, context, qd, nominal_qdd, goal, pocket, no_rates);
       require(out.active, "pocket probe did not activate the leaf");
       require(
         out.alpha_free <= previous_alpha + 1e-12,
@@ -337,14 +346,36 @@ void test_leaf(const KinematicsContext & context)
       require(
         out.alpha_free >= -1e-12 && out.alpha_free <= 1.0 + 1e-12,
         "pocket guard left the unit interval");
-      // The guard must gate the metric and the push together, otherwise a
-      // suppressed push with a live metric would brake tangential motion.
+      // Activation lives on the metric and nowhere else.  Gating the push as
+      // well was the older arrangement, and it was wrong twice over: alpha
+      // entered the transported force f = M a squared, and since the damping
+      // term -b_e ydot carried no gate at all, a shrinking alpha drove the
+      // desired acceleration onto pure damping -- the leaf braked tangential
+      // motion instead of yielding.
       require(
         std::abs(
-          out.metric - params.metric_max *
-          std::exp(-out.clearance / params.metric_sigma) * out.alpha_free) <=
+          out.metric - out.alpha_total * out.metric_gate * params.metric_mu /
+          (out.clearance / params.metric_length + params.metric_epsilon)) <=
         1e-6 * std::max(1.0, out.metric),
-        "leaf metric does not carry the pocket guard factor");
+        "leaf metric does not carry the full activation");
+      require(
+        std::abs(
+          out.alpha_total -
+          out.alpha_distance * out.alpha_block * out.alpha_free) <= 1e-12,
+        "alpha_TG is not the product of its three factors");
+      // With the progress attenuation off and no clearance rate supplied, the
+      // push is the distance term alone -- and in particular carries no
+      // activation factor.
+      require(
+        std::abs(
+          out.push_acceleration - std::min(
+            params.accel_gain * std::exp(-out.clearance / params.accel_length),
+            params.accel_saturation)) <=
+        1e-6 * std::max(1.0, out.push_acceleration),
+        "push acceleration still carries an activation factor");
+      require(
+        out.closing_term == 0.0 && out.clearance_rate == 0.0,
+        "closing-rate term fired without a clearance rate");
       previous_alpha = out.alpha_free;
       tightest_alpha = out.alpha_free;
     }
@@ -354,13 +385,68 @@ void test_leaf(const KinematicsContext & context)
   }
   std::cout << "  pocket guard closes monotonically when boxed in\n";
 
+  // --- distance activation reaches zero smoothly ---------------------------
+  // The old Schmitt trigger let the metric step to whatever it happened to be
+  // at the release edge.  With the exponential metric that step was ~1e-7 of
+  // the peak and nobody noticed, but the metric is about to become hyperbolic
+  // in d, where the same edge is a real discontinuity.  This pins the property
+  // the smoothstep is here to provide -- and with it the reason the
+  // direction-memory timer could be deleted: the state is dropped at a point
+  // where the leaf already has no authority.
+  {
+    require(
+      std::abs(ode::distance_activation(
+        params.alpha_on_distance, params.alpha_on_distance,
+        params.alpha_off_distance) - 1.0) <= 1e-12 &&
+      ode::distance_activation(
+        params.alpha_off_distance, params.alpha_on_distance,
+        params.alpha_off_distance) <= 1e-12,
+      "alpha_d does not span [0, 1] across the activation band");
+
+    double previous = 2.0;
+    double previous_metric = std::numeric_limits<double>::infinity();
+    double largest_metric_step = 0.0;
+    const double span = params.alpha_off_distance - params.alpha_on_distance;
+    for (int step = 0; step <= 200; ++step) {
+      const double probe =
+        params.alpha_on_distance + span * 1.2 * static_cast<double>(step) / 200.0;
+      const double alpha = ode::distance_activation(
+        probe, params.alpha_on_distance, params.alpha_off_distance);
+      require(
+        alpha <= previous + 1e-12 && alpha >= -1e-12 && alpha <= 1.0 + 1e-12,
+        "alpha_d is not a monotone map into [0, 1]");
+      previous = alpha;
+
+      ode::LeafState probe_state;
+      auto probe_scene = clear_scene();
+      probe_scene[ring_sensor] = probe;
+      set_neighbours(probe_scene, probe + 0.10);
+      const auto out = ode::evaluate(
+        probe_state, params, context, qd, nominal_qdd, goal, probe_scene, no_rates);
+      const double norm = out.metric_contribution.norm();
+      if (std::isfinite(previous_metric)) {
+        largest_metric_step =
+          std::max(largest_metric_step, std::abs(norm - previous_metric));
+      }
+      previous_metric = norm;
+    }
+    require(previous <= 1e-12, "alpha_d did not reach zero past the band");
+    require(
+      previous_metric <= 1e-12,
+      "metric contribution is non-zero past the release distance");
+    require(
+      largest_metric_step < 0.02 * params.metric_mu,
+      "metric contribution steps at the release edge");
+  }
+  std::cout << "  distance activation reaches zero without a step\n";
+
   // --- theta stays finite and the leaf survives a sign flip ----------------
   {
     ode::LeafParams flipped = params;
     flipped.axial_preference = -1.0;
     ode::LeafState flipped_state;
     const auto out =
-      ode::evaluate(flipped_state, flipped, context, qd, goal, clearances);
+      ode::evaluate(flipped_state, flipped, context, qd, nominal_qdd, goal, clearances, no_rates);
     require(out.active && std::isfinite(out.theta), "axial preference flip broke the leaf");
   }
   std::cout << "  axial preference flip is accepted\n";

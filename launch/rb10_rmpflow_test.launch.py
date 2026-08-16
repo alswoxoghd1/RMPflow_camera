@@ -92,12 +92,6 @@ def generate_launch_description():
     rmpflow_trace_log_rate = LaunchConfiguration("rmpflow_trace_log_rate")
     rmpflow_trace_log_directory = LaunchConfiguration("rmpflow_trace_log_directory")
     rmpflow_trace_console_summary = LaunchConfiguration("rmpflow_trace_console_summary")
-    enable_tangent_escape_rmp = LaunchConfiguration("enable_tangent_escape_rmp")
-    publish_tangent_escape_rmp_data = LaunchConfiguration("publish_tangent_escape_rmp_data")
-    publish_tangent_escape_dual_solve_data = LaunchConfiguration(
-        "publish_tangent_escape_dual_solve_data"
-    )
-    publish_tangent_escape_geometry_debug = LaunchConfiguration("publish_tangent_escape_geometry_debug")
     servo_t1 = LaunchConfiguration("servo_t1")
     servo_t2 = LaunchConfiguration("servo_t2")
     servo_gain = LaunchConfiguration("servo_gain")
@@ -209,32 +203,6 @@ def generate_launch_description():
             publish_rmp_ee_pose,
             value_type=bool,
         ),
-        "enable_tangent_escape_rmp": ParameterValue(
-            enable_tangent_escape_rmp,
-            value_type=bool,
-        ),
-        "publish_tangent_escape_rmp_data": ParameterValue(
-            PythonExpression([
-                'True if "', publish_tangent_escape_rmp_data, '" == "true" else False'
-            ]),
-            value_type=bool,
-        ),
-        "publish_tangent_escape_dual_solve_data": ParameterValue(
-            PythonExpression([
-                'True if "', publish_tangent_escape_dual_solve_data,
-                '" == "true" else False'
-            ]),
-            value_type=bool,
-        ),
-        "tangent_escape_dual_solve_topic": "/tangent_escape_dual_solve",
-        "publish_tangent_escape_geometry_debug": ParameterValue(
-            PythonExpression([
-                'True if "', publish_tangent_escape_geometry_debug, '" == "true" else False'
-            ]),
-            value_type=bool,
-        ),
-        "tangent_escape_geometry_data_topic": "/tangent_escape_geometry_data",
-        "tangent_escape_geometry_marker_topic": "tangent_escape_geometry_markers",
     }
 
     api_bridge = Node(
@@ -657,34 +625,6 @@ def generate_launch_description():
             "rmpflow_trace_console_summary",
             default_value="false",
             description="Print one-line trace summaries to the launch terminal.",
-        ),
-        DeclareLaunchArgument(
-            "enable_tangent_escape_rmp",
-            default_value="false",
-            description=(
-                "Enable the canonical tangent Escape leaf in the test launch. "
-                "Default remains false."
-            ),
-        ),
-        DeclareLaunchArgument(
-            "publish_tangent_escape_rmp_data",
-            default_value="false",
-            description="Publish tangent escape RMP diagnostics for trace logging.",
-        ),
-        DeclareLaunchArgument(
-            "publish_tangent_escape_dual_solve_data",
-            default_value="false",
-            description=(
-                "Publish the same-state Collision-only versus Collision-plus-Escape "
-                "post-limit acceleration comparison."
-            ),
-        ),
-        DeclareLaunchArgument(
-            "publish_tangent_escape_geometry_debug",
-            default_value="false",
-            description=(
-                "Publish tangent escape geometry data and selected-direction RViz markers."
-            ),
         ),
         DeclareLaunchArgument(
             "record_joint_velocity",

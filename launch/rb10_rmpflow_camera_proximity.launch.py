@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+from typing import List
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -55,7 +56,13 @@ def generate_launch_description():
         parameters=[{
             "cloud_topic": camera_cloud_topic,
             "camera_marker_topic": camera_marker_topic,
-            "additional_obstacle_topics": [proximity_raw_obstacle_topic],
+            # A LaunchConfiguration inside a plain Python list is resolved as a
+            # single string, not a STRING_ARRAY, and the bridge rejects it and
+            # dies.  Declaring the element type keeps it an array.
+            "additional_obstacle_topics": ParameterValue(
+                [[proximity_raw_obstacle_topic]],
+                value_type=List[str],
+            ),
             "collision_obstacle_topic": camera_collision_output_topic,
             "rviz_marker_topic": camera_rviz_output_topic,
             "output_frame": camera_obstacle_output_frame,

@@ -134,30 +134,57 @@ struct TangentEscapeRmpParams
 // Field-by-field documentation lives in tangent_escape_ode.hpp.
 struct TangentEscapeOdeParams
 {
-  double metric_max{100000.0};
-  double metric_sigma{0.03};
-  double accel_max{50.0};
-  double accel_sigma{0.08};
-  double budget_scale{1.0};
-  double budget_recovery_time{3.0};
+  // mu and l_m; see tangent_escape_ode.hpp.
+  double metric_mu{10000.0};
+  double metric_length{0.03};
+  double metric_epsilon{0.1};
+  double metric_rate_scale{0.05};
+  double accel_gain{50.0};
+  double accel_length{0.08};
+  double accel_saturation{50.0};
+  // Closing-rate acceleration term; see tangent_escape_ode.hpp.
+  double closing_gain{0.0};
+  double closing_length{0.05};
+  double closing_epsilon{0.1};
+  double closing_rate_scale{0.05};
+  // Clearance-rate estimator; see tangent_escape_supervisor.hpp.
+  bool use_obstacle_motion{true};
+  double clearance_rate_filter_tau{0.05};
+  double clearance_rate_deadband{0.005};
+  bool enable_progress_attenuation{false};
+  double progress_scale{1.0};
+  double progress_recovery_time{3.0};
   double tangent_damping{40.0};
   double direction_rate{3.0};
-  double risk_sigma{0.06};
+  double risk_length{0.15};
+  double pocket_length{0.06};
   double weight_goal{1.0};
-  double weight_velocity{0.3};
+  double weight_continuity{0.3};
   double weight_risk{1.0};
-  double weight_curvature{1.5};
+  double weight_axis{1.5};
   double velocity_epsilon{1e-4};
+  // I1 whole-body kinematic consequence; see tangent_escape_ode.hpp.
+  double weight_i1{0.0};
+  double i1_length{0.10};
+  double i1_damping{0.05};
+  bool i1_exclude_parent_link{true};
   double axial_preference{1.0};
+  double weight_axial_block{0.0};
   double pocket_threshold{0.6};
   double pocket_epsilon{0.1};
-  double activation_distance{0.20};
-  double release_distance{0.25};
-  double switch_hysteresis{0.005};
-  double direction_memory_time{1.0};
+  double alpha_on_distance{0.20};
+  double alpha_off_distance{0.25};
+  double owner_hysteresis{0.005};
   double weight_stall{2.0};
   double stall_time_constant{1.5};
   double stall_speed{0.02};
+  // Run and log the leaf without letting it reach the root RMP.
+  bool observe_only{false};
+  // Blockage activation; see tangent_escape_ode.hpp.
+  double block_on_dot{0.0};
+  double block_off_dot{0.3};
+  double nominal_motion_epsilon{1e-3};
+  double nominal_filter_tau{0.15};
 };
 
 struct EscapeEnergyCertificateParams
