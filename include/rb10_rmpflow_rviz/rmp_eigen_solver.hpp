@@ -160,6 +160,7 @@ struct TangentEscapeOdeParams
   double pocket_length{0.06};
   double weight_goal{1.0};
   double weight_continuity{0.3};
+  double e1_bias{0.0};
   double weight_risk{1.0};
   double weight_axis{1.5};
   double velocity_epsilon{1e-4};

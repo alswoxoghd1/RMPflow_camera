@@ -1,0 +1,98 @@
+rmpflow_controller:
+  ros__parameters:
+    # First live TG-RMP candidate.  This is an experiment profile, not a safety
+    # certification.  Start in dry-run/low-speed operation without people in
+    # the workspace and compare against the off/observe profiles.
+    enable_tangent_escape_rmp: true
+    tg_rmp_observe_only: false
+    publish_tangent_escape_rmp_data: true
+    publish_tangent_escape_dual_solve_data: false
+    publish_tangent_escape_geometry_debug: false
+
+    # Activation and ownership: enter at the same near distance, fade to zero
+    # before the bridge's 0.45 m obstacle cutoff, and reduce owner chatter.
+    tangent_escape_rmp_clearance_margin: 0.0
+    tg_rmp_owner_hysteresis: 0.015
+    tg_rmp_alpha_on_distance: 0.15
+    tg_rmp_alpha_off_distance: 0.40
+    tg_rmp_block_on_dot: 0.0
+    tg_rmp_block_off_dot: 0.3
+    tg_rmp_nominal_motion_epsilon: 0.001
+    tg_rmp_nominal_filter_tau: 0.25
+    tg_rmp_pocket_length: 0.06
+    tg_rmp_pocket_threshold: 0.6
+    tg_rmp_pocket_epsilon: 0.1
+
+    # Direction: slower ODE and less dependence on measured motion/body-wide
+    # I1 while the source of the vibration is still being isolated.
+    tg_rmp_direction_rate: 0.75
+    tg_rmp_weight_goal: 0.6
+    tg_rmp_weight_continuity: 0.3
+    tg_rmp_weight_risk: 0.5
+    tg_rmp_weight_axis: 0.4
+    tg_rmp_risk_length: 0.15
+    tg_rmp_axial_preference: 1.0
+    tg_rmp_weight_axial_block: 0.0
+    tg_rmp_weight_i1: 0.0
+    tg_rmp_i1_length: 0.10
+    tg_rmp_i1_damping: 0.05
+    tg_rmp_i1_exclude_parent_link: true
+    tg_rmp_weight_stall: 0.0
+    tg_rmp_stall_time_constant: 1.5
+    tg_rmp_stall_speed: 0.005
+
+    # Do not interpret range quantisation as obstacle velocity in the first
+    # candidate.  The robot-motion part of clearance rate remains available.
+    tg_rmp_use_obstacle_motion: false
+    tg_rmp_clearance_rate_filter_tau: 0.15
+    tg_rmp_clearance_rate_deadband: 0.01
+
+    # Authority: current YAML is 500 / 800 / 500 m/s^2.  Begin near the code's
+    # canonical defaults and below the target metric, then increase one family
+    # at a time only if escape authority is insufficient.
+    tg_rmp_accel_gain: 50.0
+    tg_rmp_accel_length: 0.08
+    tg_rmp_accel_saturation: 80.0
+    tg_rmp_closing_gain: 0.0
+    tg_rmp_closing_length: 0.05
+    tg_rmp_closing_epsilon: 0.1
+    tg_rmp_closing_rate_scale: 0.05
+    tg_rmp_tangent_damping: 20.0
+    tg_rmp_enable_progress_attenuation: false
+    tg_rmp_progress_scale: 1.0
+    tg_rmp_progress_recovery_time: 3.0
+    tg_rmp_metric_mu: 2500.0
+    tg_rmp_metric_length: 0.03
+    tg_rmp_metric_epsilon: 0.1
+    tg_rmp_metric_rate_scale: 0.05
+
+    # Limit the first experiment's command aggressiveness.  A lower global
+    # acceleration limit can reduce collision response too, so this must not be
+    # treated as a safety shield.
+    max_joint_accel: 3.0
+    command_guard_velocity_slew_enabled: true
+    command_guard_max_accel_rad_s2: 3.0
+
+    # Log enough signals to separate input, TG, collision, velocity-feedback,
+    # command and timing jitter without enabling the expensive geometry path.
+    publish_rmp_accel_debug: true
+    publish_rmp_ee_pose: true
+    publish_debug_state: true
+    publish_target_metric: true
+    publish_control_timing_debug: true
+
+proximity_obstacle_bridge:
+  ros__parameters:
+    publish_rate: 200.0
+    trigger_distance: 0.45
+
+rmpflow_bridge:
+  ros__parameters:
+    # The historical logs contain 0.42 m and 33 deg target jumps inside one
+    # 5--10 ms update.  Condition only the controller-facing /goal_pose;
+    # /RMP_goal remains raw in rmp_goal_logger for diagnosis.
+    goal_filter_enabled: true
+    goal_filter_rate_hz: 200.0
+    goal_filter_time_constant_s: 0.08
+    goal_filter_max_linear_speed_m_s: 0.30
+    goal_filter_max_angular_speed_rad_s: 1.0

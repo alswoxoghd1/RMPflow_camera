@@ -166,6 +166,7 @@ void TangentEscapeSupervisor::evaluate_ode(
   leaf_params.pocket_length = ode.pocket_length;
   leaf_params.weight_goal = ode.weight_goal;
   leaf_params.weight_continuity = ode.weight_continuity;
+  leaf_params.e1_bias = ode.e1_bias;
   leaf_params.weight_risk = ode.weight_risk;
   leaf_params.weight_axis = ode.weight_axis;
   leaf_params.velocity_epsilon = ode.velocity_epsilon;

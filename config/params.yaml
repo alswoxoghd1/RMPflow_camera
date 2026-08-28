@@ -29,7 +29,7 @@ rmpflow_controller:
     # --- TARGET RMP
     target_rmp_accel_p_gain: 40.0
     target_rmp_accel_d_gain: 120.0
-    target_rmp_accel_norm_eps: 0.08
+    target_rmp_accel_norm_eps: 0.15
     target_rmp_metric_alpha_length_scale: 0.01
     target_rmp_min_metric_alpha: 0.1
     target_rmp_max_metric_scalar: 100000.0
@@ -91,8 +91,8 @@ rmpflow_controller:
     tg_rmp_observe_only: false
 
     # activation
-    tg_rmp_alpha_on_distance: 0.15
-    tg_rmp_alpha_off_distance: 0.45
+    tg_rmp_alpha_on_distance: 0.05
+    tg_rmp_alpha_off_distance: 0.3
     tg_rmp_block_on_dot: 0.0
     tg_rmp_block_off_dot: 0.3
     tg_rmp_nominal_motion_epsilon: 0.001
@@ -105,6 +105,7 @@ rmpflow_controller:
     tg_rmp_direction_rate: 1.5
     tg_rmp_weight_goal: 0.6
     tg_rmp_weight_continuity: 1.0
+    tg_rmp_e1_bias: -0.30
     tg_rmp_weight_risk: 0.5
     tg_rmp_weight_axis: 0.4
     tg_rmp_risk_length: 0.15
@@ -124,10 +125,10 @@ rmpflow_controller:
     tg_rmp_clearance_rate_deadband: 0.005
 
     # acceleration
-    tg_rmp_accel_gain: 500.0
+    tg_rmp_accel_gain: 100.0
     tg_rmp_accel_length: 0.08
     tg_rmp_accel_saturation: 800.0
-    tg_rmp_closing_gain: 500.0
+    tg_rmp_closing_gain: 50.0
     tg_rmp_closing_length: 0.05
     tg_rmp_closing_epsilon: 0.1
     tg_rmp_closing_rate_scale: 0.05

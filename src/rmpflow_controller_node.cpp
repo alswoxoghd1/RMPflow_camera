@@ -2005,6 +2005,7 @@ public:
     declare_parameter("tg_rmp_risk_length", 0.06);
     declare_parameter("tg_rmp_weight_goal", 1.0);
     declare_parameter("tg_rmp_weight_continuity", 0.3);
+    declare_parameter("tg_rmp_e1_bias", 0.0);
     declare_parameter("tg_rmp_weight_risk", 1.0);
     declare_parameter("tg_rmp_weight_axis", 1.5);
     declare_parameter("tg_rmp_velocity_epsilon", 0.0001);
@@ -2966,6 +2967,8 @@ private:
       get_parameter("tg_rmp_weight_goal").as_double();
     config.tangent_escape_ode.weight_continuity =
       get_parameter("tg_rmp_weight_continuity").as_double();
+    config.tangent_escape_ode.e1_bias =
+      get_parameter("tg_rmp_e1_bias").as_double();
     config.tangent_escape_ode.weight_risk =
       get_parameter("tg_rmp_weight_risk").as_double();
     config.tangent_escape_ode.weight_axis =
@@ -4438,10 +4441,10 @@ private:
                 markers.markers.push_back(label);
               };
             append_basis(
-              "tangent_escape_basis_e1", basis_e1, "0",
+              "tangent_escape_basis_e1", basis_e1, "+e1",
               color(1.0F, 0.25F, 0.25F, 0.95F));
             append_basis(
-              "tangent_escape_basis_e2", basis_e2, "90",
+              "tangent_escape_basis_e2", basis_e2, "+e2",
               color(0.25F, 0.55F, 1.0F, 0.95F));
             // Length carries the tangential projection, so a goal that mostly
             // points into the obstacle draws short -- that is the case where

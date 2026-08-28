@@ -1,0 +1,33 @@
+rmpflow_controller:
+  ros__parameters:
+    # A/B reference: keep Collision RMP and the proximity bridge active, but
+    # remove only the TG-RMP contribution from the root solve.
+    enable_tangent_escape_rmp: false
+    publish_tangent_escape_rmp_data: false
+    publish_tangent_escape_geometry_debug: false
+
+    # Keep the low-cost signals needed by rmpflow_trace_logger.
+    publish_rmp_accel_debug: true
+    publish_rmp_ee_pose: true
+    publish_debug_state: true
+    publish_target_metric: true
+    publish_control_timing_debug: true
+
+proximity_obstacle_bridge:
+  ros__parameters:
+    # Match the 200 Hz sensor/controller path.  The base file's 100 Hz bridge
+    # makes the fixed-dt clearance derivative alternate between a duplicate and
+    # a two-sample jump.
+    publish_rate: 200.0
+
+    # Obstacles must already exist where the TG distance gate is zero.  This
+    # avoids appearing/disappearing with full authority at 0.15 m.
+    trigger_distance: 0.45
+
+rmpflow_bridge:
+  ros__parameters:
+    goal_filter_enabled: true
+    goal_filter_rate_hz: 200.0
+    goal_filter_time_constant_s: 0.08
+    goal_filter_max_linear_speed_m_s: 0.30
+    goal_filter_max_angular_speed_rad_s: 1.0

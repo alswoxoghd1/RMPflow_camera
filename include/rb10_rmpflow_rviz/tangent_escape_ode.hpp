@@ -180,6 +180,9 @@ struct LeafParams
   double pocket_length{0.06};
   double weight_goal{1.0};
   double weight_continuity{0.3};
+  // Signed dipole bias in the sensor tangent basis.  Negative values prefer
+  // -e1, positive values prefer +e1, and zero preserves the geometric score.
+  double e1_bias{0.0};
   double weight_risk{1.0};
   double weight_axis{1.5};
   double velocity_epsilon{1e-4};
@@ -292,12 +295,12 @@ struct LeafOutput
   double stall{0.0};           // 1 while pushing but not moving
   double stall_penalty{0.0};   // magnitude of the accumulated dipole
 
-  // Every dipole term as it actually enters score_a / score_b, weights already
-  // applied, so score_a == goal + velocity + risk + i1 - stall exactly and the
-  // decomposition can be checked rather than assumed.  Without this the log can
-  // only lump velocity together with risk, which is precisely the pair that has
-  // to be told apart: one is meant to hold a working direction and the other to
-  // argue against the obstacle.
+  // Every dynamic dipole term as it actually enters score_a / score_b, weights
+  // already applied.  The configured e1_bias is added separately to score_a;
+  // after that, the stall term is subtracted.  Without this decomposition the
+  // log can only lump velocity together with risk, which is precisely the pair
+  // that has to be told apart: one is meant to hold a working direction and the
+  // other to argue against the obstacle.
   double score_a_goal{0.0};
   double score_b_goal{0.0};
   double score_a_velocity{0.0};

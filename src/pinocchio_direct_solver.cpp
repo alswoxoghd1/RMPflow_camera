@@ -564,6 +564,7 @@ PinocchioDirectRmpSolver::PinocchioDirectRmpSolver(
       std::isfinite(ode.accel_gain) && std::isfinite(ode.accel_length) &&
       std::isfinite(ode.progress_scale) && std::isfinite(ode.progress_recovery_time) &&
       std::isfinite(ode.tangent_damping) && std::isfinite(ode.direction_rate) &&
+      std::isfinite(ode.e1_bias) &&
       std::isfinite(ode.risk_length) && std::isfinite(ode.pocket_epsilon) &&
       std::isfinite(ode.alpha_on_distance) && std::isfinite(ode.alpha_off_distance);
     if (

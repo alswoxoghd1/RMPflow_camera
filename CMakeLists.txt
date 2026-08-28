@@ -332,6 +332,7 @@ install(
   scripts/compare_rmp_leaf_ablation.py
   scripts/compare_rmp_closed_loop_smoothness.py
     scripts/rmp_goal_logger.py
+    scripts/analyze_goal_jitter.py
     scripts/rmpflow_trace_logger.py
     scripts/rmp_goal_sequence_visualizer.py
     scripts/plot_joint_velocity_log.py

@@ -519,7 +519,10 @@ LeafOutput evaluate(
     params.weight_axial_block * axial_sign * axial_block_risk;
   const double score_b_risk = params.weight_risk * risk_b;
 
-  double score_a = score_a_goal + score_a_velocity + score_a_risk + score_a_i1;
+  // A signed, sensor-frame bias provides an explicit preference between +e1
+  // and -e1 without overloading the data-dependent goal/risk weights.
+  double score_a =
+    score_a_goal + score_a_velocity + score_a_risk + score_a_i1 + params.e1_bias;
   double score_b = score_b_goal + score_b_velocity + score_b_risk + score_b_i1;
   // The axial block now ADDS to c.  c cos(2 theta) is +c along e1 and -c along
   // e2, so preferring the link axis -- which is what a blocked far side is

@@ -16,6 +16,12 @@ def _validate_params_file(context):
         raise RuntimeError(
             f'Launch argument "params_file" must point to an existing YAML file: {params_path}'
         )
+    tuning_params_path = LaunchConfiguration("tuning_params_file").perform(context).strip()
+    if tuning_params_path and not os.path.isfile(tuning_params_path):
+        raise RuntimeError(
+            'Launch argument "tuning_params_file" must be empty or point to an '
+            f'existing YAML file: {tuning_params_path}'
+        )
     return []
 
 
@@ -45,6 +51,12 @@ def _tg_rmp_overrides(context):
 
 def _rmpflow_controller_actions(context, params_file, controller_parameters):
     parameters = [params_file, controller_parameters]
+    tuning_params_path = LaunchConfiguration("tuning_params_file").perform(context).strip()
+    if tuning_params_path:
+        # Keep experiment-only values out of params.yaml.  This file is applied
+        # after the launch defaults, so the effective tuning is exactly what is
+        # captured in the profile.
+        parameters.append(tuning_params_path)
     overrides = _tg_rmp_overrides(context)
     if overrides:
         parameters.append(overrides)
@@ -54,6 +66,66 @@ def _rmpflow_controller_actions(context, params_file, controller_parameters):
             executable="rmpflow_controller",
             name="rmpflow_controller",
             output="screen",
+            parameters=parameters,
+        )
+    ]
+
+
+def _proximity_obstacle_bridge_actions(context, params_file, use_proximity_bridge):
+    parameters = [params_file]
+    tuning_params_path = LaunchConfiguration("tuning_params_file").perform(context).strip()
+    if tuning_params_path:
+        parameters.append(tuning_params_path)
+    parameters.append({
+        "rmp_flag_gate_enabled": ParameterValue(
+            PythonExpression([
+                'True if "', use_proximity_bridge, '" == "true" else False'
+            ]),
+            value_type=bool,
+        ),
+        "rmp_flag_topic": "/RMP_flag",
+        "rmp_active_flag_value": 1,
+        "publish_collision_obstacles": ParameterValue(
+            PythonExpression([
+                'True if "', use_proximity_bridge, '" == "true" else False'
+            ]),
+            value_type=bool,
+        ),
+    })
+    return [
+        Node(
+            package="rb10_rmpflow_rviz",
+            executable="proximity_obstacle_bridge",
+            name="proximity_obstacle_bridge",
+            output="screen",
+            condition=IfCondition(use_proximity_bridge),
+            parameters=parameters,
+        )
+    ]
+
+
+def _rmpflow_bridge_actions(context, start_rmpflow_bridge):
+    parameters = [{
+        "flag_topic": "/RMP_flag",
+        "goal_topic": "/RMP_goal",
+        "controller_goal_topic": "/goal_pose",
+        "controller_command_topic": "/position_controllers/commands",
+        "target_q_topic": "/target_q",
+        "forward_target_q": False,
+        "goal_frame_id": "base_link",
+        "active_flag_value": 1,
+        "command_forward_delay_ms": 100,
+    }]
+    tuning_params_path = LaunchConfiguration("tuning_params_file").perform(context).strip()
+    if tuning_params_path:
+        parameters.append(tuning_params_path)
+    return [
+        Node(
+            package="rb10_rmpflow_rviz",
+            executable="rmpflow_bridge",
+            name="rmpflow_bridge",
+            output="screen",
+            condition=IfCondition(start_rmpflow_bridge),
             parameters=parameters,
         )
     ]
@@ -290,23 +362,11 @@ def generate_launch_description():
         },
     )
 
-    rmpflow_bridge = Node(
-        package="rb10_rmpflow_rviz",
-        executable="rmpflow_bridge",
-        name="rmpflow_bridge",
-        output="screen",
-        condition=IfCondition(start_rmpflow_bridge),
-        parameters=[{
-            "flag_topic": "/RMP_flag",
-            "goal_topic": "/RMP_goal",
-            "controller_goal_topic": "/goal_pose",
-            "controller_command_topic": "/position_controllers/commands",
-            "target_q_topic": "/target_q",
-            "forward_target_q": False,
-            "goal_frame_id": "base_link",
-            "active_flag_value": 1,
-            "command_forward_delay_ms": 100,
-        }],
+    rmpflow_bridge = OpaqueFunction(
+        function=_rmpflow_bridge_actions,
+        kwargs={
+            "start_rmpflow_bridge": start_rmpflow_bridge,
+        },
     )
 
     interactive_goal = Node(
@@ -336,31 +396,12 @@ def generate_launch_description():
         parameters=[params_file],
     )
 
-    proximity_obstacle_bridge = Node(
-        package="rb10_rmpflow_rviz",
-        executable="proximity_obstacle_bridge",
-        name="proximity_obstacle_bridge",
-        output="screen",
-        condition=IfCondition(use_proximity_bridge),
-        parameters=[
-            params_file,
-            {
-                "rmp_flag_gate_enabled": ParameterValue(
-                    PythonExpression([
-                        'True if "', use_proximity_bridge, '" == "true" else False'
-                    ]),
-                    value_type=bool,
-                ),
-                "rmp_flag_topic": "/RMP_flag",
-                "rmp_active_flag_value": 1,
-                "publish_collision_obstacles": ParameterValue(
-                    PythonExpression([
-                        'True if "', use_proximity_bridge, '" == "true" else False'
-                    ]),
-                    value_type=bool,
-                ),
-            },
-        ],
+    proximity_obstacle_bridge = OpaqueFunction(
+        function=_proximity_obstacle_bridge_actions,
+        kwargs={
+            "params_file": params_file,
+            "use_proximity_bridge": use_proximity_bridge,
+        },
     )
 
     data_recorder = Node(
@@ -514,6 +555,15 @@ def generate_launch_description():
             "params_file",
             default_value=default_params_path,
             description="Absolute path to the controller params YAML.",
+        ),
+        DeclareLaunchArgument(
+            "tuning_params_file",
+            default_value="",
+            description=(
+                "Optional YAML applied after params_file to rmpflow_controller, "
+                "rmpflow_bridge, and proximity_obstacle_bridge. Use it to save and "
+                "replay tuning runs."
+            ),
         ),
         DeclareLaunchArgument(
             "use_rviz",
