@@ -28,7 +28,6 @@ def generate_launch_description():
             "use_interactive_goal": LaunchConfiguration("use_interactive_goal"),
             "use_obstacles": "false",
             "use_proximity_bridge": LaunchConfiguration("use_proximity_bridge"),
-            "proximity_surface_visualization": "false",
             "publish_debug_joint_state_sources": "false",
             "record_joint_velocity": "false",
             "publish_control_timing_debug": "true",

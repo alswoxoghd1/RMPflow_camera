@@ -1,225 +1,289 @@
-# Diffusion-Guided Proximity-Aware RMPflow
+# Interactive Diffusion Policy — Low-Level Execution Layer
 
-This section describes the reactive execution layer used to convert diffusion-policy inference points into safe RB10 motion. The diffusion policy provides a task-space end-effector target, while RMPflow computes the joint-space command by continuously combining target tracking, orientation regulation, proximity-based collision avoidance, joint constraints, and damping.
+**Section IV의 low-level controller 부분.** 초안 구조 대응: 4.1 intro → 4.2 framework
+(RMP+근접센서 / DP / OOD→LPB).
 
-## A. System Overview
+> **Drafting note (논문 본문 아님).** 식과 수치는 "없으면 설명이 안 되는 것"만 남겼다.
+> 나머지 값은 `config/params.yaml`이 원본. Tangent-escape(TG-RMP)는 본 논문 범위 제외.
+> `→ 논문 반영` 메모는 최종 원고에서 삭제.
 
-Let \(q,\dot{q}\in\mathbb{R}^{6}\) denote the RB10 joint position and velocity used by the controller. At each control cycle, the policy target is received as
+---
 
-\[
-g = (p_g, R_g),
-\]
+## A. Why avoidance is not put inside the policy
 
-where \(p_g\in\mathbb{R}^{3}\) is the diffusion-policy inference point and \(R_g\in SO(3)\) is the desired or fixed task orientation carried by the incoming pose message. The policy target is published on `/RMP_goal` as `geometry_msgs/Pose`. The `rmpflow_bridge` forwards this target to the controller as `/goal_pose` in the `base_link` frame. Execution is gated by `/RMP_flag`; the RMP solve is active only when `/RMP_flag == 1` and a valid `/goal_pose` has been received.
+An imitation-learned policy is only as safe as its demonstrations. A person's hand entering
+between the gripper and the workpiece is precisely the event that demonstrations do not
+contain, and it is also the event that must be handled within milliseconds. Three common
+remedies all have the same weakness:
 
-The complete online pipeline is:
+- **collecting avoidance demonstrations** makes safety a function of data coverage;
+- **conditioning the policy on an obstacle signal** makes safety a function of training quality;
+- **adding an avoidance guidance term to the sampler** couples the safety response to the
+  denoising schedule, so its latency and magnitude are inherited from the generative model
+  rather than chosen.
 
-\[
-\text{diffusion target} \rightarrow \text{target/orientation RMPs}
-\]
-\[
-\text{proximity ranges} \rightarrow \text{obstacle spheres} \rightarrow \text{collision RMP}
-\]
-\[
-\text{RB10 state} \rightarrow \text{RMPflow root solve} \rightarrow \ddot{q}^{*}
-\rightarrow \dot{q}_{cmd}, q_{cmd}.
-\]
+In every case safety becomes probabilistic and is re-litigated each time the policy is
+retrained. We therefore separate the two questions by **role**, in the same spirit as
+compliant-execution systems that place the reactive term below the policy: the diffusion
+policy decides **where to go**, and a geometric layer running at the control rate decides
+**how to get there right now, given what is near the robot at this instant**.
 
-In the hardware experiments, the resulting velocity command \(\dot{q}_{cmd}\) is sent to the RB10 through the direct API `move_speed_j` interface. The integrated joint position \(q_{cmd}\) is published for logging and analysis on `/target_q`.
+The layer is an RMPflow tree. Its task input is the policy's target pose; its safety input is
+the robot-mounted proximity sensing of Section III. Both enter the same solve.
 
-## B. Proximity-Based Obstacle Construction
+→ 논문 반영: 이 절이 4.1. 3–4문장으로 압축 가능. "별도 guidance를 두지 않는다"의 근거가
+핵심.
 
-The robot-mounted proximity sensors publish range measurements on `/proximity_distance*`. The `proximity_obstacle_bridge` transforms each valid measurement into the `base_link` frame and publishes collision primitives on `/obstacles`. Although `/obstacles` uses `visualization_msgs/MarkerArray`, the controller treats it as an algorithmic collision input and converts the markers into internal `ObstacleSphere` objects.
+---
 
-For sensor \(k\), let
+## B. Framework: one solve, two inputs
 
-\[
-T_{BS,k}=(R_{BS,k},p_{BS,k})
-\]
+At every control cycle the layer receives
 
-be the transform from the sensor frame to the base frame. The implementation uses the local positive \(x\)-axis as the sensing direction,
+- \(p_g\): the end-effector target published by the diffusion policy, at policy rate, and
+- \(\{d_k\}\): the calibrated proximity distances of the robot-mounted sensors, at sensor rate,
 
-\[
-n_k = R_{BS,k} e_x .
-\]
-
-Given the scaled range \(d_k\) and obstacle radius \(r_{o,k}\), the current experimental configuration places a spherical obstacle at
-
-\[
-p_{o,k}=p_{BS,k}+n_k(d_k+r_{o,k}).
-\]
-
-Thus, the near surface of the sphere coincides with the measured surface point:
+and solves, at **200 Hz**,
 
 \[
-p_{o,k}-r_{o,k}n_k = p_{BS,k}+n_k d_k .
+A=\underbrace{A_{\mathrm{tar}}}_{\text{go to } p_g}+\underbrace{A_{\mathrm{col}}}_{\text{stay off } \{d_k\}}+A_{\mathrm{cons}},
+\qquad
+f=f_{\mathrm{tar}}+f_{\mathrm{col}}+f_{\mathrm{cons}},
+\qquad
+\ddot q^{*}=(A+\lambda I)^{-1}f ,
 \]
 
-The proximity bridge filters out disabled sensors, invalid range messages, and detections outside the trigger distance. In the current parameter file, the range scale is \(10^{-3}\), the minimum held range is \(0.05\,\mathrm{m}\), and the per-sensor trigger distance is \(0.15\,\mathrm{m}\). With the launch command used for the experiments, surface-patch visualization and surface-patch collision memory are disabled. Therefore, the active proximity collision model is a set of online spherical hit primitives, not a persistent reconstructed surface.
+where each term is the pullback \(A_i=J_i^{\top}M_iJ_i\),
+\(f_i=J_i^{\top}M_i(a_i-\dot J_i\dot q)\) of a task-space policy \((a_i,M_i)\) through its own
+task map. The resulting joint acceleration is integrated and guarded into a joint-velocity
+command.
 
-## C. RMPflow Formulation
+**The two behaviours are not sequenced — they are superposed.** This is the property the
+whole framework rests on, and it deserves to be stated explicitly in the paper:
 
-Each RMP leaf is defined on a task map
+1. **The target term is never switched off.** While a person is being avoided, the pull
+   toward \(p_g\) is still in the solve; what changes is the relative weight of the metrics.
+   The arm is therefore *deflected* around the obstacle while still making whatever progress
+   toward the target the obstacle permits.
+2. **Recovery needs no separate mechanism.** The collision metric has compact support, so it
+   vanishes as the person withdraws, and the same solve returns to pure target tracking on
+   the next cycle. There is no "resume" command, no re-planning, and no state machine.
+3. **The two run at different rates by design.** The policy publishes targets at policy rate;
+   avoidance runs at 200 Hz. Between two policy outputs the robot is still fully reactive,
+   which is what makes the layer's safety independent of the policy's inference latency.
+
+→ 논문 반영: 이 절이 4.2의 뼈대. 위 식 한 줄 + 세 성질 + Fig.(framework). 회피와 추종이
+동시에 일어난다는 점을 그림에서 화살표 두 개가 한 solve로 합쳐지는 형태로 보여줄 것.
+
+---
+
+## C. Diffusion target → task RMP
+
+The policy's pose target becomes a position attractor on the TCP and orientation attractors
+on its axes. The position term is **direction-normalized**,
 
 \[
-x_i=\phi_i(q), \qquad J_i(q)=\frac{\partial \phi_i}{\partial q}.
+a_{\mathrm{tar}}=k_p\frac{p_g-p}{\lVert p_g-p\rVert+\epsilon}-k_d\dot p ,
 \]
 
-The leaf returns a desired task-space acceleration \(a_i\) and metric \(M_i\). The pullback to the root joint space is
+so the commanded acceleration saturates at \(k_p\) no matter how far the target is. This
+matters specifically because the target comes from a generative model: an occasional
+inconsistent or distant sample cannot inject an unbounded force into the solve, it can only
+change the direction the arm is pulled.
+
+The term's metric is shaped by distance to the goal, and this shaping is what makes
+simultaneous avoidance possible:
+
+- **Far from the goal the metric is anisotropic** — strong along the goal direction, weak
+  across it. Lateral deflection therefore costs the task term almost nothing, so the
+  collision term can route the arm around a person without fighting the attractor.
+- **Near the goal it becomes isotropic and stiff**, so the compliance that was useful during
+  transit is not paid for in final placement accuracy.
+
+In other words, the policy's authority is concentrated on *making progress*, and the
+directions orthogonal to progress are left available to the safety term. Avoidance is a
+reshaping of the same motion, not an override of it.
+
+→ 논문 반영: 식 1개 + metric anisotropy 문단. 이게 "why simultaneous"의 절반.
+
+---
+
+## D. Proximity sensing → collision RMP
+
+**Why this modality.** The dangerous case in a shared workspace is a hand or forearm entering
+the volume immediately around the robot's own surface — behind a link, beside the gripper, in
+the camera's shadow. That is exactly where an external vision system is least reliable and
+where a surface-mounted sensor is most reliable. The sensing itself is described in Section
+III; what matters here is that the layer's safety input is **local to the robot's surface and
+independent of external line of sight**, so avoidance does not degrade when the scene
+occludes the camera.
+
+**From range to obstacle.** Each valid range is placed along its sensor's own axis in the base
+frame, and a sphere is seated so that its near surface coincides with the measured surface
+point:
 
 \[
-A_i = J_i^T M_i J_i,
+p_{o,k}=p_{s,k}+n_k(d_k+r_o).
 \]
+
+Obstacles are created and destroyed each cycle rather than accumulated into a map, which is
+the right model for a person who is moving. Signed clearance for a control point of radius
+\(r_c\) is \(s=\lVert p_c-p_o\rVert-r_c-r_o\), and because each control point sits at its own
+sensor origin this reduces to \(s=d_k-r_c\): the control-point radius is a **keep-out shell
+around every sensor**, and all reported clearances can be read directly against measured
+range.
+
+**The collision term.** On the positive clearance,
 
 \[
-f_i = J_i^T M_i(a_i-\dot{J}_i\dot{q}).
+a_{\mathrm{col}}=k_re^{-s/\sigma}-\gamma(\dot s)\frac{k_b\dot s}{s/\sigma_b+\epsilon},
+\qquad
+m_{\mathrm{col}}=\gamma(\dot s)\,g(s)\,\frac{\mu}{s/\sigma_m+\epsilon_m},
 \]
 
-The root metric and force are accumulated over all enabled leaves:
+with two properties that carry the safety argument:
 
-\[
-A=\sum_i A_i, \qquad f=\sum_i f_i.
-\]
+- **Velocity-directional gating.** \(\gamma(\dot s)\) closes toward zero when clearance is
+  *growing*. A control point receding from a person is barely constrained; one closing on
+  them is heavily constrained. The arm can therefore leave a near-contact configuration
+  promptly instead of being held by its own barrier.
+- **Compact support.** \(g(s)\) drives the metric to exactly zero beyond an influence radius.
+  This is what makes property B.2 true: when the person leaves, the safety term does not fade
+  slowly or need resetting — it is simply absent, and the target term is again alone.
 
-The desired joint acceleration is computed as
+**Sensing the human's own approach.** A distance-only sensor cannot by itself tell an
+approaching robot from an approaching person. We decompose the clearance rate: the part
+explained by the robot's own motion is computed in closed form from the control-point
+velocity, and the residual — low-passed and dead-banded — is attributed to the obstacle. For a
+static obstacle the residual is noise; for a person walking in, it is their approach velocity.
+**This is the only channel through which the controller can react to a human approaching a
+stationary robot**, and it is consumed by the damping term above.
 
-\[
-\ddot{q}^{*}=(A+\lambda I)^{-1}f,
-\]
+**Self-detection.** A link-mounted sensor also sees the robot itself. Following prior work on
+joint-configuration-based compensation, readings dominated by self-detection in known joint
+ranges are suppressed for those configurations, so only externally caused distance changes
+reach the safety input.
 
-where \(\lambda I\) is the root regularization term. The controller keeps
-`solve_method: rmp2` and `rmp_type: canonical` in both backends. Runtime control
-uses an explicit Pinocchio/Eigen accumulation, while the CasADi Algorithm-3 DAG
-is retained as a reference implementation. Automated same-state tests compare
-the resulting root metric \(A\), natural force \(f\), and resolved acceleration
-\(\ddot q^*\), including the stateful Tangent Escape path.
+→ 논문 반영: occlusion 강인성 주장(contribution 2)의 근거가 이 절 전체. sphere 식 +
+\(s=d-r_c\) + gating/compact support + closing-rate residual.
 
-## D. RMP Leaves
+---
 
-### 1. Diffusion Target RMP
+## E. Constraint terms
 
-The target RMP attracts the TCP control frame to the diffusion-policy target \(p_g\). Let \(p(q)\) and \(\dot{p}=J_p(q)\dot{q}\) be the current TCP position and velocity. The implemented target acceleration is
+Joint limits, a joint-velocity cap, a weak posture bias resolving the null space, and joint
+damping complete the tree. The joint-limit and velocity-cap metrics diverge as their bounds
+are approached, so those limits are enforced by the geometry of the solve rather than by
+clipping the output. One sentence each in the paper.
 
-\[
-a_{tar}=k_p\frac{p_g-p}{\|p_g-p\|+\epsilon}-k_d\dot{p}.
-\]
+---
 
-The target metric is distance dependent:
+## F. Command generation and guards
 
-\[
-M_{tar}=\alpha m_{\max}I+(1-\alpha)m_{\min}\hat{d}\hat{d}^{T},
-\]
+The solved acceleration is limited in magnitude while preserving its direction — so
+saturation never distorts *where* the arm is being sent — integrated into a joint-velocity
+command, and passed through a last-resort envelope (position clamping, velocity reduction
+near a limit, velocity saturation, a predictive joint-limit guard, a minimum-height check)
+before transmission to the manipulator over its direct velocity interface.
 
-where \(\hat{d}\) is the softened unit direction toward the goal and \(\alpha\) is a Gaussian function of the target distance. Near the goal, the metric becomes more isotropic and stronger; farther from the goal, it is shaped along the goal direction so that collision and constraint RMPs can reshape the motion when necessary.
+The guards sit outside the RMP tree by design: the tree is responsible for behaviour, the
+guards for the envelope.
 
-### 2. Orientation Axis RMPs
+→ 논문 반영: 2문장.
 
-The quaternion in `/goal_pose` is converted to a desired rotation matrix. Its columns define three axis targets,
+---
 
-\[
-u_{g,x}, u_{g,y}, u_{g,z}.
-\]
+## G. What this layer gives the policy — and what it costs
 
-For each enabled TCP axis, the controller applies
+**Gives.** The policy can be trained purely on task demonstrations and still run beside a
+person: physical safety comes from sensing and geometry, not from data coverage. Avoidance
+never terminates an episode, and when the person withdraws the arm resumes tracking the
+policy's target on the very next cycle with no explicit recovery step.
 
-\[
-a_{axis}=k_p(u_g-u)-k_d\dot{u},
-\]
+**Costs.** The trajectory taken *during* avoidance is not one the policy has seen. Its
+observations while being deflected — end-effector pose, and whatever visual state the task
+uses — lie outside the demonstration distribution, so after the obstacle clears, the policy
+may be conditioned on a state it cannot act on reliably even though the robot is physically
+fine. **The reactive layer solves the safety problem and, in doing so, creates a distribution
+problem.**
 
-where \(u\) is the current TCP axis. This keeps the end-effector orientation consistent with the pose target while the target RMP tracks \(p_g\). If the diffusion policy produces only a 3D point, the upstream publisher should still provide a valid pose, for example by using a fixed task orientation or the current TCP orientation.
+This is exactly the gap the next component closes: the learned progress/behaviour module
+(LPB) re-anchors the policy after a deflection so the task continues from wherever avoidance
+left the arm, and the recovery-aware data collection of Section IV-C supplies the data it
+needs. The two are complementary by construction — the RMP layer guarantees the robot stays
+safe and keeps the target alive, and LPB guarantees the task survives the detour.
 
-### 3. Proximity Collision RMP
+→ 논문 반영: 4.2.3으로 이어지는 다리. 이 절을 짧게 쓰되 반드시 넣을 것 — RMP 챕터의 한계가
+LPB의 존재 이유가 되므로 논문 흐름이 여기서 완결된다.
 
-The collision RMP operates on distances between robot control points and obstacle spheres. For robot control point \(j\), obstacle \(i\), control-point radius \(r_{c,j}\), and obstacle radius \(r_{o,i}\), the signed clearance is
+---
 
-\[
-s_{ij}=\|p_{c,j}(q)-p_{o,i}\|-r_{c,j}-r_{o,i}-m,
-\]
+## H. Implementation and scope of the claims
 
-where \(m\) is the configured collision margin. The collision task coordinate is
+Runtime control uses an explicit Pinocchio/Eigen accumulation of the root solve at 200 Hz
+with the tree pre-compiled in topological order; a CasADi implementation of the same tree is
+retained as a reference and compared against it on identical states.
 
-\[
-x_{ij}=\max(s_{ij},0).
-\]
+**We claim:** every term is verified finite with positive-semidefinite metric over the
+operating envelope; the root solve is well-conditioned under the scaled regularizer; and the
+joint, velocity, and workspace envelope is maintained empirically across the reported runs.
 
-The implemented collision leaf combines exponential repulsion with approach-velocity damping:
+**We do not claim:** a formal stability certificate for the operating configuration — it
+deliberately includes state-dependent metric shaping, the velocity-cap term, the root
+regularizer, and post-solve guards, all outside the assumptions of the RMPflow theorem — nor
+forward invariance of the obstacle safe set. Physical safety rests on the collision term plus
+the guards, demonstrated experimentally. A restricted, strictly structured-GDS configuration
+of the collision and joint-limit terms exists in the implementation and passes automated
+closure and Lyapunov checks; it is a verification artifact and is not merged with the
+operating configuration into a single guarantee.
 
-\[
-a_{col}=a_{rep}(x_{ij})+a_{damp}(x_{ij},\dot{x}_{ij}).
-\]
+We also note the layer's own limitation: a purely reactive tree can stall where attraction
+and repulsion cancel. In the reported configuration this is handled at the framework level
+rather than inside the controller.
 
-The collision metric increases as clearance decreases and is modulated to zero outside the configured influence radius. Consequently, obstacle avoidance is not implemented as a discrete mode switch. The obstacle modifies the same root-space metric and force used by the target and constraint RMPs.
+→ 논문 반영: limitation 절로. 마지막 문단은 정직성 확보용이자 LPB 연결 보강.
 
-The solver also includes configured link-attached body guard primitives in the same collision-distance task map. These guard primitives are treated as additional collision terms alongside the proximity-derived obstacle spheres.
+---
 
-### 4. Constraint and Stabilization RMPs
+## I. Key settings for the experimental section
 
-The active graph also includes:
+| Quantity | Value |
+|---|---|
+| Control rate | 200 Hz |
+| Keep-out shell per sensor \(r_c\) | 0.05 m |
+| Collision influence radius | 0.3 m clearance |
+| Sensor trigger range (wrist / forearm ring) | 0.5 m / 0.3 m |
+| Joint velocity / acceleration limit | 1.0 rad/s, 10 rad/s² |
+| Enabled sensing stations | wrist group + distal forearm ring |
 
-- joint-limit RMPs, which push motion away from joint boundaries;
-- a joint-velocity-cap RMP, which damps motion near the configured velocity limit;
-- a configuration-space target RMP, which weakly biases the robot toward the default joint posture;
-- a joint damping RMP, which suppresses high joint velocities.
+**Metrics.** Task success rate, safety success rate, minimum clearance
+\(\min_t\min_k d_k\), time to completion, command smoothness — reported over the
+vision vs. vision+proximity × intervention vs. no-intervention grid of Section V.
 
-The tangent-escape RMP is available in the software stack, but it is disabled in the reported experimental configuration (`enable_tangent_escape_rmp: false`) and is therefore not part of the active controller analyzed here.
+---
 
-## E. Real-Time Command Generation
+## J. Figure caption drafts
 
-The RMP controller runs at the configured control rate and forms a solver state from the RB10 joint feedback. In velocity mode, the solver state may blend measured or estimated feedback with the previous virtual command state:
+**Fig. (framework).** The diffusion policy publishes an end-effector target; robot-mounted
+proximity sensors publish distances; both enter a single RMPflow root solve at 200 Hz that
+produces one joint-velocity command. Target tracking and obstacle avoidance are superposed in
+this solve rather than arbitrated: the target term stays active while a person is avoided,
+and the collision term vanishes as the person withdraws.
 
-\[
-q_c=\beta_p q_m+(1-\beta_p)q_v,
-\]
+**Fig. (sensing).** Sensor placement and obstacle construction. Each enabled sensor
+contributes a control point and, when its range falls below the trigger distance, one
+obstacle sphere seated so its near surface coincides with the measured surface point; the
+signed clearance is the measured range minus the keep-out shell.
 
-\[
-\dot{q}_c=\beta_v\dot{q}_m+(1-\beta_v)\dot{q}_v.
-\]
+**Fig. (behaviour).** A person reaching into the workspace during a pick-and-place episode:
+TCP path, minimum clearance, and distance-to-target over time, showing the arm deflecting
+around the hand while target distance continues to decrease, and resuming direct tracking as
+the hand withdraws — with no mode switch and no replanning.
 
-Using this state, the RMP solve returns \(\ddot{q}^{*}\). The controller clamps acceleration, integrates the command, and applies hardware guards:
+---
 
-\[
-\dot{q}_{cmd}=\dot{q}_c+\mathrm{clip}(\ddot{q}^{*})\Delta t,
-\]
+## References to reuse
 
-\[
-q_{cmd}=q_c+\dot{q}_{cmd}\Delta t.
-\]
-
-Before transmission, the command guard enforces joint-position bounds, joint-velocity saturation, predictive joint-limit protection, and optional minimum-height safety checks. If `/RMP_flag` is inactive or `/goal_pose` has not yet arrived, the velocity-mode controller sends a zero-velocity hold command instead of running the RMP solve.
-
-## F. Implementation Used in the Experiments
-
-The experiments reported for this method use:
-
-```text
-ros2 launch rb10_rmpflow_rviz rb10_rmpflow.launch.py \
-  cb_simulation:=false \
-  use_proximity_bridge:=true \
-  proximity_surface_visualization:=false \
-  use_interactive_goal:=false
-```
-
-With the launch-file defaults, this selects the direct RB10 API backend (`use_direct_hardware_backend:=true`), velocity command mode (`command_mode:=velocity`), the external goal bridge (`start_rmpflow_bridge:=true`), and proximity-derived collision obstacles (`use_proximity_bridge:=true`). The interactive goal source is disabled, so the only online task target is the diffusion-policy pose on `/RMP_goal`.
-
-The active runtime topics are summarized as follows:
-
-```text
-/RMP_goal                    diffusion-policy pose target
-/RMP_flag                    execution gate
-/goal_pose                   controller target forwarded by rmpflow_bridge
-/proximity_distance*         proximity sensor range inputs
-/obstacles                   proximity-derived obstacle spheres
-/target_q                    integrated joint target q_cmd
-/rmp_position_command        integrated position-command debug output
-/position_controllers/commands direct-backend command-vector debug output
-```
-
-The actual hardware command is not sent through a ROS controller in this configuration. The direct backend converts the guarded velocity command to the RB10 API format and transmits it through `move_speed_j`.
-
-## G. Method Summary
-
-The proposed execution layer treats the diffusion-policy output as a task-space target rather than a direct robot command. Proximity measurements generate local obstacle spheres online, and these sensor-derived collision terms are combined with target, orientation, joint-limit, velocity-cap, configuration-space, and damping RMPs in one root-space solve. The resulting acceleration is integrated and guarded before being sent to the RB10 as a velocity command. This structure allows the robot to follow learned diffusion-policy targets while continuously bending its motion away from nearby obstacles detected by onboard proximity sensors.
-
-## H. Figure Caption Draft
-
-Fig. X. Diffusion-guided proximity-aware RMPflow for RB10 control. A diffusion policy publishes an end-effector pose target on `/RMP_goal` and activates execution through `/RMP_flag`. Proximity ranges are transformed into local obstacle spheres in the robot base frame. The RMPflow controller combines target, orientation, proximity collision, joint-limit, velocity-cap, configuration-space, and damping RMPs to compute \(\ddot{q}^{*}\). The command is integrated into \(\dot{q}_{cmd}\) and \(q_{cmd}\); in the hardware experiments, \(\dot{q}_{cmd}\) is sent to the RB10 through the direct API `move_speed_j` interface.
+- Capacitive–ToF proximity sensing and self-curve-fitted calibration: `\cite{yim2024emtof, kang2025adaptive}`
+- Manipulator-mounted proximity sensing and self-detection compensation: `\cite{moon2021dual}`
+- RMPflow / RMP2: `\cite{cheng2018rmpflow, li2021rmp2}`

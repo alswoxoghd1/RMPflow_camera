@@ -234,7 +234,7 @@ Visualization Manager:
       Enabled: true
       Name: GoalMarker
       Namespaces:
-        goal: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -271,25 +271,13 @@ Visualization Manager:
       Enabled: true
       Name: Obstacles
       Namespaces:
-        proximity_obstacles: true
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /obstacle_markers
-      Value: true
-    - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
-      Name: ProximitySurfacePatches
-      Namespaces:
         {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /proximity_surface_patches
+        Value: /obstacle_markers
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
@@ -319,24 +307,7 @@ Visualization Manager:
       Enabled: true
       Name: TangentEscapeCanonical
       Namespaces:
-        tangent_escape_cp_acceleration_angle: true
-        tangent_escape_cp_acceleration_with: true
-        tangent_escape_cp_acceleration_without: true
-        tangent_escape_delta_cp_acceleration: false
-        tangent_escape_geometry_collision_normal: false
-        tangent_escape_geometry_cp: false
-        tangent_escape_geometry_cp_obstacle: false
-        tangent_escape_geometry_cp_velocity: false
-        tangent_escape_geometry_labels: false
-        tangent_escape_geometry_obstacle: false
-        tangent_escape_geometry_obstacle_direction: false
-        tangent_escape_geometry_sensor_normal: false
-        tangent_escape_geometry_tangent_bias: false
-        tangent_escape_scalar_acceleration: false
-        tangent_escape_selected_cp: true
-        tangent_escape_selected_normal: false
-        tangent_escape_selected_status: true
-        tangent_escape_selected_tangent: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -348,7 +319,7 @@ Visualization Manager:
       Enabled: true
       Name: StabilityCertificate
       Namespaces:
-        rmp_stability_certificate: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -361,7 +332,7 @@ Visualization Manager:
       Enabled: true
       Name: TcpAccel
       Namespaces:
-        tcp_accel: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -423,25 +394,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 1.1642727851867676
+      Distance: 1.5660691261291504
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.11654697358608246
-        Y: -0.8153930306434631
-        Z: 0.5437891483306885
+        X: 0.6653820872306824
+        Y: -0.4193572998046875
+        Z: 0.4262256324291229
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.35241931676864624
+      Pitch: 0.28241923451423645
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 5.491198539733887
+      Yaw: 5.281203746795654
     Saved: ~
 Window Geometry:
   Displays:

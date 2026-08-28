@@ -256,7 +256,6 @@ def main() -> int:
         "start_fake_proximity:=false "
         "enable_tangent_escape_rmp:=false "
         "publish_tangent_escape_geometry_debug:=true "
-        "proximity_surface_visualization:=false "
         "use_rmpflow_trace_logger:=true "
         f"rmpflow_trace_log_rate:={args.trace_rate_hz:.3f} "
         f"rmpflow_trace_log_directory:={log_dir}"

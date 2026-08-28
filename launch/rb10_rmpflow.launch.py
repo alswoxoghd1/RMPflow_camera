@@ -19,6 +19,46 @@ def _validate_params_file(context):
     return []
 
 
+# TG-RMP flags whose value lives in params.yaml. The launch argument stays available
+# for one-off overrides, but an empty value (the default) leaves params.yaml untouched.
+TG_RMP_PARAMS_YAML_ARGS = (
+    "enable_tangent_escape_rmp",
+    "publish_tangent_escape_rmp_data",
+    "publish_tangent_escape_geometry_debug",
+)
+
+
+def _tg_rmp_overrides(context):
+    overrides = {}
+    for name in TG_RMP_PARAMS_YAML_ARGS:
+        value = LaunchConfiguration(name).perform(context).strip().lower()
+        if not value:
+            continue
+        if value not in ("true", "false"):
+            raise RuntimeError(
+                f'Launch argument "{name}" must be "true", "false", or empty '
+                f'(follow params.yaml), got: {value}'
+            )
+        overrides[name] = value == "true"
+    return overrides
+
+
+def _rmpflow_controller_actions(context, params_file, controller_parameters):
+    parameters = [params_file, controller_parameters]
+    overrides = _tg_rmp_overrides(context)
+    if overrides:
+        parameters.append(overrides)
+    return [
+        Node(
+            package="rb10_rmpflow_rviz",
+            executable="rmpflow_controller",
+            name="rmpflow_controller",
+            output="screen",
+            parameters=parameters,
+        )
+    ]
+
+
 def generate_launch_description():
     rmp_pkg = get_package_share_directory("rb10_rmpflow_rviz")
     config_dir = os.path.join(rmp_pkg, "config")
@@ -47,7 +87,6 @@ def generate_launch_description():
     use_interactive_goal = LaunchConfiguration("use_interactive_goal")
     use_obstacles = LaunchConfiguration("use_obstacles")
     use_proximity_bridge = LaunchConfiguration("use_proximity_bridge")
-    proximity_surface_visualization = LaunchConfiguration("proximity_surface_visualization")
     record_data = LaunchConfiguration("record_data")
     auto_start_recording = LaunchConfiguration("auto_start_recording")
     recording_rate = LaunchConfiguration("recording_rate")
@@ -102,9 +141,6 @@ def generate_launch_description():
     rmpflow_trace_log_rate = LaunchConfiguration("rmpflow_trace_log_rate")
     rmpflow_trace_log_directory = LaunchConfiguration("rmpflow_trace_log_directory")
     rmpflow_trace_console_summary = LaunchConfiguration("rmpflow_trace_console_summary")
-    enable_tangent_escape_rmp = LaunchConfiguration("enable_tangent_escape_rmp")
-    publish_tangent_escape_rmp_data = LaunchConfiguration("publish_tangent_escape_rmp_data")
-    publish_tangent_escape_geometry_debug = LaunchConfiguration("publish_tangent_escape_geometry_debug")
     record_joint_velocity = LaunchConfiguration("record_joint_velocity")
     joint_velocity_log_directory = LaunchConfiguration("joint_velocity_log_directory")
     joint_velocity_log_prefix = LaunchConfiguration("joint_velocity_log_prefix")
@@ -175,22 +211,6 @@ def generate_launch_description():
         "publish_debug_joint_state_sources": publish_debug_joint_state_sources,
         "publish_visualization": publish_visualization,
         "publish_rmp_ee_pose": publish_rmp_ee_pose,
-        "enable_tangent_escape_rmp": ParameterValue(
-            enable_tangent_escape_rmp,
-            value_type=bool,
-        ),
-        "publish_tangent_escape_rmp_data": ParameterValue(
-            PythonExpression([
-                'True if "', publish_tangent_escape_rmp_data, '" == "true" else False'
-            ]),
-            value_type=bool,
-        ),
-        "publish_tangent_escape_geometry_debug": ParameterValue(
-            PythonExpression([
-                'True if "', publish_tangent_escape_geometry_debug, '" == "true" else False'
-            ]),
-            value_type=bool,
-        ),
         "tangent_escape_geometry_data_topic": "/tangent_escape_geometry_data",
         "tangent_escape_geometry_marker_topic": "tangent_escape_geometry_markers",
     }
@@ -262,15 +282,12 @@ def generate_launch_description():
         ],
     )
 
-    rmpflow_controller = Node(
-        package="rb10_rmpflow_rviz",
-        executable="rmpflow_controller",
-        name="rmpflow_controller",
-        output="screen",
-        parameters=[
-            params_file,
-            controller_parameters,
-        ],
+    rmpflow_controller = OpaqueFunction(
+        function=_rmpflow_controller_actions,
+        kwargs={
+            "params_file": params_file,
+            "controller_parameters": controller_parameters,
+        },
     )
 
     rmpflow_bridge = Node(
@@ -324,10 +341,7 @@ def generate_launch_description():
         executable="proximity_obstacle_bridge",
         name="proximity_obstacle_bridge",
         output="screen",
-        condition=IfCondition(PythonExpression([
-            '"', use_proximity_bridge, '" == "true" or "',
-            proximity_surface_visualization, '" == "true"',
-        ])),
+        condition=IfCondition(use_proximity_bridge),
         parameters=[
             params_file,
             {
@@ -342,13 +356,6 @@ def generate_launch_description():
                 "publish_collision_obstacles": ParameterValue(
                     PythonExpression([
                         'True if "', use_proximity_bridge, '" == "true" else False'
-                    ]),
-                    value_type=bool,
-                ),
-                "surface_patch_fixed_visualization": ParameterValue(
-                    PythonExpression([
-                        'True if "', proximity_surface_visualization,
-                        '" == "true" else False'
                     ]),
                     value_type=bool,
                 ),
@@ -611,14 +618,6 @@ def generate_launch_description():
             description="Use external proximity topics to build obstacle markers.",
         ),
         DeclareLaunchArgument(
-            "proximity_surface_visualization",
-            default_value="true",
-            description=(
-                "Publish RViz-only fixed surface patches from proximity sensor range hits. "
-                "When use_proximity_bridge is false this does not publish collision obstacles."
-            ),
-        ),
-        DeclareLaunchArgument(
             "bridge_publish_rate",
             default_value="500.0",
             description="RB10 state receive/publish rate in Hz before filtering.",
@@ -721,21 +720,27 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "enable_tangent_escape_rmp",
-            default_value="false",
+            default_value="",
             description=(
-                "Enable the canonical tangent Escape leaf after validation. "
-                "Production default remains false."
+                "Enable the canonical tangent Escape leaf. Empty (default) follows "
+                "params.yaml; set true/false to override it."
             ),
         ),
         DeclareLaunchArgument(
             "publish_tangent_escape_rmp_data",
-            default_value="false",
-            description="Publish tangent escape RMP diagnostics for trace logging.",
+            default_value="",
+            description=(
+                "Publish tangent escape RMP diagnostics for trace logging. Empty "
+                "(default) follows params.yaml; set true/false to override it."
+            ),
         ),
         DeclareLaunchArgument(
             "publish_tangent_escape_geometry_debug",
-            default_value="false",
-            description="Publish Stage-0 tangent escape geometry data and RViz markers.",
+            default_value="",
+            description=(
+                "Publish Stage-0 tangent escape geometry data and RViz markers. Empty "
+                "(default) follows params.yaml; set true/false to override it."
+            ),
         ),
         DeclareLaunchArgument(
             "record_data",

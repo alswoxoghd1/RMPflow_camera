@@ -41,9 +41,6 @@ def generate_launch_description():
             "use_interactive_goal": LaunchConfiguration("use_interactive_goal"),
             "use_obstacles": LaunchConfiguration("use_obstacles"),
             "use_proximity_bridge": LaunchConfiguration("use_proximity_bridge"),
-            "proximity_surface_visualization": LaunchConfiguration(
-                "proximity_surface_visualization"
-            ),
             "visualize_rmp_goal_sequence": LaunchConfiguration(
                 "visualize_rmp_goal_sequence"
             ),
@@ -135,11 +132,6 @@ def generate_launch_description():
             "use_proximity_bridge",
             default_value="true",
             description="Convert proximity sensor topics into RMP obstacles.",
-        ),
-        DeclareLaunchArgument(
-            "proximity_surface_visualization",
-            default_value="true",
-            description="Publish proximity surface markers for remote RViz.",
         ),
         DeclareLaunchArgument(
             "visualize_rmp_goal_sequence",

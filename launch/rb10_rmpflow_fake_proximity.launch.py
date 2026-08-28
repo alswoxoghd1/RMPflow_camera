@@ -172,7 +172,6 @@ def generate_launch_description():
     rmpflow_trace_log_directory = LaunchConfiguration("rmpflow_trace_log_directory")
     rmpflow_trace_output_prefix = LaunchConfiguration("rmpflow_trace_output_prefix")
     rmpflow_trace_console_summary = LaunchConfiguration("rmpflow_trace_console_summary")
-    proximity_surface_visualization = LaunchConfiguration("proximity_surface_visualization")
     use_stability_certificate_visualizer = LaunchConfiguration(
         "use_stability_certificate_visualizer"
     )
@@ -418,9 +417,6 @@ def generate_launch_description():
                 "publish_collision_obstacles": True,
                 "obstacle_topic": "/obstacles",
                 "visualization_obstacle_topic": "/obstacle_markers",
-                "surface_patch_fixed_visualization": _bool_config(
-                    "proximity_surface_visualization"
-                ),
                 "range_topics": fake_bridge_range_topics,
                 "sensor_frames": fake_sensor_frames,
                 "sensor_enabled": [True] * 20,
@@ -720,7 +716,6 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("publish_debug_state", default_value="false"),
         DeclareLaunchArgument("publish_tangent_escape_geometry_debug", default_value="true"),
-        DeclareLaunchArgument("proximity_surface_visualization", default_value="false"),
         DeclareLaunchArgument("use_rmpflow_trace_logger", default_value="true"),
         DeclareLaunchArgument("rmpflow_trace_log_rate", default_value="100.0"),
         DeclareLaunchArgument(

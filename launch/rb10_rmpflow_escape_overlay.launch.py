@@ -445,7 +445,6 @@ def _launch_setup(context):
                 "obstacle_topic": proximity_collision_topic,
                 "visualization_obstacle_topic": "/obstacle_markers",
                 "publish_collision_obstacles": True,
-                "surface_patch_fixed_visualization": False,
                 "range_topics": [
                     f"/fake_proximity_distance{index}"
                     for index in TOPIC_INDICES

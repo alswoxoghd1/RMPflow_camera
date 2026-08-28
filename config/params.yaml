@@ -43,6 +43,7 @@ rmpflow_controller:
     axis_target_rmp_metric_scalar: 100000.0
     axis_target_rmp_proximity_metric_boost_scalar: 10.0
     axis_target_rmp_proximity_metric_boost_length_scale: 0.01
+
     wrist_axis_target_rmp_accel_p_gain: 100.0
     wrist_axis_target_rmp_accel_d_gain: 50.0
     wrist_axis_target_rmp_metric_scalar: 0.0
@@ -84,6 +85,7 @@ rmpflow_controller:
     # --- TG-RMP
     # ownership
     enable_tangent_escape_rmp: true
+
     tangent_escape_rmp_clearance_margin: 0.0
     tg_rmp_owner_hysteresis: 0.005
     tg_rmp_observe_only: false
@@ -653,14 +655,6 @@ proximity_obstacle_bridge:
     publish_collision_obstacles: true
     obstacle_radius: 0.08
     obstacle_marker_lifetime: 0.25
-    surface_patch_rows: 5
-    surface_patch_cols: 5
-    surface_patch_spacing: 0.03
-    surface_patch_sphere_radius: 0.03
-    surface_patch_fixed_visualization: true
-    surface_patch_visualization_topic: "proximity_surface_patches"
-    surface_patch_memory_distance: 0.025
-    surface_patch_memory_max_markers: 1200
     valid_margin: 0.001
     range_scale: 0.001
     minimum_hold_distance: 0.05
@@ -671,7 +665,6 @@ proximity_obstacle_bridge:
     elbow_tof3_1_w_ignore_min_deg: -150.0
     elbow_tof3_1_w_ignore_max_deg: -130.0
     elbow_tof3_1_w_ignore_state_timeout: 0.5
-    elbow_tof3_1_w_ignore_clear_memory: true
     sensor_enabled:
       - true   # proximity_distance1 -> tof6_1_L
       - true   # proximity_distance2 -> tof6_1_F

@@ -39,7 +39,6 @@ def generate_launch_description():
         launch_arguments={
             "use_obstacles": "false",
             "use_proximity_bridge": "true",
-            "proximity_surface_visualization": "false",
             "proximity_collision_obstacle_topic": proximity_raw_obstacle_topic,
             "proximity_visualization_obstacle_topic": camera_rviz_output_topic,
             "rviz_config": camera_rviz_config_path,

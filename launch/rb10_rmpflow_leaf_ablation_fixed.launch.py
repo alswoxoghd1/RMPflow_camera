@@ -79,7 +79,6 @@ def generate_launch_description():
                 "publish_stability_certificate_data"
             ),
             "use_stability_certificate_visualizer": "false",
-            "proximity_surface_visualization": "false",
             "use_rmpflow_trace_logger": LaunchConfiguration(
                 "use_rmpflow_trace_logger"
             ),

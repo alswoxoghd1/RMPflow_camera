@@ -281,18 +281,6 @@ Visualization Manager:
         Value: /obstacle_markers
       Value: true
     - Class: rviz_default_plugins/MarkerArray
-      Enabled: false
-      Name: ProximitySurfacePatches
-      Namespaces:
-        {}
-      Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /proximity_surface_patches
-      Value: false
-    - Class: rviz_default_plugins/MarkerArray
       Enabled: true
       Name: CameraBodySpheres
       Namespaces:

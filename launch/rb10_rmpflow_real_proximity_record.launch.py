@@ -78,7 +78,6 @@ def generate_launch_description():
             launch_arguments={
                 "cb_simulation": "false",
                 "use_proximity_bridge": "true",
-                "proximity_surface_visualization": "false",
                 "use_interactive_goal": "false",
                 "use_rmp_goal_logger": "false",
                 "use_rmpflow_trace_logger": "false",

@@ -1,0 +1,1099 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>TG-RMP 안전성 구조 검증 보고서</title>
+  <style>
+    :root {
+      --ink: #17212b;
+      --muted: #52606d;
+      --line: #cbd5df;
+      --navy: #15395b;
+      --blue: #2368a2;
+      --blue-soft: #eaf4fb;
+      --green: #176b4d;
+      --green-soft: #e8f6ef;
+      --amber: #8a5a00;
+      --amber-soft: #fff6dd;
+      --red: #a12b2b;
+      --red-soft: #fdecec;
+      --gray-soft: #f4f6f8;
+    }
+
+    @page {
+      size: A4;
+      margin: 16mm 15mm 18mm 15mm;
+    }
+
+    * { box-sizing: border-box; }
+
+    html {
+      font-size: 10.5pt;
+      color: var(--ink);
+      background: white;
+    }
+
+    body {
+      margin: 0 auto;
+      max-width: 190mm;
+      font-family: "Noto Sans CJK KR", "Noto Sans KR", sans-serif;
+      line-height: 1.68;
+      word-break: keep-all;
+      overflow-wrap: anywhere;
+    }
+
+    h1, h2, h3, h4 {
+      color: var(--navy);
+      line-height: 1.35;
+      break-after: avoid;
+    }
+
+    h1 { font-size: 24pt; margin: 0 0 7mm; }
+    h2 {
+      font-size: 17pt;
+      margin: 10mm 0 4mm;
+      padding-bottom: 2mm;
+      border-bottom: 2px solid var(--navy);
+    }
+    h3 { font-size: 13pt; margin: 7mm 0 2.5mm; }
+    h4 { font-size: 11pt; margin: 5mm 0 2mm; }
+
+    p { margin: 0 0 3.2mm; }
+    ul, ol { margin: 2mm 0 4mm 7mm; padding-left: 5mm; }
+    li { margin: 1.2mm 0; }
+    a { color: var(--blue); text-decoration: none; }
+
+    .cover {
+      min-height: 252mm;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 14mm 8mm 8mm;
+      break-after: page;
+    }
+
+    .eyebrow {
+      color: var(--blue);
+      font-size: 11pt;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 7mm;
+    }
+
+    .subtitle {
+      font-size: 14pt;
+      color: var(--muted);
+      max-width: 145mm;
+      margin-bottom: 13mm;
+    }
+
+    .verdict-box {
+      border: 3px solid var(--red);
+      border-radius: 3mm;
+      background: var(--red-soft);
+      padding: 7mm;
+      margin: 10mm 0;
+      break-inside: avoid;
+    }
+
+    .verdict-box .label {
+      color: var(--red);
+      font-size: 10pt;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+    }
+
+    .verdict-box .main {
+      color: var(--red);
+      font-size: 20pt;
+      font-weight: 900;
+      margin: 2mm 0;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: 38mm 1fr;
+      border-top: 1px solid var(--line);
+      font-size: 9.3pt;
+    }
+    .meta-grid div { padding: 2mm 1mm; border-bottom: 1px solid var(--line); }
+    .meta-grid .key { color: var(--muted); font-weight: 700; }
+
+    .notice, .callout, .beginner, .warning, .success {
+      padding: 4mm 5mm;
+      border-radius: 2mm;
+      margin: 4mm 0;
+      break-inside: avoid;
+    }
+    .notice { background: var(--gray-soft); border-left: 4px solid #7a8793; }
+    .callout { background: var(--blue-soft); border-left: 4px solid var(--blue); }
+    .beginner { background: #f1f7ff; border: 1px solid #aacbe6; }
+    .warning { background: var(--amber-soft); border-left: 4px solid var(--amber); }
+    .success { background: var(--green-soft); border-left: 4px solid var(--green); }
+
+    .badge {
+      display: inline-block;
+      min-width: 22mm;
+      text-align: center;
+      border-radius: 99px;
+      padding: 0.6mm 2.2mm;
+      font-weight: 800;
+      font-size: 8.5pt;
+      white-space: nowrap;
+    }
+    .pass { background: var(--green-soft); color: var(--green); border: 1px solid #87c9ad; }
+    .cond { background: var(--amber-soft); color: var(--amber); border: 1px solid #d8b960; }
+    .fail { background: var(--red-soft); color: var(--red); border: 1px solid #dfa2a2; }
+    .info { background: var(--blue-soft); color: var(--blue); border: 1px solid #9ec7e3; }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 3mm 0 6mm;
+      font-size: 8.7pt;
+      break-inside: auto;
+    }
+    thead { display: table-header-group; }
+    tr { break-inside: avoid; }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 2.2mm 2.5mm;
+      vertical-align: top;
+    }
+    th { background: #eaf0f5; color: var(--navy); font-weight: 800; }
+    td ul, td ol { margin-top: 0; margin-bottom: 0; }
+    .tight td, .tight th { padding: 1.6mm 2mm; }
+
+    .toc {
+      break-after: page;
+    }
+    .toc ol { columns: 2; column-gap: 14mm; }
+    .toc li { break-inside: avoid; margin-bottom: 2mm; }
+
+    .page-break { break-before: page; }
+
+    .equation {
+      margin: 4mm auto;
+      padding: 3.5mm 4mm 2.5mm;
+      border: 1px solid #b9c8d5;
+      border-radius: 2mm;
+      background: #fbfdff;
+      text-align: center;
+      break-inside: avoid;
+      overflow: hidden;
+    }
+    .equation math {
+      font-family: "STIX Two Math", "Cambria Math", "FreeSerif", serif;
+      font-size: 15pt;
+      max-width: 100%;
+    }
+    .eqno { text-align: right; color: var(--muted); font-size: 8.5pt; margin-top: 1mm; }
+    .eq-desc { color: var(--muted); font-size: 8.7pt; margin-top: 1.5mm; }
+
+    code, pre, .code {
+      font-family: "Noto Sans Mono CJK KR", "DejaVu Sans Mono", monospace;
+      word-break: break-all;
+    }
+    code { background: #eef1f4; padding: 0 1mm; border-radius: 1mm; font-size: 0.92em; }
+    pre {
+      white-space: pre-wrap;
+      background: #f5f7f9;
+      border: 1px solid var(--line);
+      padding: 3mm;
+      border-radius: 2mm;
+      font-size: 8.3pt;
+      line-height: 1.5;
+      break-inside: avoid;
+    }
+
+    .architecture {
+      margin: 5mm 0 7mm;
+      break-inside: avoid;
+    }
+    .flow {
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      gap: 1.5mm;
+    }
+    .flow .box {
+      flex: 1 1 0;
+      min-width: 0;
+      border: 1.5px solid var(--blue);
+      border-radius: 2mm;
+      background: var(--blue-soft);
+      padding: 2.5mm 1.7mm;
+      text-align: center;
+      font-size: 8pt;
+      font-weight: 700;
+    }
+    .flow .safety-box {
+      border-color: var(--red);
+      background: var(--red-soft);
+      color: #702020;
+    }
+    .arrow { align-self: center; color: var(--navy); font-size: 14pt; font-weight: 900; }
+    .override {
+      width: 83%;
+      margin: 3mm auto 0;
+      padding: 2.5mm;
+      border: 2px dashed var(--red);
+      background: #fff7f7;
+      text-align: center;
+      color: #702020;
+      font-size: 8.5pt;
+      font-weight: 700;
+    }
+
+    .two-col {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 5mm;
+      margin: 4mm 0;
+    }
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 2mm;
+      padding: 4mm;
+      break-inside: avoid;
+    }
+    .card h3, .card h4 { margin-top: 0; }
+
+    .small { font-size: 8.6pt; color: var(--muted); }
+    .strong { font-weight: 800; }
+    .red { color: var(--red); }
+    .green { color: var(--green); }
+    .amber { color: var(--amber); }
+    .center { text-align: center; }
+    .nowrap { white-space: nowrap; }
+
+    .signature {
+      margin-top: 12mm;
+      padding-top: 4mm;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 8.5pt;
+    }
+
+    @media print {
+      body { max-width: none; }
+      a { color: inherit; }
+      .no-print { display: none; }
+      h2 { margin-top: 7mm; }
+    }
+  </style>
+</head>
+<body>
+  <section class="cover">
+    <div>
+      <div class="eyebrow">Safety Structure Verification Report</div>
+      <h1>TG-RMP 안전성 구조 검증 보고서</h1>
+      <p class="subtitle">RB10 기반 TG-RMP의 수학적 구조, 구현 경로, 센서·고장 처리, 시험 상태를 검토하고 실제로 안전성을 확보하기 위한 구조와 단계별 검증 계획을 제시한다.</p>
+
+      <div class="verdict-box">
+        <div class="label">2026-08-21 현재 종합 판정</div>
+        <div class="main">안전 승인 보류 · 사람 근접 운전 NO-GO</div>
+        <div>TG-RMP의 접선 기하와 metric 구성은 상당 부분 타당하다. 그러나 현재 시스템은 충돌 안전집합의 불변성을 보장하지 않고, 센서 freshness·coverage·고장 시 정지 경로와 검증 도구에 P0 결함이 남아 있다.</div>
+      </div>
+
+      <div class="callout">
+        <strong>한 문장 결론:</strong> TG-RMP는 “장애물을 어느 방향으로 돌아갈지 제안하는 항법 정책”으로는 유용하지만, 현재 상태에서는 “절대로 부딪히지 않게 만드는 독립 안전장치”가 아니다. TG-RMP 뒤에 제동거리 기반 안전필터와 독립 watchdog/보호정지를 추가해야 한다.
+      </div>
+    </div>
+
+    <div class="meta-grid">
+      <div class="key">검증 대상</div><div><code>RMP_Proximity-Sensor</code> / base commit <code>0bc03aa</code> + 검사 시점의 기존 작업 트리 변경</div>
+      <div class="key">기준 시각</div><div>2026-08-21, Asia/Seoul</div>
+      <div class="key">주요 비교 논문</div><div>Minh Thang Bui et al., “RMPflow-Magnetic,” IEEE RA-L, Vol. 11, No. 8, 2026, pp. 9699–9706</div>
+      <div class="key">검토 범위</div><div>정적 코드 구조, 수학적 성질, 신선한 빌드·단위시험, 검증 구조 설계</div>
+      <div class="key">제외 범위</div><div>실제 센서 오차·지연·제동거리 측정, HIL/실로봇 충돌시험, 안전 인증</div>
+      <div class="key">문서 형식</div><div>HTML 원본은 native MathML, PDF는 고정 레이아웃. 수식은 이미지가 아니라 벡터/텍스트로 렌더링된다.</div>
+    </div>
+  </section>
+
+  <section class="toc">
+    <h2>목차</h2>
+    <ol>
+      <li><a href="#executive">경영진·개발자용 요약</a></li>
+      <li><a href="#primer">제어를 처음 보는 독자를 위한 설명</a></li>
+      <li><a href="#scope">검증 범위와 주장 등급</a></li>
+      <li><a href="#paper">참고 논문의 안전성 해석과 적용 한계</a></li>
+      <li><a href="#tgmath">TG-RMP 수학·구조 검증</a></li>
+      <li><a href="#current">현재 코드와 시험의 실제 판정</a></li>
+      <li><a href="#architecture">권장 안전 구조</a></li>
+      <li><a href="#validation">6단계 검증 계획</a></li>
+      <li><a href="#scenarios">시험 시나리오와 정량 합격 기준</a></li>
+      <li><a href="#roadmap">구현 우선순위와 완료 정의</a></li>
+      <li><a href="#conclusion">최종 결론</a></li>
+      <li><a href="#appendix-a">부록 A: 수식 모음</a></li>
+      <li><a href="#appendix-b">부록 B: 코드 근거 추적표</a></li>
+      <li><a href="#references">참고문헌·관련 표준</a></li>
+    </ol>
+  </section>
+
+  <main>
+    <section id="executive">
+      <h2>1. 경영진·개발자용 요약</h2>
+
+      <h3>1.1 현재 무엇이 확인되었는가</h3>
+      <table>
+        <thead><tr><th style="width:24mm">판정</th><th style="width:49mm">항목</th><th>의미</th></tr></thead>
+        <tbody>
+          <tr><td><span class="badge pass">통과</span></td><td>접선 기하</td><td>접선 방향은 단위벡터이며 장애물 법선과 직교하도록 구성된다. 해당 ODE 단위시험도 신선한 빌드에서 통과했다.</td></tr>
+          <tr><td><span class="badge pass">구조 통과</span></td><td>TG metric</td><td><code>M<sub>e</sub> = m<sub>e</sub> J<sub>e</sub><sup>T</sup>J<sub>e</sub></code>이고 <code>m<sub>e</sub> ≥ 0</code>이므로 대칭 양의 준정부호(PSD), rank ≤ 1이다.</td></tr>
+          <tr><td><span class="badge cond">조건부</span></td><td>목표점 국소 수렴</td><td>장애물과 TG leaf가 사라지는 clear set에서, metric 비퇴화·잔여항 bound·gain 조건을 실제 수치로 확인할 때만 논문식 국소 지수 안정성 주장을 할 수 있다.</td></tr>
+          <tr><td><span class="badge fail">미보장</span></td><td>충돌 회피</td><td>현재 RMP 반발력은 soft policy이다. 경계에서 이미 장애물 쪽으로 움직이는 경우 유한 가속도로는 안전집합 이탈을 막지 못한다는 반례 시험이 코드에 존재한다.</td></tr>
+          <tr><td><span class="badge fail">P0</span></td><td>센서 고장 대응</td><td>상위 bridge는 마지막 Range를 freshness 제한 없이 재사용하며, 하위 ECAN은 보관된 원시값으로 계산한 결과에 매 주기 현재 시각을 다시 찍을 수 있다.</td></tr>
+          <tr><td><span class="badge fail">P0</span></td><td>검증 회귀</td><td>현재 소스의 CasADi 시험에서 TG가 active로 보고되지만 root metric 기여가 0인 회귀 1건이 재현되며, production 안정성 분석기는 미선언 parameter를 읽다가 실패한다.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>1.2 가장 먼저 고쳐야 할 것</h3>
+      <ol>
+        <li><strong>stale/invalid 데이터는 “장애물 없음”이 아니라 정지 사유로 처리한다.</strong> 센서, 관절 상태, 목표, 실행 flag, TF, 제어 주기의 age와 heartbeat를 한 곳에서 감시한다.</li>
+        <li><strong>현재 20개 모델 중 기본 활성 8개인 coverage와 frame mapping을 실물 기준으로 바로잡는다.</strong> 단순히 12개를 켜는 것으로 끝나지 않는다. 마지막 8개 frame 이름은 모델의 <code>tof2_1_*</code>/<code>tof2_*</code> 구분과 맞춰 검증해야 한다.</li>
+        <li><strong>실측 관절 속도를 확실히 입력한다.</strong> <code>params.yaml</code>은 synchronized filter를 켜지만 주 launch 기본값이 뒤에서 false로 덮는다. 감쇠·접근속도 계산에 사용되는 속도가 실제 속도인지 로그로 입증해야 한다.</li>
+        <li><strong>solver 예외·deadline miss 때 기존 속도를 유지하지 말고 검증된 감속/보호정지로 전환한다.</strong> <code>qdd = 0</code>은 “정지”가 아니라 “현재 속도 유지”이다.</li>
+        <li><strong>TG-RMP 출력을 nominal 명령으로 두고 robust HOCBF-QP 또는 동등한 제동 기반 hard safety filter를 뒤에 추가한다.</strong></li>
+        <li><strong>독립 안전 경로를 둔다.</strong> watchdog 또는 안전 PLC/안전 기능이 TG-RMP, ROS 2, QP보다 높은 우선순위로 로봇의 보호정지를 명령해야 한다.</li>
+      </ol>
+
+      <div class="warning">
+        <strong>운전 제한:</strong> 위 P0 항목이 닫히고, 보호거리의 센서 오차·최악 지연·실측 정지거리 budget이 완성되기 전에는 사람이 접근 가능한 상태에서 TG-RMP의 충돌 회피 성능을 시험하면 안 된다. 사람 없는 enclosure와 저속 계측 더미부터 시작한다.
+      </div>
+    </section>
+
+    <section id="primer">
+      <h2>2. 제어를 처음 보는 독자를 위한 설명</h2>
+
+      <div class="beginner">
+        <strong>비유부터:</strong> 목표 RMP는 내비게이션의 “목적지로 가라”, 충돌 RMP는 “장애물에서 멀어져라”, TG-RMP는 “막혔으면 장애물 표면을 따라 돌아가라”는 제안이다. RMPflow는 제안마다 중요도(metric)를 붙여 섞는다. 그러나 안전벨트와 브레이크에 해당하는 것은 별도 hard constraint와 독립 정지 장치다.
+      </div>
+
+      <h3>2.1 위치·속도·가속도</h3>
+      <p>로봇 관절각을 <strong>q</strong>, 관절속도를 <strong>q̇</strong>, 관절가속도를 <strong>q̈</strong>라고 쓴다. 현재 제어기는 매 주기 목표 관절가속도를 계산하고, 이를 적분해 속도·위치 명령을 만든다. 200 Hz라면 한 주기는 5 ms다.</p>
+
+      <h3>2.2 RMP와 metric</h3>
+      <p>각 leaf는 “원하는 가속도”와 “그 요청을 얼마나 강하게 반영할지”를 함께 낸다. metric이 크면 해당 leaf의 요청이 root 관절 명령에 더 강하게 반영된다. 여러 leaf를 섞는 능력은 좋지만, 일반적인 metric 가중합은 <em>절대 넘으면 안 되는 거리</em>를 자동으로 강제하지 않는다.</p>
+
+      <h3>2.3 안정성과 안전성은 다르다</h3>
+      <div class="two-col">
+        <div class="card">
+          <h4>안정성</h4>
+          <p>작은 오차로 시작했을 때 시간이 지나며 목표로 돌아가는가? 자동차로 말하면 핸들을 놓아도 차선 중심 쪽으로 복귀하는 성질이다.</p>
+        </div>
+        <div class="card">
+          <h4>안전성</h4>
+          <p>모든 허용 조건에서 위험 경계를 넘지 않는가? 자동차로 말하면 앞차와의 제동거리 경계를 항상 지키는 성질이다.</p>
+        </div>
+      </div>
+      <p>목표로 잘 수렴하는 제어기도 그 도중 장애물에 부딪힐 수 있다. 따라서 Lyapunov 목표 수렴 증명만으로 충돌 안전을 주장할 수 없다.</p>
+
+      <h3>2.4 soft policy와 hard constraint</h3>
+      <p><strong>soft policy</strong>는 “가능하면 지켜라”이고, <strong>hard constraint</strong>는 “물리적으로 실행 가능한 한 반드시 지켜라”다. 현재 TG-RMP와 충돌 RMP는 전자다. 권장 HOCBF-QP safety filter는 후자의 역할을 맡고, constraint 자체가 불가능해지거나 입력이 stale이면 독립 정지 경로로 넘긴다.</p>
+    </section>
+
+    <section id="scope">
+      <h2>3. 검증 범위와 주장 등급</h2>
+
+      <h3>3.1 이번에 실제로 한 일</h3>
+      <div class="notice"><strong>재현 범위:</strong> base revision은 <code>0bc03aa</code>이고 검사 시작 전부터 <code>Chapter_RMP.md</code>와 <code>launch/rb10_rmpflow.launch.py</code>에 사용자의 미커밋 변경이 있었다. 이를 보존한 현재 작업 트리를 빌드·검사했으며 두 파일은 수정하지 않았다. 따라서 특히 launch 기본값 판정은 이 작업 트리를 기준으로 한다.</div>
+      <ul>
+        <li>제공된 IEEE RA-L 논문의 안정성 절과 실험 절을 직접 검토했다.</li>
+        <li>현재 commit의 TG ODE, supervisor, 두 solver, controller node, command guard, proximity bridge, ECAN driver, 기본 parameter와 시험을 정적으로 추적했다.</li>
+        <li>현재 소스를 별도 <code>/tmp</code> build/install/log 공간에 Release로 신선하게 빌드했다.</li>
+        <li>CTest 12개 target과 소켓 격리시험을 실행하고, production-map 국소 안정성 분석 launch를 현재 parameter로 실행했다.</li>
+        <li>수학적 구조 증명, 반례, 위험 목록, 안전 구조, SiL(Software/Simulation-in-the-Loop)·HIL·실기 검증 계획을 작성했다.</li>
+      </ul>
+
+      <h3>3.2 아직 하지 않은 일</h3>
+      <ul>
+        <li>실제 20채널 센서의 오차분포·최대오차·blind zone·물체 재질별 검출률 측정</li>
+        <li>sensor-to-command 최악 지연과 200 Hz deadline의 장시간 측정</li>
+        <li>payload·자세·속도별 RB10의 실제 제동시간·제동거리 측정</li>
+        <li>ground-truth 모션 캡처 또는 독립 거리계 기반 HIL/실기 검증</li>
+        <li>HOCBF-QP safety filter 구현 및 feasible/infeasible 검증</li>
+        <li>ISO 위험성 평가, PLr/SIL(Safety Integrity Level) 설계, 제3자 적합성 평가</li>
+      </ul>
+
+      <h3>3.3 주장 등급</h3>
+      <table class="tight">
+        <thead><tr><th>등급</th><th>이 보고서에서 허용하는 표현</th><th>허용하지 않는 표현</th></tr></thead>
+        <tbody>
+          <tr><td><span class="badge pass">구조 증명</span></td><td>정의와 가정 아래 metric PSD, tangent 직교 등 대수적 성질</td><td>그 성질만으로 충돌이 없다고 확대 해석</td></tr>
+          <tr><td><span class="badge cond">조건부 증명</span></td><td>명시한 bound·비퇴화·clear-set 조건이 실제로 확인된 범위의 국소 수렴</td><td>전역 안정, moving obstacle, switching 전 구간으로 확대</td></tr>
+          <tr><td><span class="badge info">시험 근거</span></td><td>시험한 ODD와 seed에서 관측된 최소거리·실패율·timing</td><td>미시험 상황을 포함한 절대 안전 보장</td></tr>
+          <tr><td><span class="badge fail">인증 아님</span></td><td>연구·개발 단계의 verification/validation evidence</td><td>“ISO 인증 완료”, “사람과 함께 사용해도 안전”</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="paper" class="page-break">
+      <h2>4. 참고 논문의 안전성 해석과 적용 한계</h2>
+
+      <h3>4.1 논문의 Lyapunov 해석이 보장하는 것</h3>
+      <p>Bui 등은 printed p.9702–9703, Sec. IV-A, 식 (7)–(11)에서 말단 목표점 부근의 <strong>국소 지수 안정성</strong>을 분석한다. 먼저 전체 root metric이 국소적으로 퇴화하지 않는다고 가정한다.</p>
+
+      <div class="equation">
+        <math display="block" aria-label="M equals sum M k greater than or equal to m zero I">
+          <mrow>
+            <mi mathvariant="bold">M</mi><mo>(</mo><mi mathvariant="bold">q</mi><mo>,</mo><mover><mi mathvariant="bold">q</mi><mo>˙</mo></mover><mo>)</mo>
+            <mo>:=</mo><munder><mo>∑</mo><mi>k</mi></munder><msub><mi mathvariant="bold">M</mi><mi>k</mi></msub>
+            <mo>≽</mo><msub><mi>m</mi><mn>0</mn></msub><mi mathvariant="bold">I</mi><mo>,</mo>
+            <mspace width="0.4em"/><msub><mi>m</mi><mn>0</mn></msub><mo>&gt;</mo><mn>0</mn>
+          </mrow>
+        </math>
+        <div class="eqno">(P-1) 논문 식 (8)의 핵심 가정</div>
+      </div>
+
+      <p>목표 오차 <strong>e = x − x₀</strong>, 말단 속도 <strong>v = ẋ</strong>에 대해 전체 동역학을 목표 PD 항과 나머지 잔여항으로 나눈다.</p>
+
+      <div class="equation">
+        <math display="block" aria-label="x double dot equals minus kp e minus kd v plus d of e v">
+          <mrow>
+            <mover><mi mathvariant="bold">x</mi><mo>¨</mo></mover>
+            <mo>=</mo><mo>−</mo><msub><mi>k</mi><mi>p</mi></msub><mi mathvariant="bold">e</mi>
+            <mo>−</mo><msub><mi>k</mi><mi>d</mi></msub><mi mathvariant="bold">v</mi>
+            <mo>+</mo><mi mathvariant="bold">d</mi><mo>(</mo><mi mathvariant="bold">e</mi><mo>,</mo><mi mathvariant="bold">v</mi><mo>)</mo>
+          </mrow>
+        </math>
+        <div class="eqno">(P-2) 목표 PD + 잔여항 분해</div>
+      </div>
+
+      <div class="equation">
+        <math display="block" aria-label="norm d less than c one norm e plus c two norm v and d zero zero equals zero">
+          <mrow>
+            <mo>‖</mo><mi mathvariant="bold">d</mi><mo>(</mo><mi mathvariant="bold">e</mi><mo>,</mo><mi mathvariant="bold">v</mi><mo>)</mo><mo>‖</mo>
+            <mo>≤</mo><msub><mi>c</mi><mn>1</mn></msub><mo>‖</mo><mi mathvariant="bold">e</mi><mo>‖</mo>
+            <mo>+</mo><msub><mi>c</mi><mn>2</mn></msub><mo>‖</mo><mi mathvariant="bold">v</mi><mo>‖</mo><mo>,</mo>
+            <mspace width="0.7em"/>
+            <mi mathvariant="bold">d</mi><mo>(</mo><mn>0</mn><mo>,</mo><mn>0</mn><mo>)</mo><mo>=</mo><mn>0</mn>
+          </mrow>
+        </math>
+        <div class="eqno">(P-3) 논문 식 (9): 목표 근방 잔여항 bound</div>
+      </div>
+
+      <p>Lyapunov 후보함수는 운동에너지와 위치오차, 작은 교차항을 합친 형태다.</p>
+
+      <div class="equation">
+        <math display="block" aria-label="V equals one half norm v squared plus kp over two norm e squared plus epsilon e transpose v">
+          <mrow>
+            <mi>V</mi><mo>(</mo><mi mathvariant="bold">e</mi><mo>,</mo><mi mathvariant="bold">v</mi><mo>)</mo><mo>=</mo>
+            <mfrac><mn>1</mn><mn>2</mn></mfrac><msup><mrow><mo>‖</mo><mi mathvariant="bold">v</mi><mo>‖</mo></mrow><mn>2</mn></msup>
+            <mo>+</mo><mfrac><msub><mi>k</mi><mi>p</mi></msub><mn>2</mn></mfrac><msup><mrow><mo>‖</mo><mi mathvariant="bold">e</mi><mo>‖</mo></mrow><mn>2</mn></msup>
+            <mo>+</mo><mi>ε</mi><msup><mi mathvariant="bold">e</mi><mi mathvariant="normal">T</mi></msup><mi mathvariant="bold">v</mi>
+          </mrow>
+        </math>
+        <div class="eqno">(P-4) Lyapunov 후보함수</div>
+      </div>
+
+      <p><span class="nowrap">Δ<sub>v</sub> = (k<sub>d</sub> − ε) − c<sub>2</sub></span>, <span class="nowrap">Δ<sub>e</sub> = k<sub>p</sub> − c<sub>1</sub></span>, <span class="nowrap">Γ = c<sub>1</sub> + εc<sub>2</sub> + εk<sub>d</sub></span>라 할 때 다음 조건이 성립하면 목표점 부근에서 오차가 지수적으로 감소한다.</p>
+
+      <div class="equation">
+        <math display="block" aria-label="Delta v greater than zero and epsilon Delta e greater than Gamma squared over two Delta v">
+          <mrow>
+            <msub><mi>Δ</mi><mi>v</mi></msub><mo>&gt;</mo><mn>0</mn><mo>,</mo>
+            <mspace width="0.8em"/>
+            <mi>ε</mi><msub><mi>Δ</mi><mi>e</mi></msub>
+            <mo>&gt;</mo><mfrac><msup><mi>Γ</mi><mn>2</mn></msup><mrow><mn>2</mn><msub><mi>Δ</mi><mi>v</mi></msub></mrow></mfrac>
+          </mrow>
+        </math>
+        <div class="eqno">(P-5) 논문 식 (10)의 충분조건</div>
+      </div>
+
+      <div class="success">
+        <strong>정확한 해석:</strong> 논문의 증명은 “metric이 비퇴화하고, 다른 leaf가 만드는 잔여항이 목표 근방에서 작으며, 실제 gain이 충분조건을 만족하면 목표점이 국소 지수 안정”임을 말한다. 이는 목표 수렴성의 조건부 증명으로 유용하다.
+      </div>
+
+      <h3>4.2 논문의 증명이 보장하지 않는 것</h3>
+      <p>논문 자체도 printed p.9703에서 이 결과가 formal collision-safety 또는 set-invariance 보장이 아니라고 구분한다. 다음은 증명 범위 밖이다.</p>
+      <ul>
+        <li>모든 시간에 최소 안전거리를 유지하는 것</li>
+        <li>말단이 아닌 로봇 전체 링크의 충돌 회피</li>
+        <li>움직이는 장애물, closest-obstacle switching, sample-and-hold, 센서 누락을 포함한 안전성</li>
+        <li>실제 속도·가속도 포화, 추종오차, 통신 지연을 포함한 안전성</li>
+        <li>장애물이 목표를 점유하거나 정확히 정면에서 접근할 때의 보장</li>
+      </ul>
+
+      <h3>4.3 TG-RMP에 그대로 옮길 수 없는 이유</h3>
+      <p>현재 TG leaf는 접선 방향 ODE 상태, owner hysteresis, 거리·blockage·pocket gate, 포화, 움직이는 장애물 추정이 결합된 hybrid/stateful 정책이다. TG가 목표점에서 active이면 잔여항 <strong>d(0,0)=0</strong>가 자동으로 성립하지 않는다. 또한 <code>tg_rmp_enable_progress_attenuation=false</code>이므로 과거 finite-well 형태의 안정성 논거는 현재 기본 구성에 적용되지 않는다.</p>
+
+      <div class="warning">
+        <strong>적용 가능한 범위:</strong> 목표 주위가 충분히 비어 있어 <code>α<sub>TG</sub>=0</code>이고 collision leaf도 사라지는 clear set에서만 논문식 잔여항 분석을 시작할 수 있다. 그때도 <code>c₁, c₂, m₀, ε</code>를 실제 코드·포화·이산시간 map에 대해 계산하거나 검증해야 한다. 현재는 그 국소 안정성 수치 판정 결과가 생성되지 않았다.
+      </div>
+
+      <h3>4.4 논문에서 본받을 실험 설계</h3>
+      <p>논문의 Sec. V는 안전 “증명”보다 성능 “검증 설계”의 좋은 참고다. 장애물 없음 → 정적 → 동적 → 복수 동적 → dual robot으로 난도를 올리고, 최소거리·성공률뿐 아니라 완료시간·경로길이·path-clearing time·sensor-to-command latency를 함께 측정했다. TG-RMP도 같은 틀을 쓰되 아래를 추가해야 한다.</p>
+      <ul>
+        <li>최소거리는 사용 중인 proximity 값이 아니라 외부 ground-truth 거리계/모션캡처로 측정</li>
+        <li>TG OFF/ON, safety filter OFF/ON을 동일 초기조건과 동일 seed로 비교</li>
+        <li>실패 trial을 제외하지 않은 전체 분포와 최악값 보고</li>
+        <li>dropout, frozen value, 잘못된 timestamp, TF 실패, CPU overload 같은 fault injection</li>
+        <li>시나리오당 10회보다 충분히 큰 반복과 신뢰구간; 0회 실패도 절대 안전 증명이 아님을 명시</li>
+      </ul>
+    </section>
+
+    <section id="tgmath" class="page-break">
+      <h2>5. TG-RMP 수학·구조 검증</h2>
+
+      <h3>5.1 현재 leaf가 하는 일</h3>
+      <p>활성 sensor control point에서 장애물 쪽 단위방향을 <strong>o</strong>, 그 표면을 따라가는 접선 단위방향을 <strong>t</strong>, control-point Jacobian을 <strong>J<sub>p</sub></strong>라 하자. 코드가 만드는 접선은 다음 조건을 목표로 한다.</p>
+
+      <div class="equation">
+        <math display="block" aria-label="norm t equals one and t transpose o equals zero">
+          <mrow>
+            <mo>‖</mo><mi mathvariant="bold">t</mi><mo>‖</mo><mo>=</mo><mn>1</mn><mo>,</mo>
+            <mspace width="1em"/>
+            <msup><mi mathvariant="bold">t</mi><mi mathvariant="normal">T</mi></msup><mi mathvariant="bold">o</mi><mo>=</mo><mn>0</mn>
+          </mrow>
+        </math>
+        <div class="eqno">(T-1) 접선 기하 조건</div>
+      </div>
+
+      <p>접선 방향의 1차원 task Jacobian과 속도는 다음과 같다.</p>
+      <div class="equation">
+        <math display="block" aria-label="J e equals t transpose J p and y dot equals J e q dot">
+          <mrow>
+            <msub><mi mathvariant="bold">J</mi><mi>e</mi></msub><mo>=</mo>
+            <msup><mi mathvariant="bold">t</mi><mi mathvariant="normal">T</mi></msup><msub><mi mathvariant="bold">J</mi><mi>p</mi></msub><mo>,</mo>
+            <mspace width="1em"/>
+            <mover><mi>y</mi><mo>˙</mo></mover><mo>=</mo>
+            <msub><mi mathvariant="bold">J</mi><mi>e</mi></msub><mover><mi mathvariant="bold">q</mi><mo>˙</mo></mover>
+          </mrow>
+        </math>
+        <div class="eqno">(T-2) 접선 task</div>
+      </div>
+
+      <p>거리 <strong>d</strong>, clearance rate <strong>ḋ</strong>, 접선 감쇠계수 <strong>b<sub>e</sub></strong>에 대해 desired tangential acceleration은 거리 push, 접근속도 보상, 감쇠를 합친다. 실제 구현은 push를 saturation한다.</p>
+      <div class="equation">
+        <math display="block" aria-label="a e equals saturation of distance push plus closing term minus b e y dot">
+          <mrow>
+            <msub><mi>a</mi><mi>e</mi></msub><mo>=</mo>
+            <mi mathvariant="normal">sat</mi><mo>(</mo><msub><mi>a</mi><mi>d</mi></msub><mo>(</mo><mi>d</mi><mo>)</mo>
+            <mo>+</mo><msub><mi>a</mi><mi>c</mi></msub><mo>(</mo><mi>d</mi><mo>,</mo><mover><mi>d</mi><mo>˙</mo></mover><mo>)</mo><mo>)</mo>
+            <mo>−</mo><msub><mi>b</mi><mi>e</mi></msub><mover><mi>y</mi><mo>˙</mo></mover>
+          </mrow>
+        </math>
+        <div class="eqno">(T-3) TG desired acceleration</div>
+      </div>
+
+      <p>권한은 거리·blockage·pocket gate의 곱과 접근속도 gate로 정해진다.</p>
+      <div class="equation">
+        <math display="block" aria-label="alpha TG equals alpha distance alpha block alpha free and m e equals alpha TG gamma m mu over d over l m plus epsilon m">
+          <mrow>
+            <msub><mi>α</mi><mrow><mi>T</mi><mi>G</mi></mrow></msub><mo>=</mo>
+            <msub><mi>α</mi><mi>d</mi></msub><msub><mi>α</mi><mi>b</mi></msub><msub><mi>α</mi><mi>f</mi></msub><mo>,</mo>
+            <mspace width="1em"/>
+            <msub><mi>m</mi><mi>e</mi></msub><mo>=</mo>
+            <mfrac>
+              <mrow><msub><mi>α</mi><mrow><mi>T</mi><mi>G</mi></mrow></msub><msub><mi>γ</mi><mi>m</mi></msub><mi>μ</mi></mrow>
+              <mrow><mi>d</mi><mo>/</mo><msub><mi>ℓ</mi><mi>m</mi></msub><mo>+</mo><msub><mi>ε</mi><mi>m</mi></msub></mrow>
+            </mfrac>
+          </mrow>
+        </math>
+        <div class="eqno">(T-4) activation과 scalar metric</div>
+      </div>
+
+      <p>모든 activation과 scalar parameter가 유효 범위에 있으면 <strong>m<sub>e</sub> ≥ 0</strong>이다. 관절공간으로 pullback한 TG metric과 force는 다음 형태다.</p>
+      <div class="equation">
+        <math display="block" aria-label="M e equals m e J e transpose J e and f e equals J e transpose m e times a e minus J dot e q dot">
+          <mrow>
+            <msub><mi mathvariant="bold">M</mi><mi>e</mi></msub><mo>=</mo>
+            <msub><mi>m</mi><mi>e</mi></msub><msubsup><mi mathvariant="bold">J</mi><mi>e</mi><mi mathvariant="normal">T</mi></msubsup><msub><mi mathvariant="bold">J</mi><mi>e</mi></msub><mo>,</mo>
+            <mspace width="0.8em"/>
+            <msub><mi mathvariant="bold">f</mi><mi>e</mi></msub><mo>=</mo>
+            <msubsup><mi mathvariant="bold">J</mi><mi>e</mi><mi mathvariant="normal">T</mi></msubsup>
+            <msub><mi>m</mi><mi>e</mi></msub>
+            <mo>(</mo><msub><mi>a</mi><mi>e</mi></msub><mo>−</mo><mover><msub><mi mathvariant="bold">J</mi><mi>e</mi></msub><mo>˙</mo></mover><mover><mi mathvariant="bold">q</mi><mo>˙</mo></mover><mo>)</mo>
+          </mrow>
+        </math>
+        <div class="eqno">(T-5) canonical natural form pullback</div>
+      </div>
+
+      <h3>5.2 대수적으로 증명되는 부분</h3>
+      <p>임의의 관절공간 벡터 <strong>z</strong>에 대해 다음이 성립한다.</p>
+      <div class="equation">
+        <math display="block" aria-label="z transpose M e z equals m e times J e z squared greater than or equal zero">
+          <mrow>
+            <msup><mi mathvariant="bold">z</mi><mi mathvariant="normal">T</mi></msup>
+            <msub><mi mathvariant="bold">M</mi><mi>e</mi></msub><mi mathvariant="bold">z</mi>
+            <mo>=</mo><msub><mi>m</mi><mi>e</mi></msub>
+            <msup><mrow><mo>(</mo><msub><mi mathvariant="bold">J</mi><mi>e</mi></msub><mi mathvariant="bold">z</mi><mo>)</mo></mrow><mn>2</mn></msup>
+            <mo>≥</mo><mn>0</mn>
+          </mrow>
+        </math>
+        <div class="eqno">(T-6) TG metric의 PSD 증명</div>
+      </div>
+      <p>따라서 <strong>M<sub>e</sub></strong>는 대칭 PSD이고, <strong>J<sub>e</sub></strong>가 1×6 행벡터이므로 rank는 최대 1이다. 이는 코드 시험과 별개로 정의에서 바로 나오는 강한 구조적 결과다. 다만 PSD는 “이 leaf가 이상한 음의 가중치를 만들지 않는다”는 뜻이지, 전체 root metric의 양의 정부호성이나 충돌 불변성을 뜻하지 않는다.</p>
+
+      <h3>5.3 안정성을 아직 증명할 수 없는 부분</h3>
+      <ul>
+        <li><strong>비홀로노믹 path-integral leaf:</strong> 접선 방향과 누적 progress가 내부 상태이므로 표준 위치 task의 보존 potential로 바로 환원되지 않는다.</li>
+        <li><strong>hybrid switching:</strong> 가장 가까운 owner와 hysteresis, activation, pocket gate가 분기한다. 각 모드의 안정성만으로 switching 전체가 안정하다고 할 수 없다.</li>
+        <li><strong>moving obstacle와 추정 ḋ:</strong> supervisor의 finite-difference rate는 고정 <code>dt=0.005</code> 가정과 sensor freshness에 의존한다.</li>
+        <li><strong>현재 energy 선택:</strong> <code>tg_rmp_enable_progress_attenuation=false</code>, <code>escape_stability_guard_enabled=false</code>이므로 무한 시간의 에너지 주입 상한이 현재 설정으로 증명되지 않는다. 접선 감쇠는 도움이 되지만 전역 증명은 아니다.</li>
+        <li><strong>하나의 TG owner:</strong> TG는 한 sensor owner를 선택한다. collision leaf는 여러 장애물을 보더라도 복수 장애물 사이에서 접선 탈출 방향의 존재·연속성은 보장되지 않는다.</li>
+      </ul>
+
+      <h3>5.4 충돌 안전집합 반례</h3>
+      <p>clearance에서 보호거리를 뺀 값을 <strong>h</strong>라 하고 안전집합을 <strong>C = {h ≥ 0}</strong>라 하자. 경계 <strong>h = 0</strong>에서 이미 장애물 쪽으로 움직여 <strong>ḣ &lt; 0</strong>이면, 임의의 유한 가속도에 대해 아주 작은 시간 <strong>Δt</strong> 뒤에는</p>
+      <div class="equation">
+        <math display="block" aria-label="h of t plus delta t equals h plus h dot delta t plus one half h double dot delta t squared plus order delta t cubed less than zero">
+          <mrow>
+            <mi>h</mi><mo>(</mo><mi>t</mi><mo>+</mo><mi>Δ</mi><mi>t</mi><mo>)</mo>
+            <mo>=</mo><mi>h</mi><mo>(</mo><mi>t</mi><mo>)</mo>
+            <mo>+</mo><mover><mi>h</mi><mo>˙</mo></mover><mi>Δ</mi><mi>t</mi>
+            <mo>+</mo><mfrac><mn>1</mn><mn>2</mn></mfrac><mover><mi>h</mi><mo>¨</mo></mover><msup><mrow><mi>Δ</mi><mi>t</mi></mrow><mn>2</mn></msup>
+            <mo>+</mo><mi>O</mi><mo>(</mo><msup><mrow><mi>Δ</mi><mi>t</mi></mrow><mn>3</mn></msup><mo>)</mo>
+            <mo>&lt;</mo><mn>0</mn>
+          </mrow>
+        </math>
+        <div class="eqno">(T-7) 경계에서 inward velocity가 있으면 distance-only set을 즉시 이탈</div>
+      </div>
+      <p>1차항 <strong>ḣΔt</strong>가 2차 가속도항보다 우세하기 때문이다. 저장소의 <code>FullRmpProperties.DistanceOnlyCollisionSetHasBoundaryCounterexample</code> 시험은 바로 이 상황을 구성하고 다음 clearance가 음수가 됨을 확인한다. 즉, 현재 충돌 RMP의 강한 repulsion이나 큰 TG metric만으로 hard safety를 만들 수 없다. 제동거리 또는 relative-degree-2 barrier가 필요하다.</p>
+    </section>
+
+    <section id="current" class="page-break">
+      <h2>6. 현재 코드와 시험의 실제 판정</h2>
+
+      <h3>6.1 신선한 빌드·시험 결과</h3>
+      <p>기존 2026-07 문서의 결과를 그대로 재사용하지 않고, 2026-08-21 현재 commit을 별도 임시 build 공간에서 다시 빌드했다. 병렬 빌드 중 GCC 내부 오류가 한 번 발생했으나 동일 소스를 단일 job으로 빌드하여 100% 완료했다. 따라서 아래 판정은 현재 소스에 대한 결과다.</p>
+
+      <table>
+        <thead><tr><th style="width:43mm">검증</th><th style="width:25mm">결과</th><th>관찰</th></tr></thead>
+        <tbody>
+          <tr><td>Release 신선한 빌드</td><td><span class="badge pass">통과</span></td><td><code>/tmp/tg_rmp_safety_build_20260821</code>에서 단일 job 빌드 및 install 완료</td></tr>
+          <tr><td>CTest 12 target</td><td><span class="badge cond">11/12</span></td><td>최초 10/12였으나 소켓 target은 샌드박스의 socket 금지에 의한 실패였고, 루프백 허용 환경에서 별도 재실행해 통과했다. 실질 미해결 실패는 CasADi TG target 1개다.</td></tr>
+          <tr><td>TG ODE 단위시험</td><td><span class="badge pass">통과</span></td><td><code>tangent_escape_ode</code> target 통과. 기하·상태·유한값 관련 기존 단위시험이 실행됨.</td></tr>
+          <tr><td>전체 RMP property</td><td><span class="badge pass">통과</span></td><td><code>test_full_rmp_properties</code> 통과. 여기에는 collision safe-set이 불변이 아님을 입증하는 의도적 반례 시험도 포함된다.</td></tr>
+          <tr><td>CasADi TG 기여</td><td><span class="badge fail">실패</span></td><td><code>EscapeSupervisorProducesTangentRankOneContribution</code>: 8회 모두 active·tangent 직교는 관찰되지만 <code>‖M − M_without_escape‖ = 0</code>, 기대값은 <code>&gt; 1e-8</code>. 해당 target의 10개 case 중 이 case만 실패했다.</td></tr>
+          <tr><td>RB10 read-only socket</td><td><span class="badge pass">통과</span></td><td>루프백 127.0.0.1 환경에서 data channel만 열고 command를 거부하는 1개 case 통과.</td></tr>
+          <tr><td>Production 국소 안정성 분석기</td><td><span class="badge fail">실행 실패</span></td><td>simulation/200 Hz로 시작했으나 <code>tangent_escape_rmp_safe_distance</code> 조회에서 예외. parameter는 선언되지 않았고 현재 이름은 <code>tg_rmp_alpha_on_distance</code>/<code>off_distance</code> 계열이다. 국소 안정성 수치 판정 결과 미생성.</td></tr>
+        </tbody>
+      </table>
+
+      <div class="warning">
+        <strong>해석 주의:</strong> “11/12 target 통과”는 기능 회귀 수준의 결과이지 안전 승인률이 아니다. 특히 의도적 boundary counterexample 시험이 통과했다는 것은 현재 제어기가 hard collision invariance를 <em>가지지 않음</em>을 정확히 확인했다는 뜻이다.
+      </div>
+
+      <h3>6.2 현재 기본 실행 경로</h3>
+      <div class="architecture">
+        <div class="flow">
+          <div class="box">20ch ECAN<br>거리 융합</div><div class="arrow">→</div>
+          <div class="box">proximity<br>bridge</div><div class="arrow">→</div>
+          <div class="box">Collision +<br>TG-RMP</div><div class="arrow">→</div>
+          <div class="box">root solve +<br>가속도 제한</div><div class="arrow">→</div>
+          <div class="box">command<br>guard</div><div class="arrow">→</div>
+          <div class="box">RB10 direct<br>backend</div>
+        </div>
+      </div>
+      <p>좋은 점은 joint position/velocity/acceleration guard, predictive joint-limit guard, RMP flag inactive 시 hold, RB10의 soft E-stop/EMS/collision/self-collision/SOS status 차단이 이미 존재한다는 것이다. 그러나 이들은 proximity 기반 whole-body 충돌 safe set과 sensor freshness를 대신하지 않는다.</p>
+
+      <h3>6.3 P0: 실기 구동을 막아야 하는 결함</h3>
+      <table>
+        <thead><tr><th style="width:14mm">ID</th><th style="width:43mm">결함</th><th>근거와 영향</th><th style="width:47mm">필수 조치</th></tr></thead>
+        <tbody>
+          <tr><td>P0-1</td><td>충돌 safe-set 불변성 없음</td><td><code>test_full_rmp_properties.cpp:454–531</code>은 <code>h=0, ḣ&lt;0</code>에서 다음 clearance가 음수인 반례를 확인한다.</td><td>명령 직전에 제동거리 기반 robust HOCBF-QP 또는 동등한 hard safety shield 추가</td></tr>
+          <tr><td>P0-2</td><td>stale Range 재사용</td><td><code>proximity_obstacle_bridge.cpp:449–467</code>은 마지막 Range를 저장하고, <code>:246–340</code>의 timer가 age 제한 없이 계속 사용한다.</td><td>원본 수신의 monotonic timestamp/sequence 보존, 채널별 timeout, latched fault와 정지</td></tr>
+          <tr><td>P0-3</td><td>하위 stale가 fresh처럼 보일 수 있음</td><td><code>Proximity_ecan/.../EthernetCommunication.cpp:481–609</code>은 저장 배열로 매 주기 융합하고 출력에 <code>now()</code>를 새로 기록한다. 진단 함수는 <code>:786</code>에서 비어 있다.</td><td>원본 packet age·sequence를 전달하고 stale이면 publish 금지 또는 INVALID 상태와 보호정지</td></tr>
+          <tr><td>P0-4</td><td>센서 coverage 불완전</td><td>모델은 20 control point(<code>rb10_model.hpp:118–139</code>)인데 기본 활성은 8개(<code>params.yaml:675–695</code>)다. 마지막 frame 8개가 4개 이름을 중복하고 모델의 <code>tof2_1_*</code> 구분과 맞지 않는다.</td><td>실물 topic–sensor–frame–link–normal 1:1 acceptance table과 startup self-test. blind zone이 있으면 ODD에서 제외</td></tr>
+          <tr><td>P0-5</td><td>입력 heartbeat 부재</td><td>sensor/state/goal/flag/obstacle/TF node가 멈췄을 때 명령 경계에서 일괄적으로 age를 검사하고 latched stop하는 구조가 없다.</td><td>steady-clock safety supervisor, timeout budget, 명시적 reset 전까지 재가동 금지</td></tr>
+          <tr><td>P0-6</td><td>실측 속도 경로 모순</td><td><code>params.yaml:174</code>은 synced filter true지만 주 launch의 default(<code>:923–960</code>)가 false로 뒤에서 덮고 controller estimator도 false다. solver 입력은 실측/가상 속도를 0.35/0.65로 blend(<code>rmpflow_controller_node.cpp:6163–6173</code>)한다.</td><td>실기 mode에서 하나의 검증된 속도 estimator를 강제하고, timestamp·비교 센서·plausibility·stale log로 실제 q̇임을 입증</td></tr>
+          <tr><td>P0-7</td><td>solver failure가 stop이 아님</td><td>예외 시 <code>qdd=0</code>을 유지(<code>:6200–6230</code>)한 뒤 적분(<code>:6291</code>)한다. 기존 q̇가 0이 아니면 계속 움직인다.</td><td>검증된 bounded deceleration 또는 RB10 halt/protective stop. deadline miss·NaN에도 동일 적용</td></tr>
+          <tr><td>P0-8</td><td>독립 안전 채널 부재</td><td>TG-RMP, sensor bridge, ROS 2, safety filter가 공통 PC/소프트웨어 고장에 취약하다.</td><td>위험성 평가에서 요구한 PLr/SIL에 맞는 독립 안전 입력, watchdog, E-stop/protective stop</td></tr>
+        </tbody>
+      </table>
+
+      <h3>6.4 P1: 배포·검증을 막는 결함</h3>
+      <table>
+        <thead><tr><th style="width:14mm">ID</th><th style="width:49mm">결함</th><th>조치 방향</th></tr></thead>
+        <tbody>
+          <tr><td>P1-1</td><td>CasADi에서 active 표시와 실제 root authority가 불일치하는 회귀</td><td>owner-active와 authority-effective를 분리하고 metric/force norm, 각 gate 값을 failure log에 남긴다. production parameter로 CasADi–Pinocchio leaf contribution parity test를 추가한다.</td></tr>
+          <tr><td>P1-2</td><td>production stability analyzer가 오래된 parameter 이름으로 실패</td><td><code>rmpflow_controller_node.cpp:5413–5416</code>을 현행 parameter로 정합하고 report 생성·정상 종료까지 launch test로 고정한다.</td></tr>
+          <tr><td>P1-3</td><td>invalid Range/TF lookup 실패가 obstacle 누락으로 이어지는 fail-open 경로</td><td>“obstacle 없음”과 “관측 불능”을 다른 상태로 모델링하고 관측 불능은 감속/정지한다. message 시각의 TF를 사용한다.</td></tr>
+          <tr><td>P1-4</td><td>min-Z, escape energy guard, command velocity slew가 기본 OFF</td><td>실측한 한계와 braking envelope로 활성화·검증한다. energy guard는 안정성 보조이며 collision shield를 대체하지 않는다.</td></tr>
+          <tr><td>P1-5</td><td>body guard geometry가 collision 계산에 참여하지 않음</td><td><code>rmpflow_controller_node.cpp:3513–3519</code>가 항상 false다. 구현·시험하거나 “안전 geometry”처럼 보이는 설정을 제거하고 whole-body distance model로 대체한다.</td></tr>
+          <tr><td>P1-6</td><td>0.05 m minimum hold distance의 의미 불명확</td><td>센서 하한보다 작은 값·0·NaN·max-range를 각각 규정한다. 5 cm로 clamp한 값을 실제 5 cm로 믿지 말고 under-range/emergency 상태로 처리한다.</td></tr>
+          <tr><td>P1-7</td><td>hard real-time/timing evidence 없음</td><td>기본 <code>enable_realtime=false</code>, timing debug false다. 평균이 아닌 최대·상위 분위수·연속 miss를 측정하고 miss 시 stop 전이를 시험한다.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>6.5 현재 유지할 가치가 있는 방어층</h3>
+      <ul>
+        <li>root joint acceleration 제한과 command position/velocity/joint-limit guard</li>
+        <li>predictive joint-limit guard 기본 활성</li>
+        <li>RMP inactive/no-goal 시 zero-velocity hold 경로</li>
+        <li>RB10 status의 soft E-stop, EMS, collision, self-collision, SOS 차단</li>
+        <li>TG tangent finite check, exact normal-orthogonal basis, smooth distance activation, owner hysteresis</li>
+      </ul>
+      <p>이 방어층은 삭제할 대상이 아니라, 아래의 독립 safety filter와 watchdog 앞뒤에 배치해 defense-in-depth로 유지할 대상이다.</p>
+    </section>
+
+    <section id="architecture" class="page-break">
+      <h2>7. 권장 안전 구조</h2>
+
+      <h3>7.1 목표 구조</h3>
+      <div class="architecture">
+        <div class="flow">
+          <div class="box">센서·상태<br>원본 timestamp</div><div class="arrow">→</div>
+          <div class="box safety-box">Health / Freshness<br>Coverage monitor</div><div class="arrow">→</div>
+          <div class="box">TG-RMP<br>nominal q̈</div><div class="arrow">→</div>
+          <div class="box safety-box">Robust HOCBF-QP<br>safety filter</div><div class="arrow">→</div>
+          <div class="box safety-box">관절·속도·가속도<br>command envelope</div><div class="arrow">→</div>
+          <div class="box">RB10<br>drive</div>
+        </div>
+        <div class="override">독립 watchdog / 안전 PLC / E-stop / protective stop — 위 모든 소프트웨어보다 높은 우선순위로 command 차단</div>
+      </div>
+
+      <p>핵심은 TG-RMP를 버리는 것이 아니다. TG-RMP는 부드럽고 효율적인 <strong>nominal 회피 명령</strong>을 계속 만들고, 안전필터는 필요한 순간에만 그 명령을 최소한 수정한다. perception이 건강하지 않거나 QP가 infeasible하면 TG-RMP를 믿지 않고 정지 상태로 전이한다.</p>
+
+      <h3>7.2 보호거리부터 측정으로 정한다</h3>
+      <p>현재 0.05 m, 0.15 m 같은 parameter를 안전거리라고 부르면 안 된다. 보호거리에는 물체·로봇 기하, 센서·보정·모델·추종 오차, 반응 중 상대 접근, 로봇 제동거리, 정지 중 장애물 이동이 들어가야 한다.</p>
+
+      <div class="equation">
+        <math display="block" aria-label="d uncertainty equals e sensor plus e calibration plus e model plus e tracking">
+          <mrow>
+            <msub><mi>d</mi><mrow><mi>u</mi><mi>n</mi><mi>c</mi></mrow></msub><mo>=</mo>
+            <msup><mi>e</mi><mrow><mi>s</mi><mi>e</mi><mi>n</mi><mi>s</mi><mi>o</mi><mi>r</mi></mrow></msup>
+            <mo>+</mo><msup><mi>e</mi><mrow><mi>c</mi><mi>a</mi><mi>l</mi></mrow></msup>
+            <mo>+</mo><msup><mi>e</mi><mrow><mi>m</mi><mi>o</mi><mi>d</mi><mi>e</mi><mi>l</mi></mrow></msup>
+            <mo>+</mo><msup><mi>e</mi><mrow><mi>t</mi><mi>r</mi><mi>a</mi><mi>c</mi><mi>k</mi></mrow></msup>
+          </mrow>
+        </math>
+        <div class="eqno">(S-1) 불확실성 budget</div>
+      </div>
+
+      <div class="equation">
+        <math display="block" aria-label="d protect equals geometry plus uncertainty plus relative velocity reaction time plus robot stopping distance plus obstacle velocity stop time plus reserve">
+          <mrow>
+            <msub><mi>d</mi><mrow><mi>p</mi><mi>r</mi><mi>o</mi><mi>t</mi></mrow></msub><mo>=</mo>
+            <msub><mi>d</mi><mrow><mi>g</mi><mi>e</mi><mi>o</mi></mrow></msub>
+            <mo>+</mo><msub><mi>d</mi><mrow><mi>u</mi><mi>n</mi><mi>c</mi></mrow></msub>
+            <mo>+</mo><msub><mi>v</mi><mrow><mi>r</mi><mi>e</mi><mi>l</mi><mo>,</mo><mi>m</mi><mi>a</mi><mi>x</mi></mrow></msub><msub><mi>T</mi><mrow><mi>r</mi><mi>e</mi><mi>a</mi><mi>c</mi><mi>t</mi></mrow></msub>
+            <mo>+</mo><msubsup><mi>d</mi><mrow><mi>s</mi><mi>t</mi><mi>o</mi><mi>p</mi><mo>,</mo><mi>r</mi></mrow><mrow><mi>m</mi><mi>e</mi><mi>a</mi><mi>s</mi></mrow></msubsup>
+            <mo>+</mo><msub><mi>v</mi><mrow><mi>o</mi><mo>,</mo><mi>m</mi><mi>a</mi><mi>x</mi></mrow></msub><msub><mi>T</mi><mrow><mi>s</mi><mi>t</mi><mi>o</mi><mi>p</mi></mrow></msub>
+            <mo>+</mo><msub><mi>d</mi><mrow><mi>r</mi><mi>e</mi><mi>s</mi></mrow></msub>
+          </mrow>
+        </math>
+        <div class="eqno">(S-2) 제안 보호거리 budget</div>
+        <div class="eq-desc">v<sub>rel,max</sub>: 반응시간 동안의 최대 상대 접근속도, d<sup>meas</sup><sub>stop,r</sub>: 실제 payload·자세·속도에서 측정한 로봇 제동거리</div>
+      </div>
+
+      <p><strong>T<sub>react</sub></strong>에는 sensor update, transport, bridge, control compute, command 전송, drive 반응, watchdog 검출이 모두 포함된다. 평균이 아니라 검증한 최악값과 margin을 사용한다. <strong>d<sub>stop,r</sub></strong>은 <code>v²/(2a)</code>만 믿지 말고 실제 RB10·tool·payload에서 독립 계측한다.</p>
+
+      <h3>7.3 whole-body 안전함수</h3>
+      <p>각 링크/공구의 collision geometry와 장애물 사이 최소거리 <strong>d<sub>j</sub></strong>에 대해 다음 안전함수를 둔다.</p>
+      <div class="equation">
+        <math display="block" aria-label="h j equals d j q obstacle t minus d protect j and C equals set where h j greater than or equal zero for all j">
+          <mrow>
+            <msub><mi>h</mi><mi>j</mi></msub><mo>(</mo><mi mathvariant="bold">q</mi><mo>,</mo><mi>t</mi><mo>)</mo><mo>=</mo>
+            <msub><mi>d</mi><mi>j</mi></msub><mo>(</mo><mi mathvariant="bold">q</mi><mo>,</mo><mi mathvariant="script">O</mi><mo>(</mo><mi>t</mi><mo>)</mo><mo>)</mo>
+            <mo>−</mo><msub><mi>d</mi><mrow><mi>p</mi><mi>r</mi><mi>o</mi><mi>t</mi><mo>,</mo><mi>j</mi></mrow></msub><mo>,</mo>
+            <mspace width="0.7em"/>
+            <mi mathvariant="script">C</mi><mo>=</mo><mo>{</mo><mo>(</mo><mi mathvariant="bold">q</mi><mo>,</mo><mover><mi mathvariant="bold">q</mi><mo>˙</mo></mover><mo>)</mo><mo>∣</mo><msub><mi>h</mi><mi>j</mi></msub><mo>≥</mo><mn>0</mn><mo>,</mo><mo>∀</mo><mi>j</mi><mo>}</mo>
+          </mrow>
+        </math>
+        <div class="eqno">(S-3) whole-body 안전집합</div>
+      </div>
+
+      <p>가속도 명령 시스템에서는 거리에 q̈가 두 번 미분한 뒤 나타나는 경우가 많다. 따라서 relative-degree-2 barrier를 사용한다.</p>
+      <div class="equation">
+        <math display="block" aria-label="h double dot j plus two zeta omega h dot j plus omega squared h j greater than or equal Delta j">
+          <mrow>
+            <mover><msub><mi>h</mi><mi>j</mi></msub><mo>¨</mo></mover>
+            <mo>+</mo><mn>2</mn><msub><mi>ζ</mi><mi>j</mi></msub><msub><mi>ω</mi><mi>j</mi></msub><mover><msub><mi>h</mi><mi>j</mi></msub><mo>˙</mo></mover>
+            <mo>+</mo><msubsup><mi>ω</mi><mi>j</mi><mn>2</mn></msubsup><msub><mi>h</mi><mi>j</mi></msub>
+            <mo>≥</mo><msub><mi>Δ</mi><mi>j</mi></msub>
+          </mrow>
+        </math>
+        <div class="eqno">(S-4) robust exponential HOCBF 형태</div>
+        <div class="eq-desc">Δ<sub>j</sub>는 거리·속도·가속도 추정오차와 이산시간 오차를 덮는 robust margin이다.</div>
+      </div>
+
+      <p>이 조건은 초기 상태가 barrier의 허용 상태에 있고, 거리 미분과 불확실성 bound가 맞으며, 매 주기 constraint가 feasible하고, 실제 actuator가 명령을 오차 budget 안에서 추종한다는 전제 아래 사용한다. CBF를 추가했다는 사실만으로 자동 인증되는 것은 아니다.</p>
+
+      <h3>7.4 TG-RMP를 최소 수정하는 QP safety filter</h3>
+      <div class="equation">
+        <math display="block" aria-label="q double dot safe equals arg min one half norm q double dot minus q double dot TG RMP weighted squared subject to barrier and actuator constraints">
+          <mrow>
+            <msub><mover><mi mathvariant="bold">q</mi><mo>¨</mo></mover><mrow><mi>s</mi><mi>a</mi><mi>f</mi><mi>e</mi></mrow></msub><mo>=</mo>
+            <munder><mi>arg min</mi><mover><mi mathvariant="bold">q</mi><mo>¨</mo></mover></munder>
+            <mspace width="0.5em"/><mfrac><mn>1</mn><mn>2</mn></mfrac>
+            <msubsup>
+              <mrow><mo>‖</mo><mover><mi mathvariant="bold">q</mi><mo>¨</mo></mover><mo>−</mo><msub><mover><mi mathvariant="bold">q</mi><mo>¨</mo></mover><mrow><mi>T</mi><mi>G</mi></mrow></msub><mo>‖</mo></mrow>
+              <mi mathvariant="bold">W</mi><mn>2</mn>
+            </msubsup>
+          </mrow>
+        </math>
+        <div class="eqno">(S-5) nominal TG 명령에 가장 가까운 safe 명령</div>
+      </div>
+
+      <p>subject to:</p>
+      <ul>
+        <li>모든 활성 링크–장애물 pair의 (S-4) HOCBF constraint</li>
+        <li>관절가속도 bound와 다음 주기 속도 bound <strong>q̇<sub>k+1</sub> = q̇<sub>k</sub> + q̈Δt</strong></li>
+        <li>buffer를 둔 예측 관절위치·workspace/floor constraint</li>
+        <li>안전 constraint에는 slack을 두지 않음. 성능 constraint에만 제한된 slack 허용</li>
+      </ul>
+
+      <h3>7.5 고장 상태기계</h3>
+      <table class="tight">
+        <thead><tr><th>상태</th><th>진입 조건</th><th>허용 동작</th><th>복귀</th></tr></thead>
+        <tbody>
+          <tr><td>NORMAL</td><td>모든 input fresh, safety QP feasible, deadline 정상</td><td>TG-RMP + safety filter</td><td>계속 건강성 확인</td></tr>
+          <tr><td>DEGRADED</td><td>일부 중복 sensor 손실이지만 검증된 coverage·속도 envelope 유지</td><td>검증된 낮은 속도로 제한</td><td>건강 상태가 hold time 동안 유지</td></tr>
+          <tr><td>CONTROLLED STOP</td><td>stale/invalid sensor 또는 state, TF loss, QP infeasible, solver failure, deadline miss</td><td>검증된 bounded deceleration; TG 명령 무시</td><td>완전 정지 + fault 원인 해소 + 명시적 reset</td></tr>
+          <tr><td>PROTECTIVE STOP</td><td>제동 envelope 침범, safety status, watchdog/PC failure</td><td>독립 안전 채널로 drive 정지</td><td>안전 절차에 따른 수동 reset</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="validation" class="page-break">
+      <h2>8. 6단계 검증 계획</h2>
+      <p>모든 단계는 이전 단계 합격을 전제로 한다. controller code, URDF, sensor calibration, tool/payload, safety parameter가 바뀌면 영향받는 단계부터 다시 수행한다.</p>
+
+      <table>
+        <thead><tr><th style="width:23mm">단계</th><th style="width:39mm">수행 내용</th><th style="width:37mm">주요 산출물</th><th>합격 기준</th><th style="width:42mm">즉시 중단 조건</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>1. 안전 범위·위험 정의</strong></td>
+            <td>robot, tool, payload, workspace, 최대 속도, 물체 접근속도, sensor coverage와 허용 고장을 정의한다. 충돌·관절한계·stale·통신·solver 고장 hazard를 식별한다.</td>
+            <td>ODD, hazard log, 안전 요구사항, 요구사항–시험 추적표, 보호거리 측정 계획</td>
+            <td>모든 중대 hazard에 감지·안전 동작·시험·담당자를 지정. 미정의 중대 hazard 0건</td>
+            <td>독립 정지 수단 없음, ODD/최대속도/payload/blind zone 정의 불가</td>
+          </tr>
+          <tr>
+            <td><strong>2. 수학·코드 단위 검증</strong></td>
+            <td>metric PSD, tangent, Jacobian/J̇, activation 연속성, root solve, owner handoff, energy, 모든 오류 처리 경로를 자동 시험한다.</td>
+            <td>단위시험 결과, 수치오차 보고, code/parameter/binary hash</td>
+            <td>NaN/Inf 0; 단위시험 <code>|tᵀn|≤10⁻¹⁰</code>; normalized solve residual ≤10⁻⁸; energy identity residual ≤10⁻⁹·max(1,E₀)</td>
+            <td>음의 metric, 비유한 값, solver failure 뒤 이동 유지, CasADi/Pinocchio 불일치</td>
+          </tr>
+          <tr>
+            <td><strong>3. SiL<br><span class="small">Software/Simulation-in-the-Loop</span></strong></td>
+            <td>정적/동적/복수/corner/pocket/joint limit과 dropout/frozen/NaN/delay/goal jump/adversarial trajectory를 대량 시뮬레이션한다.</td>
+            <td>최소 h, barrier residual, 한계 위반, seed, falsification report</td>
+            <td>전 시험 <code>h(t)≥0</code>; barrier/관절/속도/가속도/workspace 위반 0; fault 후 T<sub>fault</sub> 이내 stop. 연구 screening 최소 10⁴ scenario 권장</td>
+            <td>충돌 반례, stale를 obstacle 없음으로 처리, 재현 불가능한 실패</td>
+          </tr>
+          <tr>
+            <td><strong>4. HIL</strong></td>
+            <td>실제 PC·sensor·network를 쓰되 drive power off 또는 dynamics simulator로 command를 받는다. packet loss, freeze, CPU 부하, node death, solver 예외를 주입한다.</td>
+            <td>cycle timing, input age, watchdog·stop response, fault-injection log</td>
+            <td>200 Hz 검증 run deadline miss 0; stale 감지·명령 차단 T<sub>fault</sub> 이내; fault 중 hardware command 0. stress 최소 10⁶ cycle 권장</td>
+            <td>watchdog 불작동, 오래된 상태로 명령, miss 후 계속 운전, stop 신호 유실</td>
+          </tr>
+          <tr>
+            <td><strong>5. 저속 더미 실로봇</strong></td>
+            <td>사람 없이 foam/계측 더미, enclosure, 외부 E-stop을 사용한다. 매우 낮은 속도부터 실제 clearance·tracking·정지거리·정지시간을 측정한다.</td>
+            <td>payload/자세/속도별 정지거리, 외부 거리계 영상, tracking error bound</td>
+            <td>ground truth <code>h(t)≥0</code>; 접촉·관절·바닥 위반 0; 보호거리 budget 내. scenario당 최소 30회 권장</td>
+            <td>접촉, 예상 밖 움직임, E-stop 불능, 실측 정지거리가 budget 초과</td>
+          </tr>
+          <tr>
+            <td><strong>6. 제한 실기·운용</strong></td>
+            <td>실제 tool/payload/workspace에서 속도를 단계적으로 높인다. 사람 참여는 공식 risk assessment와 독립 안전 기능 준비 후에만 허용한다.</td>
+            <td>최종 safety case, hazard closure evidence, 운용·점검·rollback, release manifest</td>
+            <td>안전 envelope 위반 0; 미해결 중대 hazard 0; 회귀시험 전체 통과; 보호거리 budget 유지</td>
+            <td>접촉/h&lt;0, 설명 불가 trip, chatter, 새 blind zone, 무단 parameter 변경, 독립 안전 기능 상실</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="notice">
+        <strong>숫자의 성격:</strong> 10⁻⁸·10⁻¹⁰은 double precision 수치 일관성 기준이고, 10⁴ scenario·10⁶ cycle·scenario당 30회는 연구·개발 단계의 engineering gate다. 인증 수치가 아니다. 속도·보호거리·timeout·제동거리는 실제 RB10·tool·payload에서 측정해 결정한다.
+      </div>
+    </section>
+
+    <section id="scenarios" class="page-break">
+      <h2>9. 시험 시나리오와 정량 합격 기준</h2>
+
+      <h3>9.1 필수 scenario matrix</h3>
+      <table class="tight">
+        <thead><tr><th>분류</th><th>필수 시나리오</th><th>주요 관찰량</th></tr></thead>
+        <tbody>
+          <tr><td>기본 성능</td><td>장애물 없음, 단일 정적, 단일 동적, 복수 동적, 좁은 통로, U자 pocket</td><td>성공률, 경로길이, 완료시간, TG activation, root contribution</td></tr>
+          <tr><td>위험한 기하</td><td>정확한 정면 접근, corner, floor/table, sensor normal 사이 blind angle, tool tip·link2·elbow 접근</td><td>whole-body minimum h, owner switch, barrier residual</td></tr>
+          <tr><td>동역학 경계</td><td>최대 허용 접근속도, 최대 payload, 불리한 자세, joint limit 부근, singularity 부근, goal step</td><td>q/q̇/q̈/jerk, tracking error, QP feasibility, stopping distance</td></tr>
+          <tr><td>센서 고장</td><td>channel drop, node death, frozen near/far, stale timestamp, sequence freeze, 0/NaN/Inf/max/under-range, bias, TF loss</td><td>input age, health state, T<sub>fault</sub>, 마지막 hardware command</td></tr>
+          <tr><td>컴퓨팅 고장</td><td>solver exception, QP infeasible, CPU stress, deadline miss, ROS executor stall, command link loss</td><td>fault latch, controlled/protective stop, 재가동 조건</td></tr>
+          <tr><td>적대적 탐색</td><td>장애물 궤적·초기 q/q̇·지연·bias를 optimizer가 바꾸며 min h를 최소화</td><td>최악 seed, 재현율, shrink된 반례, 원인 분류</td></tr>
+        </tbody>
+      </table>
+
+      <h3>9.2 TG 성능과 안전 성능을 분리한다</h3>
+      <table class="tight">
+        <thead><tr><th>종류</th><th>metric</th><th>판정 원칙</th></tr></thead>
+        <tbody>
+          <tr><td>안전</td><td>min h, barrier residual, contact count, joint/floor/workspace 위반, stale-to-stop time</td><td>한 번의 위반도 해당 configuration 불합격. 평균으로 최악값을 가리지 않는다.</td></tr>
+          <tr><td>건강성</td><td>sensor/state age, TF age, heartbeat, NaN/Inf, QP feasible, deadline</td><td>threshold 초과 즉시 정지 전이. “경고만 하고 계속 운전” 금지</td></tr>
+          <tr><td>TG 구조</td><td>‖t‖, |tᵀo|, m<sub>e</sub>, eig(M<sub>e</sub>), rank, root ΔM/Δf, owner switches</td><td>기하·PSD·유한성 위반 0. active와 effective authority를 별도 기록</td></tr>
+          <tr><td>임무 성능</td><td>goal success, completion time, path length, clearing time, jerk, chatter</td><td>안전 gate 통과 후 비교. 성공률을 높이기 위해 safety constraint를 완화하지 않는다.</td></tr>
+        </tbody>
+      </table>
+
+      <h3>9.3 권장 수치 기준</h3>
+      <ul>
+        <li>unit test: <strong>‖t‖ − 1 ≤ 10⁻¹⁰</strong>, <strong>|tᵀo| ≤ 10⁻¹⁰</strong>. runtime log는 측정 noise를 고려해 별도 bound(예: 10⁻⁶)를 정한다.</li>
+        <li>metric: 대칭 residual과 최소 eigenvalue가 scale-aware tolerance 안. TG metric rank ≤ 1.</li>
+        <li>root solve: normalized residual <strong>≤ 10⁻⁸</strong>, NaN/Inf 0.</li>
+        <li>안전: 독립 ground truth 기준 <strong>h(t) ≥ 0</strong>, 모든 링크·tool·floor·joint envelope 위반 0.</li>
+        <li>timing: 200 Hz이면 5 ms deadline. 검증 run에서 miss 0, 실제 제품 정책에서는 single/cluster miss에 대한 stop rule을 명시한다.</li>
+        <li>고장: fault 주입 후 <strong>T<sub>fault</sub></strong> 안에 command가 검증된 stop profile로 전환하고, 정지 전까지 보호거리 budget을 넘지 않는다.</li>
+      </ul>
+
+      <h3>9.4 “0번 실패”의 올바른 해석</h3>
+      <p>독립이라고 가정한 <strong>N</strong>회 시험에서 실패가 0이면, 95% 신뢰수준의 실패확률 상한은 rule of three로 대략 다음과 같다.</p>
+      <div class="equation">
+        <math display="block" aria-label="p fail ninety five upper approximately three over N">
+          <mrow>
+            <msubsup><mi>p</mi><mrow><mi>f</mi><mi>a</mi><mi>i</mi><mi>l</mi></mrow><mrow><mn>95</mn><mo>%</mo><mo>,</mo><mi>u</mi><mi>p</mi><mi>p</mi><mi>e</mi><mi>r</mi></mrow></msubsup>
+            <mo>≈</mo><mfrac><mn>3</mn><mi>N</mi></mfrac>
+          </mrow>
+        </math>
+        <div class="eqno">(V-1) 0-failure rule of three</div>
+      </div>
+      <p>예를 들어 10/10 성공은 실패확률이 0이라는 뜻이 아니다. Wilson 95% 구간에서 성공률 하한은 약 72.2%다. 실제 robot trial은 서로 독립하지 않을 수 있으므로, 이 통계는 물리적 proof나 인증을 대체하지 않는다.</p>
+    </section>
+
+    <section id="roadmap" class="page-break">
+      <h2>10. 구현 우선순위와 완료 정의</h2>
+
+      <h3>10.1 Gate 기반 실행 순서</h3>
+      <table>
+        <thead><tr><th style="width:22mm">Gate</th><th>해야 할 일</th><th style="width:53mm">완료 증거</th><th style="width:42mm">그때 허용되는 시험</th></tr></thead>
+        <tbody>
+          <tr><td><strong>G0<br>정지 기반</strong></td><td>독립 E-stop/protective stop, command inhibit, solver·deadline·input watchdog, latched fault/reset 구현</td><td>fault injection마다 T<sub>fault</sub> 내 정지, 오래된 command 0, 우회 경로 0</td><td>drive power off/HIL만</td></tr>
+          <tr><td><strong>G1<br>관측 신뢰</strong></td><td>20ch 1:1 mapping, 원본 timestamp/sequence, sensor/TF/state age, invalid semantics, coverage/blind-zone 측정</td><td>startup self-test, coverage map, 재질별 오차 bound, stale/frozen 전 시험 통과</td><td>enclosure 내 극저속 더미</td></tr>
+          <tr><td><strong>G2<br>hard safety</strong></td><td>whole-body geometry, 보호거리 budget, robust HOCBF-QP, braking fallback, joint/floor constraints 통합</td><td>boundary 반례가 이제 h≥0으로 바뀜, SiL 시나리오 10⁴건 이상, QP infeasible stop 검증</td><td>사람 없는 HIL/더미 증속</td></tr>
+          <tr><td><strong>G3<br>TG 건전성</strong></td><td>CasADi active/zero-authority 회귀와 stability analyzer 수정, backend parity, energy/hybrid 분석, timing 계측</td><td>12/12 target + 새 safety tests, 국소 안정성 수치 판정 결과 생성(인증서 아님), production parameter hash 고정</td><td>검증된 ODD의 저속 실기</td></tr>
+          <tr><td><strong>G4<br>실측 budget</strong></td><td>payload·자세·속도별 tracking/latency/stopping distance 측정, 독립 ground truth 반복시험</td><td>보호거리 각 항의 bound와 margin, scenario당 30회 이상 위반 0</td><td>제한된 실제 작업, 사람 없음</td></tr>
+          <tr><td><strong>G5<br>운용 승인</strong></td><td>ISO 12100 위험성 평가, ISO 10218 적용, 요구 PLr/SIL(Safety Integrity Level) safety function 검증, 운용·maintenance 절차</td><td>미해결 중대 hazard 0, safety case와 적합성 평가 evidence</td><td>승인된 ODD 안의 운용</td></tr>
+        </tbody>
+      </table>
+
+      <h3>10.2 각 P0 수정의 구체적인 구현 결과물</h3>
+      <ol>
+        <li><strong>Safety supervisor node/library:</strong> 각 입력의 <code>steady_clock</code> age, message stamp age, sequence progress, finite/plausibility를 기록하고 NORMAL/DEGRADED/STOP을 publish한다. 최종 command gate는 이 상태를 반드시 소비한다.</li>
+        <li><strong>Sensor manifest:</strong> 20행의 topic, CAN channel, physical serial, frame, parent link, origin, normal, radius, enabled, calibration hash를 단일 소스로 관리한다. 중복·누락·TF 불일치면 startup 실패.</li>
+        <li><strong>Velocity evidence:</strong> encoder position finite difference, controller-published velocity, synchronized filter 출력을 동시에 로그하고 ground truth 또는 high-rate reference와 비교한다. 실기 launch가 하나의 승인된 경로를 강제한다.</li>
+        <li><strong>Safety filter library:</strong> input은 q/q̇, whole-body distance와 derivative bounds, nominal q̈. output은 safe q̈, active constraints, residual, feasibility, fallback reason이다.</li>
+        <li><strong>Stop profile:</strong> q̈=0이 아닌 속도→0 bounded deceleration. 정지 profile의 jerk/accel/robot internal behavior를 실제 하드웨어에서 측정한다.</li>
+        <li><strong>Fault-injection suite:</strong> stale/frozen/NaN/TF loss/node death/solver throw/deadline miss/QP infeasible를 deterministic하게 재현하고 stop time과 마지막 command를 assertion한다.</li>
+        <li><strong>Release manifest:</strong> git commit, compiler, dependency, URDF, sensor calibration, parameter file, payload/tool ID, test artifact hash를 한 묶음으로 보관한다.</li>
+      </ol>
+
+      <h3>10.3 완료의 정확한 정의</h3>
+      <div class="callout">
+        TG-RMP 안전성 검증이 “완료”되었다고 말하려면, 적어도 (1) 승인된 ODD가 고정되고, (2) whole-body h와 실측 보호거리 budget이 정의되며, (3) 모든 P0가 닫히고, (4) hard safety filter와 독립 정지 경로가 fault 포함 전 시험에서 동작하고, (5) SiL→HIL→저속 더미→제한 실기의 traceability가 남고, (6) 실제 적용에 필요한 위험성 평가와 PLr/SIL(Safety Integrity Level) 검토가 끝나야 한다.
+      </div>
+    </section>
+
+    <section id="conclusion">
+      <h2>11. 최종 결론</h2>
+      <p>TG-RMP의 핵심 아이디어—장애물 법선과 직교하는 접선 task를 만들고 rank-one PSD metric으로 root에 합성하는 구조—는 수학적으로 일관되며, 국소 minima에서 빠져나가기 위한 nominal policy로 연구 가치가 있다.</p>
+      <p>그러나 현재 구성의 safety claim은 다음 수준으로 제한해야 한다.</p>
+      <div class="verdict-box">
+        <div class="label">허용되는 최종 주장</div>
+        <div class="main" style="font-size:16pt">“구조적 건전성 일부 확인, 충돌 안전성은 미검증”</div>
+        <div>접선·metric의 일부 구조 시험은 통과했다. 목표 수렴성은 clear set의 추가 조건을 확인한 뒤에만 국소적으로 주장할 수 있다. 충돌 safe-set forward invariance, stale/fault 대응, whole-body coverage, 실제 지연·제동거리는 현재 증명·검증되지 않았다.</div>
+      </div>
+      <p>따라서 TG-RMP를 성능 layer로 유지하면서, robust HOCBF-QP/제동 envelope, freshness/coverage supervisor, solver/deadline fail-safe stop, 독립 보호정지를 추가하는 것이 올바른 다음 단계다. 그 뒤 6단계 verification/validation을 순서대로 통과시켜야 한다.</p>
+    </section>
+
+    <section id="appendix-a" class="page-break">
+      <h2>부록 A. 복사용 수식 모음</h2>
+      <p>아래 블록은 문서 편집기에서 수식 renderer가 없는 경우에도 줄이 깨지지 않도록 고정폭 plain-text로 함께 제공한다. 본문 PDF 수식은 native MathML을 고정 레이아웃으로 출력한 것이다.</p>
+      <pre>[논문식 국소 수렴]
+e = x - x0,  v = x_dot
+x_ddot = -kp e - kd v + d(e,v)
+||d(e,v)|| <= c1 ||e|| + c2 ||v||,  d(0,0) = 0
+V = 1/2 ||v||^2 + kp/2 ||e||^2 + epsilon e^T v
+Delta_v = (kd - epsilon) - c2
+Delta_e = kp - c1
+Gamma = c1 + epsilon*c2 + epsilon*kd
+조건: Delta_v > 0,  epsilon*Delta_e > Gamma^2/(2*Delta_v)
+
+[TG-RMP 구조]
+||t|| = 1,  t^T o = 0
+J_e = t^T J_p,  y_dot = J_e q_dot
+alpha_TG = alpha_distance * alpha_block * alpha_free
+m_e = alpha_TG * gamma_m * mu / (d/l_m + epsilon_m)
+a_e = sat(a_distance(d) + a_closing(d,d_dot)) - b_e*y_dot
+M_e = m_e J_e^T J_e
+f_e = J_e^T m_e (a_e - Jdot_e q_dot)
+z^T M_e z = m_e (J_e z)^2 >= 0
+
+[안전 구조]
+d_unc = e_sensor + e_calibration + e_model + e_tracking
+d_protect = d_geometry + d_unc
+            + v_rel,max*T_reaction
+            + d_stop,robot^measured
+            + v_obstacle,max*T_stop
+            + d_reserve
+h_j(q,t) = d_j(q,O(t)) - d_protect,j
+C = {(q,q_dot) | h_j >= 0 for every j}
+HOCBF: hddot_j + 2*zeta_j*omega_j*hdot_j + omega_j^2*h_j >= Delta_j
+QP: minimize 1/2 ||qddot - qddot_TG||_W^2
+    subject to HOCBF, acceleration, next-step velocity, joint/workspace bounds
+
+[0-failure 통계]
+p_fail,95% upper ~= 3/N</pre>
+    </section>
+
+    <section id="appendix-b" class="page-break">
+      <h2>부록 B. 코드 근거 추적표</h2>
+      <table class="tight">
+        <thead><tr><th>주장/관찰</th><th>현재 source 근거</th></tr></thead>
+        <tbody>
+          <tr><td>TG activation, acceleration, metric, natural form</td><td><code>src/tangent_escape_ode.cpp:650–770</code></td></tr>
+          <tr><td>표준 GDS theorem을 바로 쓸 수 없다는 구현 주석</td><td><code>include/rb10_rmpflow_rviz/tangent_escape_ode.hpp:94–170</code>의 path-integral/progress 설명</td></tr>
+          <tr><td>20 sensor control points</td><td><code>include/rb10_rmpflow_rviz/rb10_model.hpp:118–139</code></td></tr>
+          <tr><td>기본 8/20 활성, frame 중복</td><td><code>config/params.yaml:675–695, 738–758</code></td></tr>
+          <tr><td>기본 TG/energy/min-Z/timing 설정</td><td><code>config/params.yaml:86–195</code></td></tr>
+          <tr><td>Range 마지막값 저장</td><td><code>src/proximity_obstacle_bridge.cpp:449–467</code></td></tr>
+          <tr><td>마지막 Range의 주기적 재사용과 TF failure 누락</td><td><code>src/proximity_obstacle_bridge.cpp:246–340</code></td></tr>
+          <tr><td>ECAN 저장값 재융합·현재 timestamp 재부여</td><td><code>../Proximity_ecan/src/EthernetCommunication.cpp:481–609</code></td></tr>
+          <tr><td>ECAN diagnostics 비어 있음</td><td><code>../Proximity_ecan/src/EthernetCommunication.cpp:786</code></td></tr>
+          <tr><td>주 launch의 velocity estimator 기본값</td><td><code>launch/rb10_rmpflow.launch.py:915–960</code></td></tr>
+          <tr><td>실측/가상 velocity blend</td><td><code>src/rmpflow_controller_node.cpp:6163–6178</code></td></tr>
+          <tr><td>solver 예외 후 zero acceleration, 이어지는 적분</td><td><code>src/rmpflow_controller_node.cpp:6200–6230, 6291–6294</code></td></tr>
+          <tr><td>body obstacle interaction이 항상 false</td><td><code>src/rmpflow_controller_node.cpp:3513–3519</code></td></tr>
+          <tr><td>distance-only collision boundary 반례</td><td><code>test/test_full_rmp_properties.cpp:454–531</code></td></tr>
+          <tr><td>CasADi active/root contribution 회귀 assertion</td><td><code>test/test_casadi_rmp2_solver.cpp:350–365</code></td></tr>
+          <tr><td>stability analyzer의 미선언 parameter 조회</td><td><code>src/rmpflow_controller_node.cpp:5413–5416</code></td></tr>
+          <tr><td>RB10 safety status 차단</td><td><code>src/rmpflow_controller_node.cpp:690–714</code>, <code>src/rb10_direct_bridge_node.cpp:79–105</code></td></tr>
+          <tr><td>command guard</td><td><code>src/production_command_map.cpp:80–230</code></td></tr>
+        </tbody>
+      </table>
+      <p class="small">라인 번호는 base commit <code>0bc03aa</code>와 2026-08-21 현재 작업 트리 기준이다. 검사 전부터 있던 사용자의 수정 파일은 변경하지 않았으며, 이 보고서는 controller code를 수정하지 않는다.</p>
+    </section>
+
+    <section id="references" class="page-break">
+      <h2>참고문헌·관련 표준</h2>
+      <ol>
+        <li>Minh Thang Bui, Hyunchang Kang, HyukJae Sung, Sung-Jin Han, Xuan Phuc Le, Duc Hoang Anh Nguyen, Hyouk Ryeol Choi, “RMPflow-Magnetic: End-of-Arm Radar-Grounded Reactive Avoidance for Manipulator Motion in Dynamic Environments,” <em>IEEE Robotics and Automation Letters</em>, Vol. 11, No. 8, pp. 9699–9706, Aug. 2026. <a href="https://doi.org/10.1109/LRA.2026.3706942">DOI 10.1109/LRA.2026.3706942</a>.</li>
+        <li><a href="https://www.iso.org/standard/51528.html">ISO 12100:2010</a>, Safety of machinery — General principles for design — Risk assessment and risk reduction. ISO 페이지는 2022 재확인을 표시한다.</li>
+        <li><a href="https://www.iso.org/standard/73933.html">ISO 10218-1:2025</a>, Robotics — Safety requirements — Part 1: Industrial robots.</li>
+        <li><a href="https://www.iso.org/standard/73934.html">ISO 10218-2:2025</a>, Robotics — Safety requirements — Part 2: Industrial robot applications and robot cells. 실제 application/cell 통합에는 이 Part 2가 핵심이다.</li>
+        <li><a href="https://www.iso.org/standard/62996.html">ISO/TS 15066:2016</a>, Robots and robotic devices — Collaborative robots. ISO 페이지는 2022 재확인을 표시한다. 2026-08-21 현재 개정 프로젝트는 초안 단계이며 아직 이 발행본을 대체하지 않는다.</li>
+        <li><a href="https://www.iso.org/standard/73481.html">ISO 13849-1:2023</a>, Safety of machinery — Safety-related parts of control systems — Part 1: General principles for design.</li>
+        <li><a href="https://www.iso.org/standard/53640.html">ISO 13849-2:2012</a>, Safety of machinery — Safety-related parts of control systems — Part 2: Validation.</li>
+        <li><a href="https://webstore.iec.ch/en/publication/112847">IEC 62061:2021 + AMD1:2024 + AMD2:2026 CSV</a>, Safety of machinery — Functional safety of safety-related control systems.</li>
+        <li><a href="https://www.iso.org/conformity-assessment.html">ISO conformity assessment 안내</a>. 이 보고서의 engineering verification은 적합성 평가나 인증을 대신하지 않는다.</li>
+      </ol>
+
+      <div class="notice">
+        <strong>표준 적용 주의:</strong> 필요한 표준, PLr/SIL(Safety Integrity Level), separation monitoring, force/power limiting 등의 적용 여부는 실제 cell, tool, payload, 사람 접근 방식과 intended use에 대한 공식 risk assessment로 결정한다. 표준 번호를 나열하거나 소프트웨어 시험을 통과한 것만으로 적합성이 성립하지 않는다. 실제 적합성 평가는 정식 표준 전문, 적용 국가 법규와 해당 인증 scheme을 함께 검토해야 한다.
+      </div>
+
+      <div class="signature">
+        문서 생성 기준: 2026-08-21 · base commit: 0bc03aa + 현재 작업 트리 · 판정: 사람 근접 운전 안전 승인 보류<br>
+        산출물은 연구·개발 검토용이며, 실제 운전 전 자격 있는 안전 담당자의 독립 검토가 필요하다.
+      </div>
+    </section>
+  </main>
+</body>
+</html>

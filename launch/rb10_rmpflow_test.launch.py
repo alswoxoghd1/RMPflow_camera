@@ -79,7 +79,6 @@ def generate_launch_description():
     use_interactive_goal = LaunchConfiguration("use_interactive_goal")
     use_obstacles = LaunchConfiguration("use_obstacles")
     use_proximity_bridge = LaunchConfiguration("use_proximity_bridge")
-    proximity_surface_visualization = LaunchConfiguration("proximity_surface_visualization")
     proximity_collision_obstacle_topic = LaunchConfiguration("proximity_collision_obstacle_topic")
     proximity_visualization_obstacle_topic = LaunchConfiguration("proximity_visualization_obstacle_topic")
     record_data = LaunchConfiguration("record_data")
@@ -309,23 +308,13 @@ def generate_launch_description():
         executable="proximity_obstacle_bridge",
         name="proximity_obstacle_bridge",
         output="screen",
-        condition=IfCondition(PythonExpression([
-            '"', use_proximity_bridge, '" == "true" or "',
-            proximity_surface_visualization, '" == "true"',
-        ])),
+        condition=IfCondition(use_proximity_bridge),
         parameters=[
             params_file,
             {
                 "publish_collision_obstacles": ParameterValue(
                     PythonExpression([
                         'True if "', use_proximity_bridge, '" == "true" else False'
-                    ]),
-                    value_type=bool,
-                ),
-                "surface_patch_fixed_visualization": ParameterValue(
-                    PythonExpression([
-                        'True if "', proximity_surface_visualization,
-                        '" == "true" else False'
                     ]),
                     value_type=bool,
                 ),
@@ -562,14 +551,6 @@ def generate_launch_description():
             "use_proximity_bridge",
             default_value="false",
             description="Use external proximity topics to build obstacle markers.",
-        ),
-        DeclareLaunchArgument(
-            "proximity_surface_visualization",
-            default_value="true",
-            description=(
-                "Publish RViz-only fixed surface patches from proximity sensor range hits. "
-                "When use_proximity_bridge is false this does not publish collision obstacles."
-            ),
         ),
         DeclareLaunchArgument(
             "proximity_collision_obstacle_topic",
