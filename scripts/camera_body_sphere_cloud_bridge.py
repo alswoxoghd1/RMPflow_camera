@@ -31,7 +31,13 @@ def _clamp(value: float, low: float, high: float) -> float:
     return min(max(value, low), high)
 
 
-def _rotate_vector(qx: float, qy: float, qz: float, qw: float, point: Sequence[float]) -> Tuple[float, float, float]:
+def _rotate_vector(
+    qx: float,
+    qy: float,
+    qz: float,
+    qw: float,
+    point: Sequence[float],
+) -> Tuple[float, float, float]:
     # Quaternion-vector multiply without requiring tf2_geometry_msgs.
     x, y, z = point
     tx = 2.0 * (qy * z - qz * y)
@@ -49,8 +55,14 @@ class CameraBodySphereCloudBridge(Node):
         super().__init__("camera_body_sphere_cloud_bridge")
 
         self.declare_parameter("cloud_topic", "/rmp_camera/obstacle_body_sphere_cloud")
+        self.declare_parameter("subscribe_cloud_topic", True)
         self.declare_parameter("camera_marker_topic", "/rmp_camera/obstacle_body_spheres")
         self.declare_parameter("subscribe_camera_marker_topic", True)
+        self.declare_parameter(
+            "collision_marker_topic",
+            "/rmp_camera/combined_obstacle_sphere_markers",
+        )
+        self.declare_parameter("subscribe_collision_marker_topic", False)
         self.declare_parameter("relay_camera_markers_to_rviz", True)
         self.declare_parameter("additional_obstacle_topics", [""])
         self.declare_parameter("collision_obstacle_topic", "/obstacles")
@@ -70,6 +82,18 @@ class CameraBodySphereCloudBridge(Node):
 
         self.cloud_topic = str(self.get_parameter("cloud_topic").value)
         self.camera_marker_topic = str(self.get_parameter("camera_marker_topic").value)
+        self.subscribe_cloud_topic = _as_bool(
+            self.get_parameter("subscribe_cloud_topic").value
+        )
+        self.subscribe_camera_marker_topic = _as_bool(
+            self.get_parameter("subscribe_camera_marker_topic").value
+        )
+        self.collision_marker_topic = str(
+            self.get_parameter("collision_marker_topic").value
+        )
+        self.subscribe_collision_marker_topic = _as_bool(
+            self.get_parameter("subscribe_collision_marker_topic").value
+        )
         self.output_frame = str(self.get_parameter("output_frame").value).strip()
         self.default_radius_m = max(float(self.get_parameter("default_radius_m").value), 1e-4)
         self.min_radius_m = max(float(self.get_parameter("min_radius_m").value), 1e-4)
@@ -78,7 +102,9 @@ class CameraBodySphereCloudBridge(Node):
         self.cloud_stride = max(int(self.get_parameter("cloud_stride").value), 1)
         self.marker_lifetime_sec = max(float(self.get_parameter("marker_lifetime_sec").value), 0.0)
         self.stale_timeout_sec = max(float(self.get_parameter("stale_timeout_sec").value), 0.05)
-        self.publish_empty_when_stale = _as_bool(self.get_parameter("publish_empty_when_stale").value)
+        self.publish_empty_when_stale = _as_bool(
+            self.get_parameter("publish_empty_when_stale").value
+        )
         self.relay_camera_markers_to_rviz = _as_bool(
             self.get_parameter("relay_camera_markers_to_rviz").value
         )
@@ -87,6 +113,19 @@ class CameraBodySphereCloudBridge(Node):
         self.last_log_time_s = 0.0
 
         self.additional_obstacle_topics = self._string_list_parameter("additional_obstacle_topics")
+        if (
+            self.subscribe_collision_marker_topic and
+            self.collision_marker_topic in self.additional_obstacle_topics
+        ):
+            self.get_logger().warning(
+                f"Removing duplicate additional_obstacle_topics entry "
+                f"'{self.collision_marker_topic}'; the validated collision-marker "
+                "subscription owns that topic."
+            )
+            self.additional_obstacle_topics = [
+                topic for topic in self.additional_obstacle_topics
+                if topic != self.collision_marker_topic
+            ]
         self.latest_cloud_markers: Optional[MarkerArray] = None
         self.latest_cloud_time_s: Optional[float] = None
         self.latest_camera_rviz_markers: Optional[MarkerArray] = None
@@ -109,13 +148,28 @@ class CameraBodySphereCloudBridge(Node):
             reliability=ReliabilityPolicy.BEST_EFFORT,
         )
 
-        self.create_subscription(PointCloud2, self.cloud_topic, self._on_cloud, cloud_qos)
-        if _as_bool(self.get_parameter("subscribe_camera_marker_topic").value):
+        if self.subscribe_cloud_topic:
+            self.create_subscription(PointCloud2, self.cloud_topic, self._on_cloud, cloud_qos)
+        if self.subscribe_camera_marker_topic:
             self.create_subscription(
                 MarkerArray,
                 self.camera_marker_topic,
                 self._on_camera_rviz_markers,
                 marker_qos,
+            )
+        if self.subscribe_collision_marker_topic:
+            self.create_subscription(
+                MarkerArray,
+                self.collision_marker_topic,
+                self._on_collision_markers,
+                marker_qos,
+            )
+
+        if self.subscribe_cloud_topic and self.subscribe_collision_marker_topic:
+            self.get_logger().warning(
+                "Both PointCloud2 and camera MarkerArray collision inputs are enabled. "
+                "If they describe the same physical spheres, the RMP obstacle list "
+                "will contain duplicates."
             )
         for topic in self.additional_obstacle_topics:
             self.create_subscription(
@@ -136,7 +190,11 @@ class CameraBodySphereCloudBridge(Node):
 
         self.get_logger().info(
             "Camera body sphere cloud bridge started: "
-            f"cloud={self.cloud_topic}, camera_markers={self.camera_marker_topic}, "
+            f"cloud={self.cloud_topic} (enabled={self.subscribe_cloud_topic}), "
+            f"camera_markers={self.camera_marker_topic} "
+            f"(subscribed={self.subscribe_camera_marker_topic}), "
+            f"collision_markers={self.collision_marker_topic} "
+            f"(enabled={self.subscribe_collision_marker_topic}), "
             f"additional={self.additional_obstacle_topics}, "
             f"collision_out={self.get_parameter('collision_obstacle_topic').value}, "
             f"rviz_out={self.get_parameter('rviz_marker_topic').value}"
@@ -163,6 +221,57 @@ class CameraBodySphereCloudBridge(Node):
     def _on_camera_rviz_markers(self, msg: MarkerArray) -> None:
         self.latest_camera_rviz_markers = msg
         self.latest_camera_rviz_time_s = self._now_s()
+
+    def _on_collision_markers(self, msg: MarkerArray) -> None:
+        accepted: List[Marker] = []
+        rejected = 0
+        saw_add = False
+        saw_delete_all = False
+        expected_frame = self.output_frame.lstrip("/")
+        for marker in msg.markers:
+            if marker.action == Marker.DELETEALL:
+                saw_delete_all = True
+                continue
+            if marker.action != Marker.ADD:
+                rejected += 1
+                continue
+            saw_add = True
+            if marker.type != Marker.SPHERE:
+                rejected += 1
+                continue
+            marker_frame = marker.header.frame_id.strip().lstrip("/")
+            if not marker_frame or (expected_frame and marker_frame != expected_frame):
+                rejected += 1
+                continue
+            diameter = max(float(marker.scale.x), float(marker.scale.y))
+            position = marker.pose.position
+            if (
+                not math.isfinite(diameter) or diameter <= 0.0 or
+                not all(math.isfinite(value) for value in (position.x, position.y, position.z))
+            ):
+                rejected += 1
+                continue
+            if len(accepted) >= self.max_cloud_spheres:
+                rejected += 1
+                continue
+            accepted.append(marker)
+
+        if rejected:
+            self._log_throttled(
+                f"Rejected {rejected} marker(s) from {self.collision_marker_topic}; "
+                f"collision input requires finite ADD/SPHERE markers in "
+                f"frame '{self.output_frame}'."
+            )
+        if accepted or not msg.markers or (saw_delete_all and not saw_add):
+            self.latest_additional_markers[self.collision_marker_topic] = (
+                MarkerArray(markers=accepted),
+                self._now_s(),
+            )
+        elif saw_add:
+            self._log_throttled(
+                f"Keeping the previous {self.collision_marker_topic} obstacle set "
+                "until stale timeout because every ADD marker was rejected."
+            )
 
     def _on_additional_markers(self, topic: str, msg: MarkerArray) -> None:
         self.latest_additional_markers[topic] = (msg, self._now_s())
@@ -262,7 +371,8 @@ class CameraBodySphereCloudBridge(Node):
                 )
             except TransformException as exc:
                 self._log_throttled(
-                    f"Waiting for TF {target_frame} <- {source_frame} before publishing camera obstacles: {exc}"
+                    f"Waiting for TF {target_frame} <- {source_frame} before "
+                    f"publishing camera obstacles: {exc}"
                 )
                 return None
 
@@ -307,7 +417,10 @@ class CameraBodySphereCloudBridge(Node):
             self.latest_camera_rviz_markers is not None
         ):
             rviz_markers.extend(self.latest_camera_rviz_markers.markers)
-        elif self._fresh(self.latest_cloud_time_s, now_s) and self.latest_cloud_markers is not None:
+        elif (
+            self._fresh(self.latest_cloud_time_s, now_s) and
+            self.latest_cloud_markers is not None
+        ):
             rviz_markers.extend(self.latest_cloud_markers.markers)
 
         if rviz_markers or self.last_rviz_had_markers:

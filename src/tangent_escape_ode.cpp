@@ -161,6 +161,26 @@ double distance_activation(double clearance, double on, double off)
   return 1.0 - smoothstep(clearance, on, off);
 }
 
+double held_sensor_clearance(
+  double last_clearance,
+  double alpha_on_distance,
+  double alpha_off_distance,
+  double missing_elapsed,
+  double hold_time)
+{
+  if (!std::isfinite(last_clearance)) {
+    return std::numeric_limits<double>::infinity();
+  }
+  if (hold_time <= 0.0) {
+    return last_clearance;
+  }
+  const double release_clearance =
+    std::max(alpha_on_distance, alpha_off_distance);
+  const double fade = std::clamp(missing_elapsed / hold_time, 0.0, 1.0);
+  return last_clearance +
+         fade * (std::max(last_clearance, release_clearance) - last_clearance);
+}
+
 double direction_score(double theta, double a, double b, double c, double e)
 {
   return a * std::cos(theta) + b * std::sin(theta) +
@@ -519,11 +539,12 @@ LeafOutput evaluate(
     params.weight_axial_block * axial_sign * axial_block_risk;
   const double score_b_risk = params.weight_risk * risk_b;
 
-  // A signed, sensor-frame bias provides an explicit preference between +e1
-  // and -e1 without overloading the data-dependent goal/risk weights.
+  // Signed sensor-frame biases provide explicit preferences along either
+  // tangent basis axis without overloading the data-dependent goal/risk weights.
   double score_a =
     score_a_goal + score_a_velocity + score_a_risk + score_a_i1 + params.e1_bias;
-  double score_b = score_b_goal + score_b_velocity + score_b_risk + score_b_i1;
+  double score_b =
+    score_b_goal + score_b_velocity + score_b_risk + score_b_i1 + params.e2_bias;
   // The axial block now ADDS to c.  c cos(2 theta) is +c along e1 and -c along
   // e2, so preferring the link axis -- which is what a blocked far side is
   // supposed to argue for, and what the dipole term above already does with

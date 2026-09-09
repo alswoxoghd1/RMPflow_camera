@@ -180,9 +180,11 @@ struct LeafParams
   double pocket_length{0.06};
   double weight_goal{1.0};
   double weight_continuity{0.3};
-  // Signed dipole bias in the sensor tangent basis.  Negative values prefer
-  // -e1, positive values prefer +e1, and zero preserves the geometric score.
+  // Signed dipole biases in the sensor tangent basis.  Negative values prefer
+  // the negative basis direction, positive values prefer the positive one,
+  // and zero preserves the geometric score.
   double e1_bias{0.0};
+  double e2_bias{0.0};
   double weight_risk{1.0};
   double weight_axis{1.5};
   double velocity_epsilon{1e-4};
@@ -296,8 +298,9 @@ struct LeafOutput
   double stall_penalty{0.0};   // magnitude of the accumulated dipole
 
   // Every dynamic dipole term as it actually enters score_a / score_b, weights
-  // already applied.  The configured e1_bias is added separately to score_a;
-  // after that, the stall term is subtracted.  Without this decomposition the
+  // already applied.  The configured e1/e2 biases are added separately to
+  // score_a/score_b; after that, the stall term is subtracted.  Without this
+  // decomposition the
   // log can only lump velocity together with risk, which is precisely the pair
   // that has to be told apart: one is meant to hold a working direction and the
   // other to argue against the obstacle.
@@ -420,6 +423,16 @@ LeafOutput evaluate(
 
 // alpha_d: 1 at or below `on`, 0 at or above `off`, quintic in between.
 double distance_activation(double clearance, double on, double off);
+
+// Sample-and-release path used while the active owner's sensor is missing.
+// It starts at the last measured clearance and reaches the zero-authority
+// distance exactly at hold_time.
+double held_sensor_clearance(
+  double last_clearance,
+  double alpha_on_distance,
+  double alpha_off_distance,
+  double missing_elapsed,
+  double hold_time);
 
 // Score whose gradient the direction ODE ascends:
 //   S(theta) = a cos(theta) + b sin(theta) + c cos(2 theta) + e sin(2 theta)

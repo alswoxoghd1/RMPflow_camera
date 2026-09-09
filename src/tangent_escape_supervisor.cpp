@@ -113,12 +113,52 @@ void TangentEscapeSupervisor::evaluate_ode(
     }
   }
 
+  const double dt = std::max(params.control_dt, 1e-4);
+  std::array<bool, tangent_escape_ode::kSensorCount> clearance_held{};
+  for (std::size_t index = 0; index < point_count; ++index) {
+    if (!std::isfinite(clearances[index])) {
+      continue;
+    }
+    sensor_hold_state_.last_clearance[index] = clearances[index];
+    sensor_hold_state_.missing_elapsed[index] = 0.0;
+    sensor_hold_state_.valid[index] = true;
+  }
+
+  // A hold is only allowed after the leaf has selected an owner.  It therefore
+  // cannot activate TG from a stale pre-activation sample.  During the hold,
+  // move the effective clearance smoothly to the release edge; alpha_distance
+  // reaches zero at the deadline instead of dropping the metric in one cycle.
+  const double sensor_hold_time = std::max(ode.sensor_hold_time, 0.0);
+  if (sensor_hold_time > 0.0 && ode_state_.active) {
+    const std::size_t owner = ode_state_.sensor_index;
+    if (
+      owner < point_count &&
+      !std::isfinite(clearances[owner]) &&
+      sensor_hold_state_.valid[owner])
+    {
+      auto & missing_elapsed = sensor_hold_state_.missing_elapsed[owner];
+      missing_elapsed += dt;
+      if (missing_elapsed <= sensor_hold_time) {
+        const double held_clearance = sensor_hold_state_.last_clearance[owner];
+        clearances[owner] = tangent_escape_ode::held_sensor_clearance(
+          held_clearance,
+          ode.alpha_on_distance,
+          ode.alpha_off_distance,
+          missing_elapsed,
+          sensor_hold_time);
+        kinematic_rates[owner] = 0.0;
+        clearance_held[owner] = true;
+      } else {
+        sensor_hold_state_.valid[owner] = false;
+      }
+    }
+  }
+
   // Residual = everything the robot's own motion does not explain.  For a
   // stationary obstacle that is pure sensing noise, so it is low-passed and
   // dead-banded; for a moving one it is the obstacle's own approach, which is
   // the only way a distance-only sensor can see it at all.
   std::vector<double> clearance_rates(point_count, 0.0);
-  const double dt = std::max(params.control_dt, 1e-4);
   const double tau = std::max(ode.clearance_rate_filter_tau, 0.0);
   const double blend = tau > dt ? dt / tau : 1.0;
   for (std::size_t index = 0; index < point_count; ++index) {
@@ -126,6 +166,14 @@ void TangentEscapeSupervisor::evaluate_ode(
     auto & previous = clearance_rate_state_.previous_clearance[index];
     auto & residual = clearance_rate_state_.filtered_residual[index];
     const double clearance = clearances[index];
+    if (clearance_held[index]) {
+      // The synthetic release ramp is not obstacle motion.  Feeding it through
+      // the derivative estimator would double-attenuate the held metric.
+      seeded = false;
+      residual = 0.0;
+      clearance_rates[index] = 0.0;
+      continue;
+    }
     if (!std::isfinite(clearance)) {
       seeded = false;
       residual = 0.0;
@@ -167,6 +215,7 @@ void TangentEscapeSupervisor::evaluate_ode(
   leaf_params.weight_goal = ode.weight_goal;
   leaf_params.weight_continuity = ode.weight_continuity;
   leaf_params.e1_bias = ode.e1_bias;
+  leaf_params.e2_bias = ode.e2_bias;
   leaf_params.weight_risk = ode.weight_risk;
   leaf_params.weight_axis = ode.weight_axis;
   leaf_params.velocity_epsilon = ode.velocity_epsilon;

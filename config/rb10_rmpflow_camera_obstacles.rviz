@@ -282,6 +282,18 @@ Visualization Manager:
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true
+      Name: RobotBodySpheres
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /body_obstacle_markers
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
       Name: CameraBodySpheres
       Namespaces:
         {}
@@ -291,6 +303,18 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Best Effort
         Value: /rmp_camera/obstacle_body_spheres
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: CombinedObstacleSphereMarkers
+      Namespaces:
+        {}
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /rmp_camera/combined_obstacle_sphere_markers
       Value: true
     - Class: rviz_default_plugins/MarkerArray
       Enabled: true

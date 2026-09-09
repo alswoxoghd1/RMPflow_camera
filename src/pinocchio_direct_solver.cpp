@@ -564,7 +564,8 @@ PinocchioDirectRmpSolver::PinocchioDirectRmpSolver(
       std::isfinite(ode.accel_gain) && std::isfinite(ode.accel_length) &&
       std::isfinite(ode.progress_scale) && std::isfinite(ode.progress_recovery_time) &&
       std::isfinite(ode.tangent_damping) && std::isfinite(ode.direction_rate) &&
-      std::isfinite(ode.e1_bias) &&
+      std::isfinite(ode.e1_bias) && std::isfinite(ode.e2_bias) &&
+      std::isfinite(ode.sensor_hold_time) &&
       std::isfinite(ode.risk_length) && std::isfinite(ode.pocket_epsilon) &&
       std::isfinite(ode.alpha_on_distance) && std::isfinite(ode.alpha_off_distance);
     if (
@@ -573,6 +574,7 @@ PinocchioDirectRmpSolver::PinocchioDirectRmpSolver(
       ode.accel_gain < 0.0 || ode.accel_length <= 0.0 ||
       ode.progress_scale <= 0.0 || ode.progress_recovery_time <= 0.0 ||
       ode.tangent_damping < 0.0 || ode.direction_rate < 0.0 ||
+      ode.sensor_hold_time < 0.0 ||
       ode.risk_length <= 0.0 || ode.pocket_epsilon <= 0.0 ||
       ode.alpha_on_distance <= 0.0 ||
       ode.alpha_off_distance < ode.alpha_on_distance)

@@ -33,6 +33,30 @@ TG_RMP_PARAMS_YAML_ARGS = (
     "publish_tangent_escape_geometry_debug",
 )
 
+# Controller values whose persistent defaults live in params.yaml. Keeping the
+# corresponding launch arguments empty means the YAML value is used; a non-empty
+# launch argument remains available for an explicit one-off override.
+CONTROLLER_BOOL_PARAMS_YAML_ARGS = (
+    "enable_realtime",
+    "lock_memory",
+    "enable_socket_realtime",
+    "use_synced_input_velocity_filter",
+    "estimate_velocity_in_controller",
+    "use_velocity_feedback_in_solver",
+)
+
+CONTROLLER_INT_PARAMS_YAML_ARGS = (
+    "realtime_priority",
+    "socket_realtime_priority",
+)
+
+CONTROLLER_FLOAT_PARAMS_YAML_ARGS = (
+    "measured_velocity_feedback_blend",
+    "synced_input_velocity_filter_alpha",
+    "synced_input_velocity_filter_beta",
+    "synced_input_velocity_ratio_tolerance",
+)
+
 
 def _tg_rmp_overrides(context):
     overrides = {}
@@ -49,6 +73,45 @@ def _tg_rmp_overrides(context):
     return overrides
 
 
+def _controller_params_yaml_overrides(context):
+    overrides = {}
+    for name in CONTROLLER_BOOL_PARAMS_YAML_ARGS:
+        value = LaunchConfiguration(name).perform(context).strip().lower()
+        if not value:
+            continue
+        if value not in ("true", "false"):
+            raise RuntimeError(
+                f'Launch argument "{name}" must be "true", "false", or empty '
+                f'(follow params.yaml), got: {value}'
+            )
+        overrides[name] = value == "true"
+
+    for name in CONTROLLER_INT_PARAMS_YAML_ARGS:
+        value = LaunchConfiguration(name).perform(context).strip()
+        if not value:
+            continue
+        try:
+            overrides[name] = int(value)
+        except ValueError as error:
+            raise RuntimeError(
+                f'Launch argument "{name}" must be an integer or empty '
+                f'(follow params.yaml), got: {value}'
+            ) from error
+
+    for name in CONTROLLER_FLOAT_PARAMS_YAML_ARGS:
+        value = LaunchConfiguration(name).perform(context).strip()
+        if not value:
+            continue
+        try:
+            overrides[name] = float(value)
+        except ValueError as error:
+            raise RuntimeError(
+                f'Launch argument "{name}" must be a number or empty '
+                f'(follow params.yaml), got: {value}'
+            ) from error
+    return overrides
+
+
 def _rmpflow_controller_actions(context, params_file, controller_parameters):
     parameters = [params_file, controller_parameters]
     tuning_params_path = LaunchConfiguration("tuning_params_file").perform(context).strip()
@@ -57,7 +120,8 @@ def _rmpflow_controller_actions(context, params_file, controller_parameters):
         # after the launch defaults, so the effective tuning is exactly what is
         # captured in the profile.
         parameters.append(tuning_params_path)
-    overrides = _tg_rmp_overrides(context)
+    overrides = _controller_params_yaml_overrides(context)
+    overrides.update(_tg_rmp_overrides(context))
     if overrides:
         parameters.append(overrides)
     return [
@@ -176,24 +240,12 @@ def generate_launch_description():
     startup_release_timeout_sec = LaunchConfiguration("startup_release_timeout_sec")
     stop_on_shutdown = LaunchConfiguration("stop_on_shutdown")
     shutdown_action = LaunchConfiguration("shutdown_action")
-    enable_realtime = LaunchConfiguration("enable_realtime")
-    realtime_priority = LaunchConfiguration("realtime_priority")
-    lock_memory = LaunchConfiguration("lock_memory")
-    enable_socket_realtime = LaunchConfiguration("enable_socket_realtime")
-    socket_realtime_priority = LaunchConfiguration("socket_realtime_priority")
     use_velocity_filter = LaunchConfiguration("use_velocity_filter")
     velocity_filter_alpha = LaunchConfiguration("velocity_filter_alpha")
     velocity_filter_beta = LaunchConfiguration("velocity_filter_beta")
     bridge_max_command_step_deg = LaunchConfiguration("bridge_max_command_step_deg")
     bridge_max_command_velocity_deg_s = LaunchConfiguration("bridge_max_command_velocity_deg_s")
     bridge_large_command_jump_warn_deg = LaunchConfiguration("bridge_large_command_jump_warn_deg")
-    measured_velocity_feedback_blend = LaunchConfiguration("measured_velocity_feedback_blend")
-    use_synced_input_velocity_filter = LaunchConfiguration("use_synced_input_velocity_filter")
-    synced_input_velocity_filter_alpha = LaunchConfiguration("synced_input_velocity_filter_alpha")
-    synced_input_velocity_filter_beta = LaunchConfiguration("synced_input_velocity_filter_beta")
-    synced_input_velocity_ratio_tolerance = LaunchConfiguration("synced_input_velocity_ratio_tolerance")
-    estimate_velocity_in_controller = LaunchConfiguration("estimate_velocity_in_controller")
-    use_velocity_feedback_in_solver = LaunchConfiguration("use_velocity_feedback_in_solver")
     bridge_publish_rate = LaunchConfiguration("bridge_publish_rate")
     publish_visualization = LaunchConfiguration("publish_visualization")
     publish_rmp_ee_pose = LaunchConfiguration("publish_rmp_ee_pose")
@@ -267,19 +319,6 @@ def generate_launch_description():
         "startup_release_timeout_sec": startup_release_timeout_sec,
         "stop_on_shutdown": stop_on_shutdown,
         "shutdown_action": shutdown_action,
-        "enable_realtime": enable_realtime,
-        "realtime_priority": realtime_priority,
-        "lock_memory": lock_memory,
-        "enable_socket_realtime": enable_socket_realtime,
-        "socket_realtime_priority": socket_realtime_priority,
-        "measured_velocity_feedback_blend": measured_velocity_feedback_blend,
-        "use_synced_input_velocity_filter": use_synced_input_velocity_filter,
-        "synced_input_velocity_filter_alpha": synced_input_velocity_filter_alpha,
-        "synced_input_velocity_filter_beta": synced_input_velocity_filter_beta,
-        "synced_input_velocity_filter_type": "alpha-beta",
-        "synced_input_velocity_ratio_tolerance": synced_input_velocity_ratio_tolerance,
-        "estimate_velocity_in_controller": estimate_velocity_in_controller,
-        "use_velocity_feedback_in_solver": use_velocity_feedback_in_solver,
         "publish_debug_joint_state_sources": publish_debug_joint_state_sources,
         "publish_visualization": publish_visualization,
         "publish_rmp_ee_pose": publish_rmp_ee_pose,
@@ -904,28 +943,43 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "enable_realtime",
-            default_value="false",
-            description="Run the controller loop as SCHED_FIFO on PREEMPT_RT systems.",
+            default_value="",
+            description=(
+                "Run the controller loop as SCHED_FIFO on PREEMPT_RT systems. "
+                "Empty (default) follows params.yaml."
+            ),
         ),
         DeclareLaunchArgument(
             "realtime_priority",
-            default_value="80",
-            description="SCHED_FIFO priority used when enable_realtime is true.",
+            default_value="",
+            description=(
+                "SCHED_FIFO priority used when enable_realtime is true. "
+                "Empty (default) follows params.yaml."
+            ),
         ),
         DeclareLaunchArgument(
             "lock_memory",
-            default_value="false",
-            description="Call mlockall for the controller process when realtime is enabled.",
+            default_value="",
+            description=(
+                "Call mlockall for the controller process when realtime is enabled. "
+                "Empty (default) follows params.yaml."
+            ),
         ),
         DeclareLaunchArgument(
             "enable_socket_realtime",
-            default_value="false",
-            description="Run the direct RB10 socket send/receive threads as SCHED_FIFO as well.",
+            default_value="",
+            description=(
+                "Run the direct RB10 socket send/receive threads as SCHED_FIFO as well. "
+                "Empty (default) follows params.yaml."
+            ),
         ),
         DeclareLaunchArgument(
             "socket_realtime_priority",
-            default_value="60",
-            description="SCHED_FIFO priority for the direct RB10 socket threads when enabled.",
+            default_value="",
+            description=(
+                "SCHED_FIFO priority for the direct RB10 socket threads when enabled. "
+                "Empty (default) follows params.yaml."
+            ),
         ),
         DeclareLaunchArgument(
             "use_velocity_filter",
@@ -944,58 +998,64 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "measured_velocity_feedback_blend",
-            default_value="0.35",
+            default_value="",
             description=(
                 "Blend factor for solver joint velocity feedback. "
-                "1.0 uses only measured velocity, 0.0 uses only previous command velocity."
+                "1.0 uses only measured velocity, 0.0 uses only previous command velocity. "
+                "Empty (default) follows params.yaml."
             ),
         ),
         DeclareLaunchArgument(
             "use_synced_input_velocity_filter",
-            default_value="false",
+            default_value="",
             description=(
                 "Use the high-rate direct-backend state input to build a control-rate-synchronized "
                 "joint velocity estimate before feeding qd to the solver. "
-                "For direct backend use, pair this with estimate_velocity_in_controller:=false."
+                "For direct backend use, pair this with estimate_velocity_in_controller:=false. "
+                "Empty (default) follows params.yaml."
             ),
         ),
         DeclareLaunchArgument(
             "synced_input_velocity_filter_alpha",
-            default_value="0.35",
+            default_value="",
             description=(
                 "Low-pass blend for the synchronized high-rate input velocity filter. "
-                "1.0 keeps the windowed raw velocity, smaller values smooth it."
+                "1.0 keeps the windowed raw velocity, smaller values smooth it. "
+                "Empty (default) follows params.yaml."
             ),
         ),
         DeclareLaunchArgument(
             "synced_input_velocity_filter_beta",
-            default_value="0.02",
+            default_value="",
             description=(
-                "Beta parameter for the fixed alpha-beta synchronized high-rate input velocity filter."
+                "Beta parameter for the fixed alpha-beta synchronized high-rate input velocity "
+                "filter. Empty (default) follows params.yaml."
             ),
         ),
         DeclareLaunchArgument(
             "synced_input_velocity_ratio_tolerance",
-            default_value="0.05",
+            default_value="",
             description=(
                 "Tolerance used when matching hardware_data_request_rate/control_rate to an integer "
-                "sample multiple for the synchronized input velocity filter."
+                "sample multiple for the synchronized input velocity filter. "
+                "Empty (default) follows params.yaml."
             ),
         ),
         DeclareLaunchArgument(
             "estimate_velocity_in_controller",
-            default_value="false",
+            default_value="",
             description=(
-                "Estimate joint velocity inside the 100 Hz controller loop from joint position "
-                "instead of consuming the bridge-published /joint_states velocity directly."
+                "Estimate joint velocity inside the controller loop from joint position "
+                "instead of consuming the bridge-published /joint_states velocity directly. "
+                "Empty (default) follows params.yaml."
             ),
         ),
         DeclareLaunchArgument(
             "use_velocity_feedback_in_solver",
-            default_value="true",
+            default_value="",
             description=(
                 "Pass joint velocity to the RMP solver. Set false to test position-only feedback "
-                "by zeroing qd before the solve step."
+                "by zeroing qd before the solve step. Empty (default) follows params.yaml."
             ),
         ),
         OpaqueFunction(function=_validate_params_file),

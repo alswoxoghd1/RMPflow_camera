@@ -22,8 +22,14 @@ def generate_launch_description():
     )
 
     use_camera_obstacles = LaunchConfiguration("use_camera_obstacles")
+    use_proximity_obstacles = LaunchConfiguration("use_proximity_obstacles")
+    use_camera_cloud_obstacles = LaunchConfiguration("use_camera_cloud_obstacles")
+    use_camera_combined_marker_obstacles = LaunchConfiguration(
+        "use_camera_combined_marker_obstacles"
+    )
     camera_cloud_topic = LaunchConfiguration("camera_cloud_topic")
     camera_marker_topic = LaunchConfiguration("camera_marker_topic")
+    camera_collision_marker_topic = LaunchConfiguration("camera_collision_marker_topic")
     camera_collision_output_topic = LaunchConfiguration("camera_collision_output_topic")
     camera_rviz_output_topic = LaunchConfiguration("camera_rviz_output_topic")
     camera_obstacle_output_frame = LaunchConfiguration("camera_obstacle_output_frame")
@@ -38,7 +44,7 @@ def generate_launch_description():
         PythonLaunchDescriptionSource(test_launch_path),
         launch_arguments={
             "use_obstacles": "false",
-            "use_proximity_bridge": "true",
+            "use_proximity_bridge": use_proximity_obstacles,
             "proximity_collision_obstacle_topic": proximity_raw_obstacle_topic,
             "proximity_visualization_obstacle_topic": camera_rviz_output_topic,
             "rviz_config": camera_rviz_config_path,
@@ -54,7 +60,12 @@ def generate_launch_description():
         condition=IfCondition(use_camera_obstacles),
         parameters=[{
             "cloud_topic": camera_cloud_topic,
+            "subscribe_cloud_topic": ParameterValue(
+                use_camera_cloud_obstacles,
+                value_type=bool,
+            ),
             "camera_marker_topic": camera_marker_topic,
+            "collision_marker_topic": camera_collision_marker_topic,
             # A LaunchConfiguration inside a plain Python list is resolved as a
             # single string, not a STRING_ARRAY, and the bridge rejects it and
             # dies.  Declaring the element type keeps it an array.
@@ -72,6 +83,10 @@ def generate_launch_description():
             "marker_namespace": "camera_obstacles",
             "relay_camera_markers_to_rviz": False,
             "subscribe_camera_marker_topic": False,
+            "subscribe_collision_marker_topic": ParameterValue(
+                use_camera_combined_marker_obstacles,
+                value_type=bool,
+            ),
         }],
     )
 
@@ -87,12 +102,39 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "use_camera_obstacles",
             default_value="true",
-            description="Convert camera body sphere PointCloud2 into RMPflow collision obstacles.",
+            description=(
+                "Start the camera/proximity obstacle merger that owns the RMP /obstacles output."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "use_proximity_obstacles",
+            default_value="true",
+            description=(
+                "Start the proximity obstacle bridge and include its raw MarkerArray "
+                "in the camera/proximity obstacle merger."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "use_camera_cloud_obstacles",
+            default_value="true",
+            description=(
+                "Include camera PointCloud2 spheres in the RMP collision obstacle list."
+            ),
+        ),
+        DeclareLaunchArgument(
+            "use_camera_combined_marker_obstacles",
+            default_value="false",
+            description=(
+                "Include camera combined MarkerArray spheres in the RMP collision obstacle list. "
+                "Enabling this together with the cloud path may duplicate the same obstacles."
+            ),
         ),
         DeclareLaunchArgument(
             "camera_cloud_topic",
             default_value="/rmp_camera/obstacle_body_sphere_cloud",
-            description="PointCloud2 topic containing camera body obstacle sphere centers for RMPflow.",
+            description=(
+                "PointCloud2 topic containing camera body obstacle sphere centers for RMPflow."
+            ),
         ),
         DeclareLaunchArgument(
             "camera_marker_topic",
@@ -100,9 +142,18 @@ def generate_launch_description():
             description="MarkerArray topic from the camera pipeline used for RViz visualization.",
         ),
         DeclareLaunchArgument(
+            "camera_collision_marker_topic",
+            default_value="/rmp_camera/combined_obstacle_sphere_markers",
+            description=(
+                "Combined camera MarkerArray topic optionally included in RMP collision obstacles."
+            ),
+        ),
+        DeclareLaunchArgument(
             "camera_collision_output_topic",
             default_value="/obstacles",
-            description="Combined camera+proximity MarkerArray topic consumed by rmpflow_controller.",
+            description=(
+                "Combined camera+proximity MarkerArray topic consumed by rmpflow_controller."
+            ),
         ),
         DeclareLaunchArgument(
             "camera_rviz_output_topic",
@@ -112,17 +163,24 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "camera_obstacle_output_frame",
             default_value="base_link",
-            description="Frame for camera obstacles before publishing to RMPflow; requires TF if different from the cloud frame.",
+            description=(
+                "Frame for camera obstacles before publishing to RMPflow; "
+                "requires TF if different from the cloud frame."
+            ),
         ),
         DeclareLaunchArgument(
             "camera_default_radius_m",
             default_value="0.08",
-            description="Fallback radius for each camera PointCloud2 sphere when no radius field exists.",
+            description=(
+                "Fallback radius for each camera PointCloud2 sphere when no radius field exists."
+            ),
         ),
         DeclareLaunchArgument(
             "camera_max_cloud_spheres",
             default_value="128",
-            description="Maximum number of camera sphere markers forwarded to RMPflow per cloud.",
+            description=(
+                "Maximum camera spheres accepted from either PointCloud2 or MarkerArray input."
+            ),
         ),
         DeclareLaunchArgument(
             "camera_cloud_stride",

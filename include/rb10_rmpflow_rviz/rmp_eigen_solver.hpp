@@ -161,6 +161,7 @@ struct TangentEscapeOdeParams
   double weight_goal{1.0};
   double weight_continuity{0.3};
   double e1_bias{0.0};
+  double e2_bias{0.0};
   double weight_risk{1.0};
   double weight_axis{1.5};
   double velocity_epsilon{1e-4};
@@ -176,6 +177,9 @@ struct TangentEscapeOdeParams
   double alpha_on_distance{0.20};
   double alpha_off_distance{0.25};
   double owner_hysteresis{0.005};
+  // Keep only the active TG owner alive briefly after its sensor obstacle
+  // disappears.  Zero preserves the original immediate-release behaviour.
+  double sensor_hold_time{0.0};
   double weight_stall{2.0};
   double stall_time_constant{1.5};
   double stall_speed{0.02};

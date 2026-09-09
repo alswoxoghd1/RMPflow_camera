@@ -113,6 +113,16 @@ private:
     std::array<double, tangent_escape_ode::kSensorCount> filtered_residual{};
   };
 
+  // Last valid clearance for each sensor.  Only the currently active TG owner
+  // may consume a cached value, so this never creates a new activation from a
+  // stale observation and never changes the Collision RMP obstacle list.
+  struct SensorHoldState
+  {
+    std::array<double, tangent_escape_ode::kSensorCount> last_clearance{};
+    std::array<double, tangent_escape_ode::kSensorCount> missing_elapsed{};
+    std::array<bool, tangent_escape_ode::kSensorCount> valid{};
+  };
+
   // qdd_nominal is a fresh root solve every cycle with no continuity between
   // them, so the direction it implies for a control point jitters: measured,
   // the goal reference swung inside the tangent plane at 2.6 rad/s at the 90th
@@ -126,6 +136,7 @@ private:
   mutable JointVector filtered_nominal_qdd_{JointVector::Zero()};
   mutable bool nominal_qdd_seeded_{false};
   mutable ClearanceRateState clearance_rate_state_{};
+  mutable SensorHoldState sensor_hold_state_{};
 };
 
 }  // namespace rb10_rmpflow_rviz

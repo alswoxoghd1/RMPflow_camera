@@ -2006,6 +2006,7 @@ public:
     declare_parameter("tg_rmp_weight_goal", 1.0);
     declare_parameter("tg_rmp_weight_continuity", 0.3);
     declare_parameter("tg_rmp_e1_bias", 0.0);
+    declare_parameter("tg_rmp_e2_bias", 0.0);
     declare_parameter("tg_rmp_weight_risk", 1.0);
     declare_parameter("tg_rmp_weight_axis", 1.5);
     declare_parameter("tg_rmp_velocity_epsilon", 0.0001);
@@ -2017,6 +2018,7 @@ public:
     declare_parameter("tg_rmp_alpha_on_distance", 0.3);
     declare_parameter("tg_rmp_alpha_off_distance", 0.4);
     declare_parameter("tg_rmp_owner_hysteresis", 0.005);
+    declare_parameter("tg_rmp_sensor_hold_time", 0.0);
     declare_parameter("tg_rmp_weight_stall", 2.0);
     declare_parameter("tg_rmp_stall_time_constant", 1.5);
     declare_parameter("tg_rmp_stall_speed", 0.02);
@@ -2969,6 +2971,8 @@ private:
       get_parameter("tg_rmp_weight_continuity").as_double();
     config.tangent_escape_ode.e1_bias =
       get_parameter("tg_rmp_e1_bias").as_double();
+    config.tangent_escape_ode.e2_bias =
+      get_parameter("tg_rmp_e2_bias").as_double();
     config.tangent_escape_ode.weight_risk =
       get_parameter("tg_rmp_weight_risk").as_double();
     config.tangent_escape_ode.weight_axis =
@@ -2991,6 +2995,8 @@ private:
       get_parameter("tg_rmp_alpha_off_distance").as_double();
     config.tangent_escape_ode.owner_hysteresis =
       get_parameter("tg_rmp_owner_hysteresis").as_double();
+    config.tangent_escape_ode.sensor_hold_time =
+      get_parameter("tg_rmp_sensor_hold_time").as_double();
     config.tangent_escape_ode.weight_stall =
       get_parameter("tg_rmp_weight_stall").as_double();
     config.tangent_escape_ode.stall_time_constant =

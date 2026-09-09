@@ -211,9 +211,9 @@ S(theta)     = a cos(theta) + b sin(theta) + c cos(2 theta) + e sin(2 theta)
 theta_dot    = k_theta dS/dtheta
 
 a = w_g (e1 . dg) + w_v (e1 . vhat)
-      + w_r ( eps * sum_axial w_j  -  sum_inplane w_j u_j cos(phi_j) )
+      + w_r ( eps * sum_axial w_j  -  sum_inplane w_j u_j cos(phi_j) ) + beta_e1
 b = w_g (e2 . dg) + w_v (e2 . vhat)
-      + w_r (                      -  sum_inplane w_j u_j sin(phi_j) )
+      + w_r (                      -  sum_inplane w_j u_j sin(phi_j) ) + beta_e2
 c = w_c ( -sum_inplane w_j u_j cos(2 phi_j)  -  sum_axial w_j )
 e = w_c ( -sum_inplane w_j u_j sin(2 phi_j) )
 
@@ -258,6 +258,7 @@ All under `tangent_escape_ode_*` as node parameters.
 | `tangent_damping` | `b_e` as a **rate [1/s]**; `1/b_e` is the settling time and must stay far above the 5 ms control period | 40.0 |
 | `direction_rate`, `risk_sigma` | `k_theta`, risk decay | 3.0, 0.06 |
 | `weight_goal/velocity/risk/curvature` | score weights | 1.0/0.3/1.0/1.5 |
+| `e1_bias`, `e2_bias` | signed preference for the sensor-frame tangent basis directions | 0.0, 0.0 |
 | `axial_preference` | flips `eps` globally | 1.0 |
 | `pocket_threshold`, `pocket_epsilon` | pocket guard | 0.6, 0.1 |
 | `activation_distance`, `release_distance` | ownership band | 0.30, 0.40 |

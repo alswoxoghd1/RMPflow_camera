@@ -184,6 +184,28 @@ void test_score_gradient()
   std::cout << "  score gradient matches finite difference\n";
 }
 
+void test_sensor_hold_release()
+{
+  constexpr double last = 0.10;
+  constexpr double on = 0.15;
+  constexpr double off = 0.40;
+  constexpr double hold = 0.20;
+  require(
+    std::abs(ode::held_sensor_clearance(last, on, off, 0.0, hold) - last) <= 1e-12,
+    "sensor hold does not start at the last clearance");
+  require(
+    std::abs(ode::held_sensor_clearance(last, on, off, 0.10, hold) - 0.25) <= 1e-12,
+    "sensor hold midpoint is not on the release ramp");
+  require(
+    std::abs(ode::held_sensor_clearance(last, on, off, hold, hold) - off) <= 1e-12,
+    "sensor hold does not reach the release distance at the deadline");
+  require(
+    ode::distance_activation(
+      ode::held_sensor_clearance(last, on, off, hold, hold), on, off) <= 1e-12,
+    "sensor hold deadline does not have zero TG distance authority");
+  std::cout << "  sensor hold reaches zero authority continuously\n";
+}
+
 void test_leaf(const KinematicsContext & context)
 {
   const auto & table = ode::neighborhood_table();
@@ -231,6 +253,33 @@ void test_leaf(const KinematicsContext & context)
   auto clearances = clear_scene();
   clearances[ring_sensor] = 0.05;
   set_neighbours(clearances, 0.30);
+
+  // --- signed e2 bias selects the matching tangent-basis direction ---------
+  for (const double e2_bias : {0.75, -0.75}) {
+    ode::LeafParams biased = params;
+    biased.weight_goal = 0.0;
+    biased.weight_continuity = 0.0;
+    biased.e1_bias = 0.0;
+    biased.e2_bias = e2_bias;
+    biased.weight_risk = 0.0;
+    biased.weight_axis = 0.0;
+    biased.weight_axial_block = 0.0;
+    biased.weight_i1 = 0.0;
+    biased.weight_stall = 0.0;
+    biased.direction_rate = 0.0;
+    ode::LeafState biased_state;
+    const auto out = ode::evaluate(
+      biased_state, biased, context, qd, nominal_qdd, goal, clearances, no_rates);
+    require(out.active, "e2-bias probe did not activate the leaf");
+    require(
+      std::abs(out.score_b - e2_bias) <= 1e-12,
+      "configured e2 bias was not added to score_b");
+    require(
+      std::copysign(1.0, out.tangent.dot(out.basis_e2)) ==
+      std::copysign(1.0, e2_bias),
+      "e2 bias selected the wrong tangent-basis direction");
+  }
+  std::cout << "  signed e2 bias selects +/-e2\n";
 
   double previous_budget = 0.0;
   double injected_energy = 0.0;
@@ -463,6 +512,7 @@ int main(int argc, char ** argv)
   try {
     test_neighborhood_table();
     test_score_gradient();
+    test_sensor_hold_release();
 
     // The CasADi context is used because it populates link_angular_jacobians,
     // which the leaf needs for the omega x t part of Jdot.

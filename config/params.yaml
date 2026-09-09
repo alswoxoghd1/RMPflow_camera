@@ -15,20 +15,21 @@ rmpflow_controller:
     collision_rmp_damping_std_dev: 0.01
     collision_rmp_damping_robustness_eps: 0.01
     collision_rmp_damping_velocity_gate_length_scale: 0.03
-    collision_rmp_repulsion_gain: 500.0
-    collision_rmp_repulsion_std_dev: 0.05
-    collision_rmp_metric_modulation_radius: 0.3
+    collision_rmp_repulsion_gain: 800.0
+    # collision_rmp_repulsion_gain: 50.0
+    collision_rmp_repulsion_std_dev: 0.6
+    collision_rmp_metric_modulation_radius: 0.25
     collision_rmp_metric_scalar: 100000.0
-    collision_rmp_metric_exploder_std_dev: 0.02
-    collision_rmp_metric_exploder_eps: 0.8
+    collision_rmp_metric_exploder_std_dev: 0.05
+    collision_rmp_metric_exploder_eps: 0.2
     collision_rmp_gds_clearance_smoothing: 0.0001
     collision_rmp_gds_metric_velocity_floor: 0.5
     collision_rmp_gds_metric_velocity_scale: 0.03
     collision_rmp_gds_damping_velocity_scale: 0.03
 
     # --- TARGET RMP
-    target_rmp_accel_p_gain: 40.0
-    target_rmp_accel_d_gain: 120.0
+    target_rmp_accel_p_gain: 50.0
+    target_rmp_accel_d_gain: 150.0
     target_rmp_accel_norm_eps: 0.15
     target_rmp_metric_alpha_length_scale: 0.01
     target_rmp_min_metric_alpha: 0.1
@@ -84,15 +85,18 @@ rmpflow_controller:
 
     # --- TG-RMP
     # ownership
-    enable_tangent_escape_rmp: true
+    enable_tangent_escape_rmp: false
 
     tangent_escape_rmp_clearance_margin: 0.0
     tg_rmp_owner_hysteresis: 0.005
+    # Keep the active TG owner briefly after its range disappears. Set 0.0 to
+    # restore the original immediate release without reverting any code.
+    tg_rmp_sensor_hold_time: 1.0
     tg_rmp_observe_only: false
 
     # activation
     tg_rmp_alpha_on_distance: 0.05
-    tg_rmp_alpha_off_distance: 0.3
+    tg_rmp_alpha_off_distance: 0.35
     tg_rmp_block_on_dot: 0.0
     tg_rmp_block_off_dot: 0.3
     tg_rmp_nominal_motion_epsilon: 0.001
@@ -106,6 +110,7 @@ rmpflow_controller:
     tg_rmp_weight_goal: 0.6
     tg_rmp_weight_continuity: 1.0
     tg_rmp_e1_bias: -0.30
+    tg_rmp_e2_bias: 0.0
     tg_rmp_weight_risk: 0.5
     tg_rmp_weight_axis: 0.4
     tg_rmp_risk_length: 0.15
@@ -125,7 +130,7 @@ rmpflow_controller:
     tg_rmp_clearance_rate_deadband: 0.005
 
     # acceleration
-    tg_rmp_accel_gain: 100.0
+    tg_rmp_accel_gain: 400.0
     tg_rmp_accel_length: 0.08
     tg_rmp_accel_saturation: 800.0
     tg_rmp_closing_gain: 50.0
@@ -160,7 +165,7 @@ rmpflow_controller:
     stability_certificate_data_topic: "/rmp_stability_certificate"
 
     # --- COMMAND LIMITS
-    max_joint_accel: 10.0
+    max_joint_accel: 5.0
     preserve_joint_accel_direction: true
     command_guard_max_velocity_rad_s: 1.0
     command_guard_velocity_slew_enabled: false
@@ -168,7 +173,7 @@ rmpflow_controller:
     predictive_joint_limit_guard: true
 
     # --- CONTROL LOOP
-    control_rate: 200.0
+    control_rate: 500.0
     publish_control_timing_debug: false
     control_timing_debug_topic: "/rmp_control_timing"
     control_timing_publish_rate: 10.0
@@ -185,9 +190,11 @@ rmpflow_controller:
     use_velocity_feedback_in_solver: true
     measured_position_feedback_blend: 1.0
     measured_velocity_feedback_blend: 0.6
-    enable_realtime: false
+    enable_realtime: true
     realtime_priority: 80
-    lock_memory: false
+    lock_memory: true
+    enable_socket_realtime: true
+    socket_realtime_priority: 60
 
     # --- GOAL AND WORKSPACE
     goal_x: 0.6
@@ -224,7 +231,7 @@ rmpflow_controller:
     publish_visualization: true
     publish_goal_marker: true
     publish_control_point_markers: false
-    publish_body_obstacle_markers: false
+    publish_body_obstacle_markers: true
     publish_end_effector_pose: false
     publish_debug_state: false
     control_point_marker_diameter: 0.10
@@ -447,177 +454,282 @@ rmpflow_controller:
         type: "ball"
         link_name: "link1"
         center: [0.0, -0.012, 0.085]
-        radius: 0.07
+        # radius: 0.07  # 기존값
+        # radius: 0.095  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.12  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
       link1_guard_2:
         type: "ball"
         link_name: "link1"
         center: [0.0, -0.02, 0.11]
-        radius: 0.085
+        # radius: 0.085  # 기존값
+        # radius: 0.11  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.135  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
       link1_guard_3:
         type: "ball"
         link_name: "link1"
         center: [0.0, -0.025, 0.17]
-        radius: 0.08
+        # radius: 0.08  # 기존값
+        # radius: 0.105  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.13  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_1:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.05, 0.0]
-        radius: 0.075
+        # radius: 0.075  # 기존값
+        # radius: 0.10  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.125  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.15  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_2:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.12, 0.0]
-        radius: 0.08
+        # radius: 0.08  # 기존값
+        # radius: 0.105  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.13  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_3:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.0]
-        radius: 0.085
+        # radius: 0.085  # 기존값
+        # radius: 0.11  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.135  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_4:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.11]
-        radius: 0.08
+        # radius: 0.08  # 기존값
+        # radius: 0.105  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.13  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_5:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.22]
-        radius: 0.085
+        # radius: 0.085  # 기존값
+        # radius: 0.11  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.135  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_6:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.33]
-        radius: 0.085
+        # radius: 0.085  # 기존값
+        # radius: 0.11  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.135  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_7:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.44]
-        radius: 0.08
+        # radius: 0.08  # 기존값
+        # radius: 0.105  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.13  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_8:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.55]
-        radius: 0.07
+        # radius: 0.07  # 기존값
+        # radius: 0.095  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.12  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_guard_1:
         type: "ball"
         link_name: "link3"
         center: [0.0, 0.03, 0.0]
-        radius: 0.07
+        # radius: 0.07  # 기존값
+        # radius: 0.095  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.12  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_guard_2:
         type: "ball"
         link_name: "link3"
         center: [0.0, 0.06, 0.0]
-        radius: 0.07
+        # radius: 0.07  # 기존값
+        # radius: 0.095  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.12  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_guard_3:
         type: "ball"
         link_name: "link3"
         center: [0.0, 0.09, 0.0]
-        radius: 0.07
+        # radius: 0.07  # 기존값
+        # radius: 0.095  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.12  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_guard_4:
         type: "ball"
         link_name: "link3"
         center: [0.0, 0.119, 0.0]
-        radius: 0.065
+        # radius: 0.065  # 기존값
+        # radius: 0.09  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.115  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.14  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_guard_5:
         type: "ball"
         link_name: "link3"
         center: [0.0, 0.141, 0.0]
-        radius: 0.06
+        # radius: 0.06  # 기존값
+        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_5_guard_1:
         type: "ball"
         link_name: "link3_5"
         center: [0.0, 0.0, 0.10]
-        radius: 0.065
+        # radius: 0.065  # 기존값
+        # radius: 0.09  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.115  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.14  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_5_guard_2:
         type: "ball"
         link_name: "link3_5"
         center: [0.0, 0.0, 0.21]
-        radius: 0.065
+        # radius: 0.065  # 기존값
+        # radius: 0.09  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.115  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.14  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_5_guard_3:
         type: "ball"
         link_name: "link3_5"
         center: [0.0, 0.0, 0.32]
-        radius: 0.06
+        # radius: 0.06  # 기존값
+        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_5_guard_4:
         type: "ball"
         link_name: "link3_5"
         center: [0.0, 0.0, 0.44]
-        radius: 0.055
+        # radius: 0.055  # 기존값
+        # radius: 0.08  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.105  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.13  # 현재값: 최초 대비 sphere 지름 +15 cm
       link4_guard_1:
         type: "ball"
         link_name: "link4"
         center: [0.0, -0.02, 0.0]
-        radius: 0.06
+        # radius: 0.06  # 기존값
+        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link4_guard_2:
         type: "ball"
         link_name: "link4"
         center: [0.0, -0.045, 0.0]
-        radius: 0.06
+        # radius: 0.06  # 기존값
+        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link4_guard_3:
         type: "ball"
         link_name: "link4"
         center: [0.0, -0.07, 0.0]
-        radius: 0.05
+        # radius: 0.05  # 기존값
+        # radius: 0.075  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.10  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
       link4_guard_4:
         type: "ball"
         link_name: "link4"
         center: [0.0, -0.095, 0.0]
-        radius: 0.05
+        # radius: 0.05  # 기존값
+        # radius: 0.075  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.10  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
       link4_guard_5:
         type: "ball"
         link_name: "link4"
         center: [0.0, -0.117, 0.0]
-        radius: 0.045
+        # radius: 0.045  # 기존값
+        # radius: 0.07  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.095  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.12  # 현재값: 최초 대비 sphere 지름 +15 cm
       link5_guard_1:
         type: "ball"
         link_name: "link5"
         center: [0.0, 0.0, 0.02]
-        radius: 0.06
+        # radius: 0.06  # 기존값
+        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link5_guard_2:
         type: "ball"
         link_name: "link5"
         center: [0.0, 0.0, 0.05]
-        radius: 0.06
+        # radius: 0.06  # 기존값
+        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link5_guard_3:
         type: "ball"
         link_name: "link5"
         center: [0.0, 0.0, 0.08]
-        radius: 0.055
+        # radius: 0.055  # 기존값
+        # radius: 0.08  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.105  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.13  # 현재값: 최초 대비 sphere 지름 +15 cm
       link5_guard_4:
         type: "ball"
         link_name: "link5"
         center: [0.0, 0.0, 0.11]
-        radius: 0.05
+        # radius: 0.05  # 기존값
+        # radius: 0.075  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.10  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
       link6_guard_1:
         type: "ball"
         link_name: "link6"
         center: [0.0, -0.025, 0.0]
-        radius: 0.05
+        # radius: 0.05  # 기존값
+        # radius: 0.075  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.10  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
       link6_guard_2:
         type: "ball"
         link_name: "link6"
         center: [0.0, -0.055, 0.0]
-        radius: 0.045
+        # radius: 0.045  # 기존값
+        # radius: 0.07  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.095  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.12  # 현재값: 최초 대비 sphere 지름 +15 cm
       link6_guard_3:
         type: "ball"
         link_name: "link6"
         center: [0.0, -0.085, 0.0]
-        radius: 0.045
+        # radius: 0.045  # 기존값
+        # radius: 0.07  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.095  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.12  # 현재값: 최초 대비 sphere 지름 +15 cm
       link6_guard_4:
         type: "ball"
         link_name: "link6"
         center: [0.0, -0.11, 0.0]
-        radius: 0.04
+        # radius: 0.04  # 기존값
+        # radius: 0.065  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.09  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.115  # 현재값: 최초 대비 sphere 지름 +15 cm
       tcp_rmp_guard_1:
         type: "ball"
         link_name: "tcp_rmp"
         center: [0.0, 0.04, 0.0]
-        radius: 0.02
+        # radius: 0.02  # 기존값
+        # radius: 0.045  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.07  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.095  # 현재값: 최초 대비 sphere 지름 +15 cm
       tcp_rmp_guard_2:
         type: "ball"
         link_name: "tcp_rmp"
         center: [0.0, -0.04, 0.0]
-        radius: 0.02
+        # radius: 0.02  # 기존값
+        # radius: 0.045  # 1차 변경값: sphere 지름 +5 cm
+        # radius: 0.07  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
+        radius: 0.095  # 현재값: 최초 대비 sphere 지름 +15 cm
 
     # --- OTHER
     command_mode: "velocity"
@@ -688,14 +800,14 @@ proximity_obstacle_bridge:
       - false   # proximity_distance19 -> tof2_W
       - false  # proximity_distance20 -> tof2_N
     trigger_distances:
-      - 0.5
-      - 0.5
-      - 0.5
-      - 0.5
-      - 0.30
-      - 0.30
-      - 0.30
-      - 0.30
+      - 0.4
+      - 0.4
+      - 0.4
+      - 0.4
+      - 0.25
+      - 0.25
+      - 0.25
+      - 0.25
       - 0.30
       - 0.30
       - 0.30
