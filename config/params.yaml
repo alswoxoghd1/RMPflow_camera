@@ -17,20 +17,20 @@ rmpflow_controller:
     collision_rmp_damping_velocity_gate_length_scale: 0.03
     collision_rmp_repulsion_gain: 800.0
     # collision_rmp_repulsion_gain: 50.0
-    collision_rmp_repulsion_std_dev: 0.6
-    collision_rmp_metric_modulation_radius: 0.25
+    collision_rmp_repulsion_std_dev: 0.05
+    collision_rmp_metric_modulation_radius: 0.3
     collision_rmp_metric_scalar: 100000.0
-    collision_rmp_metric_exploder_std_dev: 0.05
-    collision_rmp_metric_exploder_eps: 0.2
+    collision_rmp_metric_exploder_std_dev: 0.02
+    collision_rmp_metric_exploder_eps: 0.8
     collision_rmp_gds_clearance_smoothing: 0.0001
     collision_rmp_gds_metric_velocity_floor: 0.5
     collision_rmp_gds_metric_velocity_scale: 0.03
     collision_rmp_gds_damping_velocity_scale: 0.03
 
     # --- TARGET RMP
-    target_rmp_accel_p_gain: 50.0
-    target_rmp_accel_d_gain: 150.0
-    target_rmp_accel_norm_eps: 0.15
+    target_rmp_accel_p_gain: 40.0
+    target_rmp_accel_d_gain: 120.0
+    target_rmp_accel_norm_eps: 0.08
     target_rmp_metric_alpha_length_scale: 0.01
     target_rmp_min_metric_alpha: 0.1
     target_rmp_max_metric_scalar: 100000.0
@@ -91,12 +91,12 @@ rmpflow_controller:
     tg_rmp_owner_hysteresis: 0.005
     # Keep the active TG owner briefly after its range disappears. Set 0.0 to
     # restore the original immediate release without reverting any code.
-    tg_rmp_sensor_hold_time: 1.0
+    tg_rmp_sensor_hold_time: 3.0
     tg_rmp_observe_only: false
 
     # activation
     tg_rmp_alpha_on_distance: 0.05
-    tg_rmp_alpha_off_distance: 0.35
+    tg_rmp_alpha_off_distance: 0.45
     tg_rmp_block_on_dot: 0.0
     tg_rmp_block_off_dot: 0.3
     tg_rmp_nominal_motion_epsilon: 0.001
@@ -109,7 +109,7 @@ rmpflow_controller:
     tg_rmp_direction_rate: 1.5
     tg_rmp_weight_goal: 0.6
     tg_rmp_weight_continuity: 1.0
-    tg_rmp_e1_bias: -0.30
+    tg_rmp_e1_bias: -0.3
     tg_rmp_e2_bias: 0.0
     tg_rmp_weight_risk: 0.5
     tg_rmp_weight_axis: 0.4
@@ -165,7 +165,7 @@ rmpflow_controller:
     stability_certificate_data_topic: "/rmp_stability_certificate"
 
     # --- COMMAND LIMITS
-    max_joint_accel: 5.0
+    max_joint_accel: 10.0
     preserve_joint_accel_direction: true
     command_guard_max_velocity_rad_s: 1.0
     command_guard_velocity_slew_enabled: false
@@ -173,7 +173,7 @@ rmpflow_controller:
     predictive_joint_limit_guard: true
 
     # --- CONTROL LOOP
-    control_rate: 500.0
+    control_rate: 200.0
     publish_control_timing_debug: false
     control_timing_debug_topic: "/rmp_control_timing"
     control_timing_publish_rate: 10.0

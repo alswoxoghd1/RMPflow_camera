@@ -234,7 +234,7 @@ Visualization Manager:
       Enabled: true
       Name: GoalMarker
       Namespaces:
-        {}
+        goal: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -283,7 +283,7 @@ Visualization Manager:
       Enabled: true
       Name: BodyObstacles
       Namespaces:
-        {}
+        body_obstacles: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -332,7 +332,7 @@ Visualization Manager:
       Enabled: true
       Name: TcpAccel
       Namespaces:
-        {}
+        tcp_accel: true
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -401,18 +401,18 @@ Visualization Manager:
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.6653820872306824
-        Y: -0.4193572998046875
-        Z: 0.4262256324291229
+        X: 0.30587679147720337
+        Y: -0.5883944630622864
+        Z: 0.4102550446987152
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.28241923451423645
+      Pitch: 0.5024192929267883
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 5.281203746795654
+      Yaw: 4.6212053298950195
     Saved: ~
 Window Geometry:
   Displays:
