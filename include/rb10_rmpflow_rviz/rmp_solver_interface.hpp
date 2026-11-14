@@ -26,6 +26,10 @@ public:
 
   virtual ~RmpSolverInterface() = default;
 
+  // Separate scalar observations for TG only. Collision keeps its existing
+  // obstacle geometry and input path. Called on the solver/control thread.
+  virtual void set_tangent_observations(const tangent_sensor_history::Input &) const {}
+
   virtual RmpSolveResult solve(
     const JointVector & q,
     const JointVector & qd,

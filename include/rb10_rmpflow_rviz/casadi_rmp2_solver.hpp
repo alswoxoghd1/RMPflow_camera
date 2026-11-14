@@ -21,6 +21,8 @@ public:
 
   CasadiRmp2Solver(EigenRmpConfig config, std::string urdf_path);
 
+  void set_tangent_observations(const tangent_sensor_history::Input & input) const override;
+
   RmpSolveResult solve(
     const JointVector & q,
     const JointVector & qd,

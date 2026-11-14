@@ -23,6 +23,7 @@ Usage:
 
 import argparse
 import csv
+import math
 
 import rclpy
 from rclpy.node import Node
@@ -46,11 +47,10 @@ SENSORS = [
 # I1 scalars.
 FIXED = 56
 STRIDE = 4
-I1_BASE = FIXED + STRIDE * 20
-ACCEL_BASE = I1_BASE + 4
-TERM_BASE = ACCEL_BASE + 8
-PROGRESS_BASE = TERM_BASE + 8
-BASIS_BASE = PROGRESS_BASE + 4
+SENSOR_LAYOUTS = {
+    20: SENSORS,
+    12: [SENSORS[k] for k in (0, 1, 2, 3, 4, 5, 6, 7, 19, 18, 17, 16)],
+}
 
 # Scalar slots this run cares about.
 SCALARS = [
@@ -75,6 +75,8 @@ SCALARS = [
     ("o_out_x", 17), ("o_out_y", 18), ("o_out_z", 19),
     ("push_accel", 28), ("damping_accel", 31),
     ("budget_remaining", 6), ("injected_power", 16),
+    ("leaf_jacobian_norm", 38), ("root_metric_norm", 39),
+    ("root_force_norm", 40), ("natural_force", 32), ("jdot_qdot", 34),
 ]
 
 # I1 whole-body kinematic consequence, appended after the per-sensor block.
@@ -111,6 +113,30 @@ BASIS_SCALARS = [
     ("goal_plane_x", 6), ("goal_plane_y", 7), ("goal_plane_z", 8),
 ]
 
+# Appended after the existing basis block; absent in older schema-9 logs.
+PREDICTION_SCALARS = [
+    ("predicted_risk", 0), ("predicted_risk_score", 1),
+    ("predicted_risk_gradient", 2), ("predicted_min_clearance", 3),
+    ("predicted_critical_sensor", 4), ("predicted_obstacle_sensor", 5),
+    ("predicted_pair_count", 6), ("predicted_approaching_pair_count", 7),
+    ("total_direction_score", 8),
+]
+
+
+HISTORY_SCALARS = [
+    ("direction_mode", 0), ("history_risk", 1), ("history_risk_score", 2),
+    ("history_risk_gradient", 3), ("unknown_motion_risk", 4),
+    ("history_min_predicted_range", 5), ("history_confidence", 6),
+    ("history_model_count", 7), ("history_unknown_count", 8),
+    ("history_critical_sensor", 9), ("handoff_gain", 10),
+]
+
+STEERING_SCALARS = [
+    ("steering_speed", 0), ("steering_velocity_dot", 1),
+    ("steering_velocity_source", 2), ("steering_fallback", 3),
+    ("steering_turn_rate", 4),
+]
+
 
 class Logger(Node):
     def __init__(self, topic, path):
@@ -119,37 +145,76 @@ class Logger(Node):
         self.skipped = 0
         self.path = path
         self.file = open(path, "w", newline="")
+        self.sensors = None
+        self.writer = csv.writer(self.file)
+        self.create_subscription(Float64MultiArray, topic, self.on_data, 50)
+        self.get_logger().info(f"logging {topic} -> {path}")
+
+    def write_header(self, sensors):
+        self.sensors = sensors
         header = ["t"] + [name for name, _ in SCALARS]
         header += [name for name, _ in I1_SCALARS]
         header += [name for name, _ in ACCEL_SCALARS]
         header += [name for name, _ in TERM_SCALARS]
         header += [name for name, _ in PROGRESS_SCALARS]
         header += [name for name, _ in BASIS_SCALARS]
-        for name, link in SENSORS:
+        for name, link in sensors:
             tag = f"{name}__{link}"
             header += [f"d__{tag}", f"dot_tcp__{tag}",
                        f"dot_nom__{tag}", f"mag_nom__{tag}"]
-        self.writer = csv.writer(self.file)
+        header += [name for name, _ in PREDICTION_SCALARS]
+        header += [name for name, _ in HISTORY_SCALARS]
+        for frame, _ in sensors:
+            header += [f"history_count__{frame}", f"history_age__{frame}",
+                       f"history_noise__{frame}", f"history_gradient_norm__{frame}"]
+        header += [name for name, _ in STEERING_SCALARS]
         self.writer.writerow(header)
-        self.create_subscription(Float64MultiArray, topic, self.on_data, 50)
-        self.get_logger().info(f"logging {topic} -> {path}")
 
     def on_data(self, msg):
         values = msg.data
         # An idle cycle publishes the single-element sentinel.
-        if len(values) < BASIS_BASE + len(BASIS_SCALARS):
+        if len(values) < FIXED or values[26] != 9.0 or not math.isfinite(values[50]):
             self.skipped += 1
             return
+        count = int(values[50])
+        sensors = SENSOR_LAYOUTS.get(count)
+        i1_base = FIXED + STRIDE * count
+        accel_base = i1_base + 4
+        term_base = accel_base + 8
+        progress_base = term_base + 8
+        basis_base = progress_base + 4
+        prediction_base = basis_base + 9
+        if (sensors is None or count != values[50] or len(values) < prediction_base
+                or (self.sensors is not None and self.sensors != sensors)):
+            self.skipped += 1
+            return
+        if self.sensors is None:
+            self.write_header(sensors)
         stamp = self.get_clock().now().nanoseconds * 1e-9
         row = [stamp] + [values[slot] for _, slot in SCALARS]
-        row += [values[I1_BASE + offset] for _, offset in I1_SCALARS]
-        row += [values[ACCEL_BASE + offset] for _, offset in ACCEL_SCALARS]
-        row += [values[TERM_BASE + offset] for _, offset in TERM_SCALARS]
-        row += [values[PROGRESS_BASE + offset] for _, offset in PROGRESS_SCALARS]
-        row += [values[BASIS_BASE + offset] for _, offset in BASIS_SCALARS]
-        for k in range(len(SENSORS)):
+        row += [values[i1_base + offset] for _, offset in I1_SCALARS]
+        row += [values[accel_base + offset] for _, offset in ACCEL_SCALARS]
+        row += [values[term_base + offset] for _, offset in TERM_SCALARS]
+        row += [values[progress_base + offset] for _, offset in PROGRESS_SCALARS]
+        row += [values[basis_base + offset] for _, offset in BASIS_SCALARS]
+        for k in range(count):
             base = FIXED + STRIDE * k
             row += list(values[base:base + STRIDE])
+        row += [values[prediction_base + offset]
+                if prediction_base + offset < len(values) else ""
+                for _, offset in PREDICTION_SCALARS]
+        history_base = prediction_base + len(PREDICTION_SCALARS)
+        row += [values[history_base + offset]
+                if history_base + offset < len(values) else ""
+                for _, offset in HISTORY_SCALARS]
+        history_sensor_base = history_base + len(HISTORY_SCALARS)
+        row += [values[history_sensor_base + offset]
+                if history_sensor_base + offset < len(values) else ""
+                for offset in range(4 * count)]
+        steering_base = history_sensor_base + 4 * count
+        row += [values[steering_base + offset]
+                if steering_base + offset < len(values) else ""
+                for _, offset in STEERING_SCALARS]
         self.writer.writerow(row)
         self.rows += 1
 

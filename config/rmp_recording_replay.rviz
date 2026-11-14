@@ -1,0 +1,58 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+  - Class: rviz_common/Views
+    Name: Views
+Visualization Manager:
+  Class: ''
+  Global Options:
+    Fixed Frame: rmp_replay/base_link
+    Background Color: 32; 38; 48
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+    - Class: rviz_default_plugins/Select
+    - Class: rviz_default_plugins/FocusCamera
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Ground
+      Enabled: true
+      Cell Size: 0.1
+      Plane Cell Count: 30
+      Color: 80; 90; 100
+    - Class: rviz_default_plugins/RobotModel
+      Name: Recorded Robot
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /rmp_replay/robot_description
+        Durability Policy: Transient Local
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+        Depth: 1
+      Visual Enabled: true
+      Alpha: 0.4
+      Collision Enabled: false
+      TF Prefix: rmp_replay
+    - Class: rviz_default_plugins/MarkerArray
+      Name: RMP arrows and metrics
+      Enabled: true
+      Topic:
+        Value: /rmp_replay/markers
+        Reliability Policy: Reliable
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Depth: 1
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Target Frame: rmp_replay/base_link
+      Distance: 2.2
+      Focal Point: {X: 0.1, Y: -0.1, Z: 0.6}
+      Pitch: 0.45
+      Yaw: 0.8
+Window Geometry:
+  Width: 1500
+  Height: 950

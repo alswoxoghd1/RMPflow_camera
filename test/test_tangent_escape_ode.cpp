@@ -21,6 +21,8 @@
 #include "rb10_rmpflow_rviz/casadi_rb10_kinematics.hpp"
 #include "rb10_rmpflow_rviz/rb10_model.hpp"
 #include "rb10_rmpflow_rviz/tangent_escape_ode.hpp"
+#include "rb10_rmpflow_rviz/simple_tangent_leaf.hpp"
+#include "tg_blockage_recorded_cases.hpp"
 
 namespace
 {
@@ -501,6 +503,176 @@ void test_leaf(const KinematicsContext & context)
   std::cout << "  axial preference flip is accepted\n";
 }
 
+void test_history_progress_direction(const KinematicsContext & context)
+{
+  auto params = make_params();
+  params.direction_mode = rb10_rmpflow_rviz::tangent_sensor_history::DirectionMode::kSensorHistory;
+  params.history.weight_risk = 0.0;
+  params.history.weight_continuity = 0.0;
+  params.direction_rate = 0.0;
+  const Eigen::Vector3d offset(0.15, -0.10, 0.08);
+  const auto goal = context.tcp_position + offset;
+  JointVector nominal = JointVector::Ones();
+  for (const std::size_t owner : {std::size_t{0}, std::size_t{5}}) {
+    auto scene = clear_scene();
+    scene[owner] = 0.13;
+    ode::LeafState a, b, c, at_goal;
+    const auto first = ode::evaluate(a, params, context, nominal, nominal, goal, scene, {});
+    auto reversed_context = context;
+    for (auto & v : reversed_context.control_point_velocities) { v = -v; }
+    for (auto & curvature : reversed_context.control_point_curvatures) {
+      curvature *= 100.0;
+    }
+    const auto reversed = ode::evaluate(
+      b, params, reversed_context, -nominal, -nominal, goal, scene, {});
+    require(first.active && reversed.active, "history progress test did not activate");
+    require(std::abs(first.alpha_block - reversed.alpha_block) < 1e-12,
+      "braking or curvature changed history blockage");
+    require(std::abs(first.goal_e1 - reversed.goal_e1) < 1e-12 &&
+      std::abs(first.goal_e2 - reversed.goal_e2) < 1e-12,
+      "braking or curvature changed the goal progress preference");
+    require(std::abs(std::remainder(first.theta - reversed.theta, 2.0 * M_PI)) < 1e-12,
+      "braking changed the initial history direction");
+    const auto opposite = ode::evaluate(
+      c, params, context, nominal, nominal, context.tcp_position - offset, scene, {});
+    require(std::abs(first.goal_e1 + opposite.goal_e1) < 1e-12 &&
+      std::abs(first.goal_e2 + opposite.goal_e2) < 1e-12,
+      "goal reversal did not reverse the progress preference");
+    const auto reached = ode::evaluate(
+      at_goal, params, context, nominal, nominal, context.tcp_position, scene, {});
+    require(reached.goal_e1 == 0.0 && reached.goal_e2 == 0.0,
+      "TCP at goal generated a spurious link progress preference");
+    require(reached.alpha_block == 0.0 && reached.metric == 0.0 &&
+      !reached.block_reference_valid,
+      "history failed open without goal progress");
+    auto unreachable = context;
+    unreachable.tcp_jacobian.setZero();
+    ode::LeafState unreachable_state;
+    const auto no_progress = ode::evaluate(
+      unreachable_state, params, unreachable, nominal, nominal, goal, scene, {});
+    require(no_progress.alpha_block == 0.0 && no_progress.force_contribution.isZero(),
+      "degenerate goal kinematics activated TG");
+    require(!first.goal_from_nominal, "history progress incorrectly labelled as nominal acceleration");
+  }
+  std::cout << "  history goal preference is independent of braking and follows the TCP goal\n";
+}
+
+void test_history_angle_gate(const KinematicsContext & original)
+{
+  auto params = make_params();
+  params.direction_mode = rb10_rmpflow_rviz::tangent_sensor_history::DirectionMode::kSensorHistory;
+  params.history.weight_risk = 0.0;
+  params.direction_rate = 0.0;
+  auto context = original;
+  context.tcp_jacobian.setZero();
+  context.tcp_jacobian.leftCols<3>().setIdentity();
+  context.control_point_jacobians[5] = context.tcp_jacobian;
+  const auto & sensor = RB10Model::sensor_control_points[5];
+  const Eigen::Vector3d n = (context.link_rotations[sensor.parent_link] * sensor.local_normal).normalized();
+  const Eigen::Vector3d side = n.unitOrthogonal();
+  auto scene = clear_scene();
+  scene[5] = 0.02;
+  for (const double angle : {0.0, 10.0, 20.0, 30.0, 40.0, 69.7, 90.0, 180.0}) {
+    const double radians = angle * M_PI / 180.0;
+    const Eigen::Vector3d goal = context.tcp_position + 0.1 *
+      (std::cos(radians) * n + std::sin(radians) * side);
+    ode::LeafState state;
+    const auto result = ode::evaluate(state, params, context, JointVector::Zero(),
+      JointVector::Zero(), goal, scene, {});
+    const double expected = std::clamp(1.0 - angle / 40.0, 0.0, 1.0);
+    require(std::abs(result.alpha_block - expected) < 1e-7,
+      "history activation is not linear in angle");
+    if (angle >= 40.0) {
+      require(result.force_contribution.norm() < 1e-7,
+        "outside-angle detection injected TG force");
+    }
+  }
+  params.capture_history_decision = true;
+  params.history.weight_continuity = 0.1;
+  context.control_point_velocities[5] = side;
+  ode::LeafState state;
+  int calls = 0;
+  const ode::DirectionObjective objective = [&](double, std::size_t) {
+    ++calls; return rb10_rmpflow_rviz::tangent_sensor_history::Risk{};
+  };
+  const Eigen::Vector3d off_goal = context.tcp_position + .1 * side;
+  const Eigen::Vector3d on_goal = context.tcp_position + .1 * n;
+  const auto off = ode::evaluate(state,params,context,JointVector::Zero(),
+    JointVector::Zero(),off_goal,scene,{}, {},objective);
+  require(calls == 0 && !state.theta_valid && off.decision.seeds.empty(),
+    "off TG selected a direction or evaluated candidate risk");
+  const auto on = ode::evaluate(state,params,context,JointVector::Zero(),
+    JointVector::Zero(),on_goal,scene,{}, {},objective);
+  require(on.metric > 0 && state.theta_valid && on.decision.seeds.size() == 8 && calls > 0,
+    "positive metric failed to perform initial candidate search");
+  double motion_span = 0.0;
+  for (const auto & seed : on.decision.seeds) { motion_span = std::max(motion_span, std::abs(seed[2])); }
+  require(motion_span > .05,"initial selection ignored existing sensor motion");
+  const double selected = state.theta;
+  calls = 0;
+  const auto paused = ode::evaluate(state,params,context,JointVector::Zero(),
+    JointVector::Zero(),off_goal,scene,{}, {},objective);
+  require(calls == 0 && state.theta == selected && paused.theta_rate == 0,
+    "zero metric continued direction optimization");
+  const auto resumed = ode::evaluate(state,params,context,JointVector::Zero(),
+    JointVector::Zero(),on_goal,scene,{}, {},objective);
+  require(resumed.metric > 0 && resumed.decision.seeds.empty(),
+    "temporary zero metric reinitialized the same detection direction");
+
+}
+
+void test_recorded_history_blockage(CasadiRb10Kinematics & model)
+{
+  auto params = make_params();
+  params.direction_mode = rb10_rmpflow_rviz::tangent_sensor_history::DirectionMode::kSensorHistory;
+  params.history.weight_continuity = 0.0;
+  params.direction_rate = 0.0;
+  params.alpha_on_distance = 0.05;
+  params.alpha_off_distance = 0.45;
+  for (const auto & sample : recorded_block_cases) {
+    const JointVector q = Eigen::Map<const JointVector>(sample.q.data());
+    const JointVector qd = Eigen::Map<const JointVector>(sample.qd.data());
+    const JointVector nominal = Eigen::Map<const JointVector>(sample.nominal.data());
+    const Eigen::Vector3d goal = Eigen::Map<const Eigen::Vector3d>(sample.goal.data());
+    const auto context = model.forward_context(q, qd);
+    auto scene = clear_scene();
+    scene[sample.owner] = sample.clearance;
+    ode::LeafState state;
+    const auto result = ode::evaluate(state, params, context, qd, nominal, goal, scene, {});
+    require(result.active && result.sensor_index == sample.owner,
+      std::string(sample.label) + ": wrong recorded owner");
+    require(sample.expected_block == 0.0 ? result.alpha_block == 0.0 : result.alpha_block > 0.0,
+      std::string(sample.label) + ": incorrect goal-progress blockage");
+    require(result.block_from_goal_progress && result.block_reference_valid,
+      "missing goal-progress activation diagnostics");
+    if (sample.expected_block == 0.0) {
+      require(result.metric == 0.0 && result.metric_contribution.isZero() &&
+        result.force_contribution.isZero(), "unrelated detection injected TG into root");
+    } else {
+      // A genuine blocked goal must remain eligible while stopped or retreating.
+      for (double velocity_scale : {0.0, -1.0}) {
+        const JointVector test_qd = velocity_scale * qd;
+        const auto test_context = model.forward_context(q, test_qd);
+        ode::LeafState test_state;
+        const auto still_blocked = ode::evaluate(
+          test_state, params, test_context, test_qd, -nominal, goal, scene, {});
+        require(std::abs(still_blocked.alpha_block - result.alpha_block) < 1e-8 &&
+          still_blocked.metric > 0.0,
+          "stopping or retreating suppressed a blocked goal");
+      }
+    }
+    auto trial_params = params;
+    trial_params.freeze_owner = true;
+    auto trial_state = state;
+    const auto trial = rb10_rmpflow_rviz::simple_tangent_leaf::evaluate_fixed(
+      trial_state, trial_params, context, qd, nominal, goal, scene, {});
+    require(std::abs(trial.alpha_block - result.alpha_block) < 1e-12 &&
+      std::abs(trial.metric - result.metric) < 1e-9,
+      "history candidate prediction uses a different activation gate");
+    std::cout << "  " << sample.label << ": block=" << result.alpha_block << '\n';
+  }
+}
+
 }  // namespace
 
 int main(int argc, char ** argv)
@@ -527,6 +699,9 @@ int main(int argc, char ** argv)
       .norm() > 0.0,
       "angular jacobian is empty; omega x t would be silently dropped");
     test_leaf(context);
+    test_history_progress_direction(context);
+    test_history_angle_gate(context);
+    test_recorded_history_blockage(model);
 
     std::cout << "tangent_ode Escape leaf tests passed\n";
   } catch (const std::exception & error) {

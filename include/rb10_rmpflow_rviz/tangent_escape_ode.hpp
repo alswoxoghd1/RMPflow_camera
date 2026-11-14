@@ -1,4 +1,6 @@
 #pragma once
+#include "rb10_rmpflow_rviz/tg_authority_boost.hpp"
+#include "rb10_rmpflow_rviz/tg_response_direction.hpp"
 
 // Escape RMP v2 -- a one-dimensional leaf laid out next to the Collision leaf.
 //
@@ -22,10 +24,13 @@
 
 #include <array>
 #include <cstddef>
+#include <functional>
 
 #include <Eigen/Dense>
 
 #include "rb10_rmpflow_rviz/rb10_model.hpp"
+#include "rb10_rmpflow_rviz/tangent_escape_prediction.hpp"
+#include "rb10_rmpflow_rviz/tangent_sensor_history.hpp"
 
 namespace rb10_rmpflow_rviz
 {
@@ -81,6 +86,14 @@ neighborhood_table();
 
 struct LeafParams
 {
+  tangent_sensor_history::Input response_input;
+  std::function<TgDirectionCandidate(double, std::size_t)> response_mobility;
+  bool capture_history_decision{false};
+  tangent_sensor_history::DirectionMode direction_mode{
+    tangent_sensor_history::DirectionMode::kLegacy};
+  tangent_sensor_history::Params history;
+  bool freeze_owner{false};  // internal, frozen-direction counterfactual only
+  bool goal_progress_blockage{false};  // internal: preserve history activation in fixed trials
   bool enabled{false};
 
   // Observation mode.  Ownership, the direction ODE, the activation gate and
@@ -91,16 +104,20 @@ struct LeafParams
   // uncontaminated reference to be judged against.
   bool observe_only{false};
 
-  // Blockage activation.  alpha_block = smoothstep(o . ahat_nominal) between
+  // History uses goal-directed kinematic motion, without braking or curvature.
+  // Other modes retain the nominal-acceleration reference below.
+  // Blockage activation.  alpha_block = smoothstep(o . reference_direction) between
   // these two, where ahat_nominal is where the goal-driven policy accelerates
   // the owner's control point with every obstacle removed.  Zero means the
   // point is not being driven into its obstacle at all, so the leaf has
   // nothing to prevent.
   double block_on_dot{0.0};
   double block_off_dot{0.3};
+  double block_start_angle_deg{40.0};  // history: linear in angle, zero at this angle
 
   // Below this the nominal control-point acceleration carries no trustworthy
-  // direction -- near the goal it vanishes.  The blockage gate then fails
+  // direction -- near the goal it vanishes. History closes the gate when its
+  // goal-progress reference is below this threshold. Other modes still fail
   // OPEN: reporting "not blocked" there would switch the leaf off for want of
   // a reading, which is exactly how the deleted velocity gate failed.
   double nominal_motion_epsilon{1e-3};
@@ -120,6 +137,9 @@ struct LeafParams
   // v_m, its own width -- the metric and the acceleration are allowed to react
   // to the closing rate on different scales.
   double metric_rate_scale{0.05};
+  TgAuthorityBoostParams authority_boost;
+  double history_metric_rate_floor{0.5};  // history only; block/distance gates still release
+
 
   // Acceleration.  The leaf is designed in canonical (a, M) form; f = M a is
   // only the representation the pullback transports.  accel_gain is a real
@@ -203,6 +223,14 @@ struct LeafParams
   // risk term already speaks for; overlapping the two would double-count the
   // same neighbours and blur what each term is answering.
   bool i1_exclude_parent_link{true};
+  // Additional static-obstacle lookahead, independent of I1 and local risk.
+  // The distance is the requested owner displacement in metres; Ji# maps it
+  // to joints and Jk predicts every other sensor point's displacement.
+  // Zero weight reproduces the original direction selection exactly.
+  double weight_predicted_risk{0.0};
+  double prediction_distance{0.02};
+  double prediction_risk_length{0.10};
+  double prediction_damping{0.05};
   // Flips the preferred axial escape direction for every sensor at once.
   double axial_preference{1.0};
 
@@ -259,6 +287,11 @@ struct LeafParams
 
 struct LeafState
 {
+  TgResponseDirection response;
+  double reselect_elapsed{0.0};
+  double probe_target{0.0}, probe_strength{0.0};
+  std::size_t probe_owner{static_cast<std::size_t>(-1)};
+
   bool active{false};
   bool theta_valid{false};
   std::size_t sensor_index{0};
@@ -270,11 +303,49 @@ struct LeafState
   // Last cycle's tangential rate: the motion the previous command
   // actually produced, which is what stall has to judge.
   double previous_tangent_rate{0.0};
+  double filtered_theta_rate{0.0};
+  double handoff_gain{1.0};
+  Eigen::Vector3d steering_direction{Eigen::Vector3d::Zero()};
+  bool steering_direction_valid{false};
+  double steering_rate{0.0};
+};
+
+struct DirectionDecision
+{
+  // Event bits: 1 initial search, 2 owner change requested, 4 owner changed,
+  // 8 handoff fade, 16 no observations reset, 32 release reset, 64 disabled,
+  // 128 singular handoff projection, 256 initial seed applied.
+  unsigned int events{0};
+  bool active_before{false};
+  bool theta_valid_before{false};
+  std::size_t owner_before{0};
+  int closest{-1};
+  double closest_clearance{std::numeric_limits<double>::infinity()};
+  double owner_clearance{std::numeric_limits<double>::infinity()};
+  double theta_before{0.0};
+  double theta_evaluated{0.0};
+  double filtered_rate_before{0.0};
+  double handoff_before{1.0};
+  double goal_gradient{0.0};
+  double continuity_gradient{0.0};
+  double escape_gradient{0.0};
+  std::vector<double> seed_escape;
+  double history_gradient{0.0};  // signed, weighted contribution to ascent
+  double total_gradient{0.0};
+  double raw_rate{0.0};
+  double clamped_rate{0.0};
+  tangent_sensor_history::Risk risk_before;
+  std::vector<std::array<double, 5>> seeds; // theta, goal, continuity, -risk, total
 };
 
 struct LeafOutput
 {
+  DirectionDecision decision;
   bool active{false};
+  Eigen::Vector3d steering_velocity{Eigen::Vector3d::Zero()};
+  int steering_velocity_source{0};  // 0=solver state, 1=measured joint state
+  int steering_fallback{0};         // bits: 1=nominal at rest, 2=sensor at rest, 4=parallel
+  double steering_turn_rate{0.0};   // commanded rotation inside the velocity plane
   std::size_t sensor_index{0};
   double clearance{0.0};
 
@@ -322,6 +393,13 @@ struct LeafOutput
   bool goal_from_nominal{false};
   std::size_t i1_count{0};       // body sensors that contributed
   double i1_largest_gain{0.0};   // max |Gki t| seen, for scaling weight_i1
+  tangent_escape_prediction::Risk predicted_risk;
+  double predicted_risk_score{0.0};  // -weight * risk, added to the old score
+  double total_direction_score{0.0};
+  tangent_sensor_history::Risk history_risk;
+  double history_risk_score{0.0};
+  int direction_mode{0};
+  double handoff_gain{1.0};
 
   double clearance_rate{0.0};        // ddot_hat for the owner
   double closing_gate{0.0};          // gamma_v(ddot_hat)
@@ -333,6 +411,7 @@ struct LeafOutput
   double desired_acceleration{0.0};  // a_e, bounded by accel_gain
   double natural_force{0.0};         // f_e = m a_e
   double metric{0.0};             // m
+  double metric_base{0.0}, authority_gain{1.0};
   double metric_gate{0.0};        // gamma_m(ddot_hat)
   double alpha_free{1.0};
   double injected_power{0.0};     // f_e * ydot
@@ -376,8 +455,12 @@ struct LeafOutput
   double alpha_distance{0.0};   // owner distance
   double alpha_block{1.0};      // owner driven into its own obstacle?
   double alpha_total{0.0};      // alpha_TG
-  double blockage{0.0};         // o . ahat_nominal, ungated
+  double blockage{0.0};         // mounting axis . block reference direction, ungated
   double nominal_magnitude{0.0};
+  bool block_from_goal_progress{false};
+  bool block_reference_valid{false};
+  Eigen::Vector3d block_reference{Eigen::Vector3d::Zero()};
+  JointVector goal_progress_joint_motion{JointVector::Zero()};
   std::size_t active_link{0};   // parent link of the owner
   bool observation_valid{false};
   std::size_t observation_count{0};
@@ -392,7 +475,11 @@ struct LeafOutput
   // Both are recorded raw, for every sensor, with no g() applied and with the
   // nominal magnitude alongside, so the reference, the shape of g and the
   // dead-band all get chosen from the data rather than fixed here.
-  std::array<double, kSensorCount> sensor_clearance{};
+  std::array<double, kSensorCount> sensor_clearance = [] {
+      std::array<double, kSensorCount> result{};
+      result.fill(std::numeric_limits<double>::infinity());
+      return result;
+    }();
   std::array<double, kSensorCount> sensor_dot_goal_tcp{};
   std::array<double, kSensorCount> sensor_dot_goal_nominal{};
   std::array<double, kSensorCount> sensor_nominal_magnitude{};
@@ -406,8 +493,11 @@ struct LeafOutput
 // non-finite or negative-infinity entry means that sensor saw nothing.
 // `nominal_qdd` is the root solve over the goal-driven leaves with the
 // obstacle list emptied, i.e. the motion the robot would command if nothing
-// were in the way.  It drives the blockage gate and the per-sensor blockage
-// record; it never enters (a, M) directly.
+// were in the way. It remains in the per-sensor nominal diagnostics and the
+// non-history blockage gate. History uses goal-directed kinematic motion for
+// blockage and records that reference separately; neither enters (a, M) directly.
+using DirectionObjective = std::function<tangent_sensor_history::Risk(double, std::size_t)>;
+
 LeafOutput evaluate(
   LeafState & state,
   const LeafParams & params,
@@ -419,7 +509,10 @@ LeafOutput evaluate(
   // Filtered rate of change of each clearance, indexed like `clearances`.
   // Negative means closing.  Empty is treated as all-zero, which makes the
   // closing-rate term vanish rather than misfire.
-  const std::vector<double> & clearance_rates);
+  const std::vector<double> & clearance_rates,
+  // World-frame detections, held fixed during the candidate prediction.
+  const std::vector<tangent_escape_prediction::StaticObstacle> & prediction_obstacles = {},
+  const DirectionObjective & objective = {});
 
 // alpha_d: 1 at or below `on`, 0 at or above `off`, quintic in between.
 double distance_activation(double clearance, double on, double off);

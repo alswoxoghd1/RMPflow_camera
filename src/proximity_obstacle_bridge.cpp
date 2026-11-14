@@ -2,6 +2,7 @@
 #include <chrono>
 #include <cmath>
 #include <iterator>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <string>
@@ -77,6 +78,9 @@ public:
     declare_parameter("obstacle_marker_lifetime", 0.25);
     declare_parameter("valid_margin", 1e-3);
     declare_parameter("range_scale", 0.001);
+    declare_parameter("tg_observation_topic", "/tg_rmp/sensor_ranges");
+    declare_parameter("tg_observation_max_range", 0.30);
+    declare_parameter("tg_observation_max_ranges", std::vector<double>{});
     declare_parameter("minimum_hold_distance", 0.05);
     declare_parameter("trigger_distance", 0.15);
     declare_parameter("trigger_distances", std::vector<double>{});
@@ -85,6 +89,12 @@ public:
     declare_parameter("rmp_active_flag_value", 1);
     declare_parameter("enable_proximity_distance_1_4", true);
     declare_parameter("joint_state_topic", "joint_states");
+    declare_parameter("elbow_tof3_1_n_ignore_enabled", false);
+    declare_parameter("elbow_tof3_1_n_ignore_threshold_deg", -120.0);
+    declare_parameter("elbow_tof3_1_n_ignore_state_timeout", 0.5);
+    declare_parameter("elbow_tof3_1_s_ignore_enabled", false);
+    declare_parameter("elbow_tof3_1_s_ignore_threshold_deg", -90.0);
+    declare_parameter("elbow_tof3_1_s_ignore_state_timeout", 0.5);
     declare_parameter("elbow_tof3_1_w_ignore_enabled", false);
     declare_parameter("elbow_tof3_1_w_ignore_min_deg", -150.0);
     declare_parameter("elbow_tof3_1_w_ignore_max_deg", -140.0);
@@ -102,6 +112,12 @@ public:
       std::max(get_parameter("obstacle_marker_lifetime").as_double(), 0.0);
     valid_margin_ = get_parameter("valid_margin").as_double();
     range_scale_ = get_parameter("range_scale").as_double();
+    tg_observation_max_range_ = get_parameter("tg_observation_max_range").as_double();
+    if (!std::isfinite(tg_observation_max_range_) || tg_observation_max_range_ <= 0.0) {
+      throw std::invalid_argument("tg_observation_max_range must be positive");
+    }
+    tg_observation_pub_ = create_publisher<sensor_msgs::msg::Range>(
+      get_parameter("tg_observation_topic").as_string(), 100);
     minimum_hold_distance_ = std::max(
       get_parameter("minimum_hold_distance").as_double(),
       0.0);
@@ -111,6 +127,18 @@ public:
     rmp_active_ = !rmp_flag_gate_enabled_;
     enable_proximity_distance_1_4_ =
       get_parameter("enable_proximity_distance_1_4").as_bool();
+    elbow_tof3_1_n_ignore_enabled_ =
+      get_parameter("elbow_tof3_1_n_ignore_enabled").as_bool();
+    elbow_tof3_1_n_ignore_threshold_rad_ = degrees_to_radians(
+      get_parameter("elbow_tof3_1_n_ignore_threshold_deg").as_double());
+    elbow_tof3_1_n_ignore_state_timeout_ = std::max(
+      get_parameter("elbow_tof3_1_n_ignore_state_timeout").as_double(), 0.0);
+    elbow_tof3_1_s_ignore_enabled_ =
+      get_parameter("elbow_tof3_1_s_ignore_enabled").as_bool();
+    elbow_tof3_1_s_ignore_threshold_rad_ = degrees_to_radians(
+      get_parameter("elbow_tof3_1_s_ignore_threshold_deg").as_double());
+    elbow_tof3_1_s_ignore_state_timeout_ = std::max(
+      get_parameter("elbow_tof3_1_s_ignore_state_timeout").as_double(), 0.0);
     elbow_tof3_1_w_ignore_enabled_ =
       get_parameter("elbow_tof3_1_w_ignore_enabled").as_bool();
     const double elbow_ignore_min_deg =
@@ -128,6 +156,17 @@ public:
     sensor_frames_ = get_parameter("sensor_frames").as_string_array();
     const auto obstacle_radii = get_parameter("obstacle_radii").as_double_array();
     const auto trigger_distances = get_parameter("trigger_distances").as_double_array();
+    const auto tg_max_ranges = get_parameter("tg_observation_max_ranges").as_double_array();
+    if (!tg_max_ranges.empty() && tg_max_ranges.size() != sensor_frames_.size()) {
+      throw std::runtime_error("tg_observation_max_ranges must be empty or match sensor_frames size");
+    }
+    for (const double limit : tg_max_ranges) {
+      if (!std::isfinite(limit) || limit <= 0.0) {
+        throw std::runtime_error("tg_observation_max_ranges must contain positive finite values");
+      }
+    }
+    tg_observation_max_ranges_ = tg_max_ranges.empty() ?
+      std::vector<double>(sensor_frames_.size(), tg_observation_max_range_) : tg_max_ranges;
     sensor_enabled_ = get_parameter("sensor_enabled").as_bool_array();
 
     if (range_topics_.size() != sensor_frames_.size()) {
@@ -176,7 +215,9 @@ public:
         10,
         std::bind(&ProximityObstacleBridgeNode::on_rmp_flag, this, std::placeholders::_1));
     }
-    if (elbow_tof3_1_w_ignore_enabled_) {
+    if (elbow_tof3_1_w_ignore_enabled_ || elbow_tof3_1_n_ignore_enabled_ ||
+      elbow_tof3_1_s_ignore_enabled_)
+    {
       joint_state_sub_ = create_subscription<sensor_msgs::msg::JointState>(
         get_parameter("joint_state_topic").as_string(),
         10,
@@ -209,7 +250,6 @@ private:
 
     visualization_msgs::msg::MarkerArray msg;
     const auto stamp = now();
-    const bool ignore_tof3_1_w_this_cycle = should_ignore_tof3_1_w(stamp);
     for (std::size_t index = 0; index < latest_ranges_.size(); ++index) {
       visualization_msgs::msg::Marker marker;
       marker.header.frame_id = fixed_frame_;
@@ -219,7 +259,7 @@ private:
       marker.type = visualization_msgs::msg::Marker::SPHERE;
       marker.text = sensor_frames_[index];
 
-      if (ignore_tof3_1_w_this_cycle && sensor_frames_[index] == kElbowIgnoreSensorFrame) {
+      if (should_ignore_sensor(sensor_frames_[index], stamp)) {
         if (publish_collision_this_cycle) {
           append_delete_markers(msg, index, stamp);
         }
@@ -319,8 +359,28 @@ private:
     if (!std::isfinite(elbow_position)) {
       return;
     }
+    const bool was_ignored = should_ignore_tof3_1_n(now());
+    const bool was_s_ignored = should_ignore_tof3_1_s(now());
     latest_elbow_position_rad_ = elbow_position;
     latest_elbow_state_time_ = now();
+    // Invalidate the last TG observation immediately on entry, even if no new
+    // range packet arrives. Normal observations resume with fresh sensor data.
+    if (!was_ignored && should_ignore_tof3_1_n(now())) {
+      sensor_msgs::msg::Range invalid;
+      invalid.header.stamp = now();
+      invalid.header.frame_id = "tof3_1_N";
+      invalid.max_range = static_cast<float>(tg_observation_max_range_);
+      invalid.range = std::numeric_limits<float>::quiet_NaN();
+      tg_observation_pub_->publish(invalid);
+    }
+    if (!was_s_ignored && should_ignore_tof3_1_s(now())) {
+      sensor_msgs::msg::Range invalid;
+      invalid.header.stamp = now();
+      invalid.header.frame_id = "tof3_1_S";
+      invalid.max_range = static_cast<float>(tg_observation_max_range_);
+      invalid.range = std::numeric_limits<float>::quiet_NaN();
+      tg_observation_pub_->publish(invalid);
+    }
   }
 
   void on_rmp_flag(const std_msgs::msg::UInt8::SharedPtr msg)
@@ -401,6 +461,24 @@ private:
         10,
         [this, index](const sensor_msgs::msg::Range::SharedPtr msg) {
           latest_ranges_[index] = *msg;
+          // A separate TG observation stream, before trigger distance and
+          // minimum-hold clamping. Preserve the actual acquisition timestamp.
+          // Collision's marker construction and scalar settings are unchanged.
+          auto observation = *msg;
+          observation.header.frame_id = sensor_frames_[index];
+          if (observation.header.stamp.sec == 0 && observation.header.stamp.nanosec == 0) {
+            observation.header.stamp = now();
+          }
+          observation.min_range = 0.0F;
+          observation.max_range = static_cast<float>(tg_observation_max_ranges_[index]);
+          observation.range = static_cast<float>(msg->range * range_scale_);
+          const bool ignored = should_ignore_sensor(sensor_frames_[index], now());
+          if (ignored || std::isnan(msg->range) || msg->range < 0.0) {
+            observation.range = std::numeric_limits<float>::quiet_NaN();
+          } else if (!range_is_usable(*msg) || observation.range >= observation.max_range) {
+            observation.range = std::numeric_limits<float>::infinity();
+          }
+          tg_observation_pub_->publish(observation);
         });
     }
   }
@@ -519,6 +597,45 @@ private:
     return true;
   }
 
+  bool should_ignore_tof3_1_n(const rclcpp::Time & stamp) const
+  {
+    if (!elbow_tof3_1_n_ignore_enabled_ || !latest_elbow_position_rad_ ||
+      !latest_elbow_state_time_)
+    {
+      return false;
+    }
+    const double age = (stamp - *latest_elbow_state_time_).seconds();
+    if (age < 0.0 || (elbow_tof3_1_n_ignore_state_timeout_ > 0.0 &&
+      age > elbow_tof3_1_n_ignore_state_timeout_))
+    {
+      return false;
+    }
+    return *latest_elbow_position_rad_ <= elbow_tof3_1_n_ignore_threshold_rad_;
+  }
+
+  bool should_ignore_tof3_1_s(const rclcpp::Time & stamp) const
+  {
+    if (!elbow_tof3_1_s_ignore_enabled_ || !latest_elbow_position_rad_ ||
+      !latest_elbow_state_time_)
+    {
+      return false;
+    }
+    const double age = (stamp - *latest_elbow_state_time_).seconds();
+    if (age < 0.0 || (elbow_tof3_1_s_ignore_state_timeout_ > 0.0 &&
+      age > elbow_tof3_1_s_ignore_state_timeout_))
+    {
+      return false;
+    }
+    return *latest_elbow_position_rad_ <= elbow_tof3_1_s_ignore_threshold_rad_;
+  }
+
+  bool should_ignore_sensor(const std::string & frame, const rclcpp::Time & stamp) const
+  {
+    return (frame == "tof3_1_N" && should_ignore_tof3_1_n(stamp)) ||
+           (frame == "tof3_1_S" && should_ignore_tof3_1_s(stamp)) ||
+           (frame == kElbowIgnoreSensorFrame && should_ignore_tof3_1_w(stamp));
+  }
+
   bool should_ignore_tof3_1_w(const rclcpp::Time & stamp) const
   {
     if (
@@ -593,11 +710,19 @@ private:
   double obstacle_marker_lifetime_{0.25};
   double valid_margin_{1e-3};
   double range_scale_{0.001};
+  double tg_observation_max_range_{0.30};
+  std::vector<double> tg_observation_max_ranges_;
   double minimum_hold_distance_{0.05};
   double trigger_distance_{0.3};
   bool rmp_flag_gate_enabled_{false};
   bool rmp_active_{true};
   bool enable_proximity_distance_1_4_{true};
+  bool elbow_tof3_1_n_ignore_enabled_{false};
+  double elbow_tof3_1_n_ignore_threshold_rad_{degrees_to_radians(-120.0)};
+  double elbow_tof3_1_n_ignore_state_timeout_{0.5};
+  bool elbow_tof3_1_s_ignore_enabled_{false};
+  double elbow_tof3_1_s_ignore_threshold_rad_{degrees_to_radians(-90.0)};
+  double elbow_tof3_1_s_ignore_state_timeout_{0.5};
   bool elbow_tof3_1_w_ignore_enabled_{false};
   double elbow_tof3_1_w_ignore_min_rad_{degrees_to_radians(-150.0)};
   double elbow_tof3_1_w_ignore_max_rad_{degrees_to_radians(-140.0)};
@@ -621,6 +746,7 @@ private:
   std::vector<rclcpp::Subscription<sensor_msgs::msg::Range>::SharedPtr> range_subs_;
   rclcpp::node_interfaces::OnSetParametersCallbackHandle::SharedPtr parameters_callback_handle_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr obstacle_pub_;
+  rclcpp::Publisher<sensor_msgs::msg::Range>::SharedPtr tg_observation_pub_;
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr visualization_obstacle_pub_;
   rclcpp::TimerBase::SharedPtr timer_;
 };

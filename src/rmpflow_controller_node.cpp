@@ -55,6 +55,8 @@
 #include "rb10_rmpflow_rviz/rb10_model.hpp"
 #include "rb10_rmpflow_rviz/rmp_solver_interface.hpp"
 #include "rb10_rmpflow_rviz/tangent_escape_natural_form.hpp"
+#include "rb10_rmpflow_rviz/tg_initial_event.hpp"
+#include "sensor_msgs/msg/range.hpp"
 
 namespace rb10_rmpflow_rviz
 {
@@ -1990,6 +1992,11 @@ public:
     declare_parameter("tcp_accel_marker_norm_for_max_length", 2.0);
     declare_parameter("tcp_accel_marker_min_norm", 0.001);
     declare_parameter("enable_tangent_escape_rmp", false);
+    {
+      rcl_interfaces::msg::ParameterDescriptor descriptor;
+      descriptor.read_only = true;
+      declare_parameter("diagnostic_build_source_id", std::string(RMP_BUILD_SOURCE_ID), descriptor);
+    }
     declare_parameter("tangent_escape_rmp_clearance_margin", 0.0);
     // "tangent_plane" model only.  Non-positive distances inherit the gate one
     // level up: push inherits safe/influence, metric inherits push.
@@ -2002,6 +2009,23 @@ public:
     declare_parameter("tg_rmp_progress_recovery_time", 3.0);
     declare_parameter("tg_rmp_tangent_damping", 40.0);
     declare_parameter("tg_rmp_direction_rate", 3.0);
+    declare_parameter("tg_rmp_direction_mode", "simple");
+    declare_parameter("tg_rmp_observation_topic", "/tg_rmp/sensor_ranges");
+    declare_parameter("tg_rmp_initial_angle", 3.14159265358979323846);
+    declare_parameter("tg_rmp_history_window", 1.0);
+    declare_parameter("tg_rmp_history_horizon", 0.12);
+    declare_parameter("tg_rmp_history_clearance", 0.08);
+    declare_parameter("tg_rmp_history_risk_length", 0.05);
+    declare_parameter("tg_rmp_history_weight_goal", 0.5);
+    declare_parameter("tg_rmp_history_weight_escape", 0.2);
+    declare_parameter("tg_rmp_history_escape_length", 0.01);
+    declare_parameter("tg_rmp_history_reselect_interval", 0.1);
+    declare_parameter("tg_rmp_history_weight_risk", 0.0);
+    declare_parameter("tg_rmp_history_weight_continuity", 0.1);
+    declare_parameter("tg_rmp_unknown_motion_weight", 0.1);
+    declare_parameter("tg_rmp_max_direction_rate", 1.5);
+    declare_parameter("tg_rmp_direction_filter_tau", 0.1);
+    declare_parameter("tg_rmp_handoff_time", 0.15);
     declare_parameter("tg_rmp_risk_length", 0.06);
     declare_parameter("tg_rmp_weight_goal", 1.0);
     declare_parameter("tg_rmp_weight_continuity", 0.3);
@@ -2025,6 +2049,11 @@ public:
     declare_parameter("tg_rmp_observe_only", false);
     declare_parameter("tg_rmp_metric_epsilon", 0.1);
     declare_parameter("tg_rmp_metric_rate_scale", 0.05);
+    declare_parameter("tg_rmp_history_metric_rate_floor", 0.5);
+    declare_parameter("tg_rmp_authority_boost_enabled", false);
+    declare_parameter("tg_rmp_authority_boost_maximum", 2.0);
+    declare_parameter("tg_rmp_authority_boost_rise_rate", 1.0);
+    declare_parameter("tg_rmp_authority_boost_decay_rate", 1.0);
     declare_parameter("tg_rmp_accel_saturation", 500.0);
     declare_parameter("tg_rmp_closing_gain", 0.0);
     declare_parameter("tg_rmp_closing_length", 0.05);
@@ -2039,8 +2068,13 @@ public:
     declare_parameter("tg_rmp_i1_length", 0.10);
     declare_parameter("tg_rmp_i1_damping", 0.05);
     declare_parameter("tg_rmp_i1_exclude_parent_link", true);
+    declare_parameter("tg_rmp_weight_predicted_risk", 0.0);
+    declare_parameter("tg_rmp_prediction_distance", 0.02);
+    declare_parameter("tg_rmp_prediction_risk_length", 0.10);
+    declare_parameter("tg_rmp_prediction_damping", 0.05);
     declare_parameter("tg_rmp_block_on_dot", 0.0);
     declare_parameter("tg_rmp_block_off_dot", 0.3);
+    declare_parameter("tg_rmp_block_start_angle_deg", 40.0);
     declare_parameter("tg_rmp_nominal_motion_epsilon", 0.001);
     declare_parameter(
       "tg_rmp_nominal_filter_tau", 0.15);
@@ -2050,6 +2084,8 @@ public:
     declare_parameter(
       "tangent_escape_dual_solve_topic",
       "/tangent_escape_dual_solve");
+    declare_parameter("record_rmp_details", false);
+    declare_parameter("rmp_details_rate", 30.0);
     declare_parameter("publish_leaf_ablation_data", false);
     declare_parameter("leaf_ablation_topic", "/rmp_leaf_ablation");
     declare_parameter("publish_tangent_escape_geometry_debug", false);
@@ -2301,6 +2337,42 @@ public:
     collision_metric_params_ = solver_config.collision;
     configure_external_rmp_inputs(solver_config.graph_nodes);
     solver_ = build_solver(solver_config);
+    encoder_observation_box_.set(tangent_sensor_history::Input{});
+    encoder_observation_sub_ = create_subscription<sensor_msgs::msg::JointState>(
+      "/rb10/measured_joint_states", 10,
+      [this](const sensor_msgs::msg::JointState::SharedPtr msg) {
+        tangent_sensor_history::Input in;
+        in.encoder_stamp = msg->header.stamp.sec + msg->header.stamp.nanosec * 1e-9;
+        for (std::size_t j=0;j<6;++j) {
+          auto it=std::find(msg->name.begin(),msg->name.end(),RB10Model::joint_names[j]);
+          if(it==msg->name.end())return;
+          const auto k=std::distance(msg->name.begin(),it);
+          if(static_cast<std::size_t>(k)>=msg->position.size())return;
+          in.encoder_q[j]=msg->position[k];
+        }
+        if(in.encoder_q.allFinite())encoder_observation_box_.set(in);
+      });
+    sensor_observation_box_.set(tangent_sensor_history::Input{}.samples);
+    sensor_observation_sub_ = create_subscription<sensor_msgs::msg::Range>(
+      get_parameter("tg_rmp_observation_topic").as_string(), 100,
+      [this](const sensor_msgs::msg::Range::SharedPtr msg) {
+        for (std::size_t i = 0; i < RB10Model::sensor_control_points.size(); ++i) {
+          if (msg->header.frame_id != RB10Model::sensor_control_points[i].frame_name) { continue; }
+          auto samples = tangent_sensor_history::Input{}.samples;
+          sensor_observation_box_.get(samples);
+          const double received_at = now().seconds();
+          if (received_at < sensor_observation_clock_) {
+            samples = tangent_sensor_history::Input{}.samples;
+          }
+          sensor_observation_clock_ = received_at;
+          const double stamp = rclcpp::Time(msg->header.stamp).seconds();
+          if (stamp <= samples[i].stamp) { return; }
+          samples[i] = {stamp, static_cast<double>(msg->range)};
+          sensor_observation_box_.set(samples);
+          sensor_observation_received_.store(true);
+          return;
+        }
+      });
     body_obstacles_visual_ = solver_config.body_obstacles;
     tangent_escape_rmp_enabled_ = solver_config.tangent_escape.enabled;
     production_stability_analysis_enabled_ =
@@ -2411,6 +2483,23 @@ public:
         get_parameter("control_timing_debug_topic").as_string(), 10);
       rt_control_timing_pub_ =
         std::make_shared<Float64ArrayRtPublisher>(control_timing_pub_);
+    }
+    if (get_parameter("record_rmp_details").as_bool()) {
+      details_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>("/rmp_recording_snapshot", 10);
+      details_rt_pub_ = std::make_shared<Float64ArrayRtPublisher>(details_pub_);
+      initial_event_pub_ = create_publisher<std_msgs::msg::Float64MultiArray>(
+        "/tg_rmp/initial_direction_events", rclcpp::QoS(64).reliable().transient_local());
+      initial_event_timer_ = create_wall_timer(std::chrono::milliseconds(50), [this]() {
+        TgInitialEvent event;
+        for (std::size_t i=0; i<TgInitialEventQueue::capacity && initial_events_.pop(event); ++i) {
+          std_msgs::msg::Float64MultiArray msg;
+          msg.data.assign(event.data.begin(),event.data.end());
+          initial_event_pub_->publish(msg);
+        }
+      });
+      const double rate = get_parameter("rmp_details_rate").as_double();
+      if (!std::isfinite(rate) || rate <= 0.0) { throw std::invalid_argument("rmp_details_rate must be positive"); }
+      details_stride_ = std::max(1, static_cast<int>(std::round(get_parameter("control_rate").as_double()/rate)));
     }
     if (publish_tangent_escape_rmp_data_enabled_) {
       tangent_escape_rmp_data_pub_ =
@@ -2535,7 +2624,8 @@ public:
         get_parameter("robot_ip").as_string(),
         get_parameter("simulation_mode").as_bool(),
         get_parameter("real_joint_state_source").as_string(),
-        get_parameter("publish_debug_joint_state_sources").as_bool(),
+        get_parameter("publish_debug_joint_state_sources").as_bool() ||
+          get_parameter("tg_rmp_direction_mode").as_string() == "sensor_history",
         command_mode_,
         hardware_command_enabled_,
         publish_control_timing_debug_enabled_,
@@ -2813,9 +2903,11 @@ private:
     config.enable_tangent_escape_diagnostics =
       get_parameter("publish_tangent_escape_rmp_data").as_bool() ||
       config.enable_tangent_escape_dual_solve_diagnostics ||
-      get_parameter("publish_tangent_escape_geometry_debug").as_bool();
+      get_parameter("publish_tangent_escape_geometry_debug").as_bool() ||
+      get_parameter("record_rmp_details").as_bool();
+    config.record_history_diagnostics = get_parameter("record_rmp_details").as_bool();
     config.enable_leaf_ablation_diagnostics =
-      get_parameter("publish_leaf_ablation_data").as_bool();
+      (get_parameter("publish_leaf_ablation_data").as_bool() || get_parameter("record_rmp_details").as_bool());
     config.enable_stability_certificate_diagnostics =
       get_parameter("publish_stability_certificate_data").as_bool() ||
       get_parameter("escape_stability_guard_enabled").as_bool();
@@ -2963,6 +3055,55 @@ private:
       get_parameter("tg_rmp_tangent_damping").as_double();
     config.tangent_escape_ode.direction_rate =
       get_parameter("tg_rmp_direction_rate").as_double();
+    const auto direction_mode = get_parameter("tg_rmp_direction_mode").as_string();
+    using DirectionMode = tangent_sensor_history::DirectionMode;
+    if (direction_mode == "legacy") {
+      config.tangent_escape_ode.direction_mode = DirectionMode::kLegacy;
+    } else if (direction_mode == "sensor_history") {
+      config.tangent_escape_ode.direction_mode = DirectionMode::kSensorHistory;
+    } else if (direction_mode == "simple") {
+      config.tangent_escape_ode.direction_mode = DirectionMode::kSimple;
+    } else if (direction_mode == "fixed") {
+      config.tangent_escape_ode.direction_mode = DirectionMode::kFixed;
+    } else {
+      throw std::invalid_argument("tg_rmp_direction_mode must be legacy, sensor_history, simple or fixed");
+    }
+    auto & history = config.tangent_escape_ode.history;
+    const auto positive = [this](const char * name) {
+        const double value = get_parameter(name).as_double();
+        if (!std::isfinite(value) || value <= 0.0) {
+          throw std::invalid_argument(std::string(name) + " must be finite and positive");
+        }
+        return value;
+      };
+    const auto nonnegative = [this](const char * name) {
+        const double value = get_parameter(name).as_double();
+        if (!std::isfinite(value) || value < 0.0) {
+          throw std::invalid_argument(std::string(name) + " must be finite and nonnegative");
+        }
+        return value;
+      };
+    history.window = positive("tg_rmp_history_window");
+    if (history.window < 0.2) {
+      throw std::invalid_argument("tg_rmp_history_window must be at least 0.2 seconds");
+    }
+    history.horizon = positive("tg_rmp_history_horizon");
+    history.clearance = nonnegative("tg_rmp_history_clearance");
+    history.risk_length = positive("tg_rmp_history_risk_length");
+    history.weight_goal = nonnegative("tg_rmp_history_weight_goal");
+    history.weight_escape = nonnegative("tg_rmp_history_weight_escape");
+    history.escape_length = positive("tg_rmp_history_escape_length");
+    history.reselect_interval = positive("tg_rmp_history_reselect_interval");
+    history.weight_risk = nonnegative("tg_rmp_history_weight_risk");
+    history.weight_continuity = nonnegative("tg_rmp_history_weight_continuity");
+    history.unknown_motion_weight = nonnegative("tg_rmp_unknown_motion_weight");
+    history.max_direction_rate = positive("tg_rmp_max_direction_rate");
+    history.direction_filter_tau = positive("tg_rmp_direction_filter_tau");
+    history.handoff_time = positive("tg_rmp_handoff_time");
+    history.initial_angle = get_parameter("tg_rmp_initial_angle").as_double();
+    if (!std::isfinite(history.initial_angle)) {
+      throw std::invalid_argument("tg_rmp_initial_angle must be finite");
+    }
     config.tangent_escape_ode.risk_length =
       get_parameter("tg_rmp_risk_length").as_double();
     config.tangent_escape_ode.weight_goal =
@@ -3009,6 +3150,22 @@ private:
       get_parameter("tg_rmp_metric_epsilon").as_double();
     config.tangent_escape_ode.metric_rate_scale =
       get_parameter("tg_rmp_metric_rate_scale").as_double();
+    config.tangent_escape_ode.history_metric_rate_floor =
+      get_parameter("tg_rmp_history_metric_rate_floor").as_double();
+    if (!std::isfinite(config.tangent_escape_ode.history_metric_rate_floor) ||
+        config.tangent_escape_ode.history_metric_rate_floor < 0.0 ||
+        config.tangent_escape_ode.history_metric_rate_floor > 1.0) {
+      throw std::invalid_argument("tg_rmp_history_metric_rate_floor must be in [0,1]");
+    }
+    auto & boost=config.tangent_escape_ode.authority_boost;
+    boost.enabled=get_parameter("tg_rmp_authority_boost_enabled").as_bool();
+    boost.maximum=get_parameter("tg_rmp_authority_boost_maximum").as_double();
+    boost.rise_rate=get_parameter("tg_rmp_authority_boost_rise_rate").as_double();
+    boost.decay_rate=get_parameter("tg_rmp_authority_boost_decay_rate").as_double();
+    if (!std::isfinite(boost.maximum) || boost.maximum<1.0 ||
+        !std::isfinite(boost.rise_rate) || boost.rise_rate<=0.0 ||
+        !std::isfinite(boost.decay_rate) || boost.decay_rate<=0.0)
+      throw std::invalid_argument("TG authority boost requires max >= 1, positive rates");
     config.tangent_escape_ode.accel_saturation =
       get_parameter("tg_rmp_accel_saturation").as_double();
     config.tangent_escape_ode.closing_gain =
@@ -3037,10 +3194,33 @@ private:
       get_parameter("tg_rmp_i1_damping").as_double();
     config.tangent_escape_ode.i1_exclude_parent_link =
       get_parameter("tg_rmp_i1_exclude_parent_link").as_bool();
+    config.tangent_escape_ode.weight_predicted_risk =
+      get_parameter("tg_rmp_weight_predicted_risk").as_double();
+    config.tangent_escape_ode.prediction_distance =
+      get_parameter("tg_rmp_prediction_distance").as_double();
+    config.tangent_escape_ode.prediction_risk_length =
+      get_parameter("tg_rmp_prediction_risk_length").as_double();
+    config.tangent_escape_ode.prediction_damping =
+      get_parameter("tg_rmp_prediction_damping").as_double();
+    if (!std::isfinite(config.tangent_escape_ode.weight_predicted_risk) ||
+      config.tangent_escape_ode.weight_predicted_risk < 0.0)
+    {
+      throw std::invalid_argument("tg_rmp_weight_predicted_risk must be finite and nonnegative");
+    }
+    for (const char * name : {"tg_rmp_prediction_distance",
+      "tg_rmp_prediction_risk_length", "tg_rmp_prediction_damping"})
+    {
+      const double value = get_parameter(name).as_double();
+      if (!std::isfinite(value) || value <= 0.0) {
+        throw std::invalid_argument(std::string(name) + " must be finite and positive");
+      }
+    }
     config.tangent_escape_ode.block_on_dot =
       get_parameter("tg_rmp_block_on_dot").as_double();
     config.tangent_escape_ode.block_off_dot =
       get_parameter("tg_rmp_block_off_dot").as_double();
+    config.tangent_escape_ode.block_start_angle_deg =
+      get_parameter("tg_rmp_block_start_angle_deg").as_double();
     config.tangent_escape_ode.nominal_motion_epsilon =
       get_parameter("tg_rmp_nominal_motion_epsilon").as_double();
     config.tangent_escape_ode.nominal_filter_tau =
@@ -3107,7 +3287,7 @@ private:
       return configured;
     }
     return ament_index_cpp::get_package_share_directory("rb10_rmpflow_rviz") +
-           "/urdf/rb10_1300e.urdf";
+           "/urdf/" + RB10Model::urdf_filename;
   }
 
   void declare_graph_parameters()
@@ -4404,7 +4584,7 @@ private:
         // far the escape sits from where the goal wants this point to go -- is
         // read straight off the screen instead of off a log.
         constexpr std::size_t kBasisSlot = tangent_escape_debug::kBasis;
-        if (canonical.size() >= tangent_escape_debug::kSize) {
+        if (canonical.size() >= tangent_escape_debug::kPrediction) {
           const Eigen::Vector3d basis_e1(
             canonical[kBasisSlot], canonical[kBasisSlot + 1],
             canonical[kBasisSlot + 2]);
@@ -5600,6 +5780,15 @@ private:
     if (stability_certificate_data != nullptr) {
       *stability_certificate_data = solution.stability_certificate_data;
     }
+    if (get_parameter("record_rmp_details").as_bool() && leaf_ablation_data != nullptr) {
+      // Authoritative complete root, in the same solve as the grouped extension.
+      leaf_ablation_data->push_back(43043.0);
+      for (int row=0; row<6; ++row) {
+        for (int col=0; col<6; ++col) { leaf_ablation_data->push_back(solution.metric(row,col)); }
+      }
+      for (int joint=0; joint<6; ++joint) { leaf_ablation_data->push_back(solution.force[joint]); }
+      for (int joint=0; joint<6; ++joint) { leaf_ablation_data->push_back(solution.qdd[joint]); }
+    }
     return limit_joint_acceleration(
       solution.qdd,
       max_joint_accel_,
@@ -6058,8 +6247,11 @@ private:
     const auto period_duration =
       std::chrono::duration_cast<std::chrono::steady_clock::duration>(period);
     auto next_tick = std::chrono::steady_clock::now();
+    tangent_sensor_history::Input execution_feedback;
 
     while (rclcpp::ok() && running_.load()) {
+      const auto previous_execution = execution_feedback;
+      execution_feedback.command_available = false; // holds/failed cycles are not trials
       const auto scheduled_start = next_tick;
       next_tick += period_duration;
       const auto cycle_start = std::chrono::steady_clock::now();
@@ -6087,6 +6279,18 @@ private:
         // of an asynchronously sampled derivative from the bridge.
         measured_state.qd = estimate_controller_velocity(measured_state.q, cycle_start);
       }
+      tangent_sensor_history::Input observation_input;
+      encoder_observation_box_.get(observation_input);
+      observation_input.stamp = now().seconds();
+      observation_input.command_stamp = previous_execution.command_stamp;
+      observation_input.command_qd = previous_execution.command_qd;
+      observation_input.command_available = previous_execution.command_available;
+      observation_input.q = measured_state.q;
+      observation_input.qd = measured_state.qd;
+      observation_input.velocity_available = measured_state.qd.allFinite();
+      observation_input.source_available = sensor_observation_received_.load();
+      sensor_observation_box_.get(observation_input.samples);
+      solver_->set_tangent_observations(observation_input);
       const auto measured_context = RB10Model::forward_context(
         measured_state.q, ControlPointJacobianMode::kNone);
       if (rmp_flag_gate_enabled_ && !rmp_active_.load()) {
@@ -6220,12 +6424,12 @@ private:
           goal,
           goal_orientation,
           obstacles,
-          (publish_tangent_escape_rmp_data_enabled_ ||
+          (publish_tangent_escape_rmp_data_enabled_ || details_pub_ ||
           publish_tangent_escape_geometry_debug_enabled_) ?
           &tangent_escape_rmp_data : nullptr,
           publish_tangent_escape_dual_solve_data_enabled_ ?
           &tangent_escape_dual_solve_data : nullptr,
-          publish_leaf_ablation_data_enabled_ ? &leaf_ablation_data : nullptr,
+          (publish_leaf_ablation_data_enabled_ || details_pub_) ? &leaf_ablation_data : nullptr,
           publish_stability_certificate_data_enabled_ ?
           &stability_certificate_data : nullptr);
         solve_ok = true;
@@ -6359,6 +6563,62 @@ private:
         backend_->apply_command(command_state, RB10Model::joint_names);
       }
       publish_direct_command(command_state);
+      if (solve_ok && backend_command_application_enabled_ && !min_z_safety_triggered) {
+        execution_feedback.command_stamp = now().seconds();
+        execution_feedback.command_qd = command_state.qd;
+        execution_feedback.command_available = command_state.qd.allFinite();
+      }
+      if (details_rt_pub_) {
+        ++details_sequence_;
+        if (solve_ok) {
+          std::array<double,6> event_q{},event_qd{};
+          for (int j=0;j<6;++j) { event_q[j]=control_state.q[j];event_qd[j]=control_state.qd[j]; }
+          initial_events_.push(tangent_escape_rmp_data,static_cast<double>(details_sequence_),
+            now().seconds(),std::chrono::duration<double>(cycle_start.time_since_epoch()).count(),
+            event_q,event_qd,{goal.x(),goal.y(),goal.z()});
+        }
+        {
+          const bool detailed = details_sequence_ % details_stride_ == 0;
+          std_msgs::msg::Float64MultiArray snapshot;
+          auto & data = snapshot.data;
+          data = {1.0, static_cast<double>(details_sequence_), now().seconds(),
+            std::chrono::duration<double>(cycle_start.time_since_epoch()).count(),
+            solve_ok ? 1.0 : 0.0, backend_command_application_enabled_ ? 1.0 : 0.0};
+          const auto append = [&data](const JointVector & value) {
+            for (int joint=0; joint<6; ++joint) { data.push_back(value[joint]); }
+          };
+          append(measured_state.q); append(measured_state.qd);
+          append(control_state.q); append(control_state.qd);
+          append(qdd); append(command_state.q); append(command_state.qd);
+          data.insert(data.end(), {goal.x(),goal.y(),goal.z(),goal_orientation.x(),
+            goal_orientation.y(),goal_orientation.z(),goal_orientation.w()});
+          const auto geometry = detailed ? RB10Model::forward_context(control_state.q, ControlPointJacobianMode::kAnalytic) : KinematicsContext{};
+          data.push_back(geometry.control_points.size());
+          for (std::size_t i=0; i<geometry.control_points.size(); ++i) {
+            const auto & point = geometry.control_points[i];
+            data.insert(data.end(), {point.position.x(),point.position.y(),point.position.z(),point.radius});
+            for (int row=0; row<3; ++row) {
+              for (int col=0; col<6; ++col) { data.push_back(geometry.control_point_jacobians[i](row,col)); }
+            }
+          }
+          data.insert(data.end(), {command_guard_diagnostics.clamped ? 1.0 : 0.0,
+            command_guard_diagnostics.velocity_slew_clamped ? 1.0 : 0.0,
+            min_z_safety_triggered ? 1.0 : 0.0});
+          append(command_guard_diagnostics.pre_guard_command);
+          append(command_guard_diagnostics.command_step);
+          data.push_back(detailed ? obstacles.size() : 0);
+          if (detailed) for (const auto & obstacle : obstacles) {
+            data.insert(data.end(), {obstacle.center.x(),obstacle.center.y(),obstacle.center.z(),
+              obstacle.radius,static_cast<double>(obstacle.proximity_control_point_index)});
+          }
+          data.push_back(detailed ? leaf_ablation_data.size() : 0);
+          if (detailed) data.insert(data.end(),leaf_ablation_data.begin(),leaf_ablation_data.end());
+          data.push_back(tangent_escape_rmp_data.size());
+          data.insert(data.end(),tangent_escape_rmp_data.begin(),tangent_escape_rmp_data.end());
+          details_rt_pub_->tryPublish(snapshot);
+        }
+      }
+
       if (backend_command_application_enabled_) {
         virtual_velocity_state_ = command_state;
         virtual_velocity_state_initialized_ = true;
@@ -6710,6 +6970,13 @@ private:
   proximity_sensor_obstacles_box_;
   realtime_tools::RealtimeBox<TcpAccelerationSample> tcp_accel_visualization_box_;
   realtime_tools::RealtimeBox<std::vector<double>> tangent_escape_visualization_box_;
+  realtime_tools::RealtimeBox<std::array<tangent_sensor_history::Sample,
+    tangent_sensor_history::kSensorCount>> sensor_observation_box_;
+  rclcpp::Subscription<sensor_msgs::msg::Range>::SharedPtr sensor_observation_sub_;
+  realtime_tools::RealtimeBox<tangent_sensor_history::Input> encoder_observation_box_;
+  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr encoder_observation_sub_;
+  std::atomic<bool> sensor_observation_received_{false};
+  double sensor_observation_clock_{-1.0};  // accessed only by the subscription callback
   realtime_tools::RealtimeBox<std::vector<double>> tangent_escape_dual_visualization_box_;
   std::vector<BodyObstacle> body_obstacles_visual_;
   std::atomic<bool> last_min_z_safety_triggered_{false};
@@ -6770,6 +7037,13 @@ private:
   double tcp_accel_marker_max_length_{0.15};
   double tcp_accel_marker_norm_for_max_length_{2.0};
   double tcp_accel_marker_min_norm_{0.001};
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr details_pub_;
+  std::shared_ptr<Float64ArrayRtPublisher> details_rt_pub_;
+  TgInitialEventQueue initial_events_;
+  rclcpp::Publisher<std_msgs::msg::Float64MultiArray>::SharedPtr initial_event_pub_;
+  rclcpp::TimerBase::SharedPtr initial_event_timer_;
+  std::uint64_t details_sequence_{0};
+  int details_stride_{1};
   bool publish_tangent_escape_rmp_data_enabled_{false};
   bool publish_tangent_escape_dual_solve_data_enabled_{false};
   bool publish_leaf_ablation_data_enabled_{false};

@@ -112,7 +112,9 @@ def _controller_params_yaml_overrides(context):
     return overrides
 
 
-def _rmpflow_controller_actions(context, params_file, controller_parameters):
+def _rmpflow_controller_actions(
+    context, params_file, controller_parameters, controller_executable="rmpflow_controller"
+):
     parameters = [params_file, controller_parameters]
     tuning_params_path = LaunchConfiguration("tuning_params_file").perform(context).strip()
     if tuning_params_path:
@@ -127,7 +129,7 @@ def _rmpflow_controller_actions(context, params_file, controller_parameters):
     return [
         Node(
             package="rb10_rmpflow_rviz",
-            executable="rmpflow_controller",
+            executable=controller_executable,
             name="rmpflow_controller",
             output="screen",
             parameters=parameters,
@@ -195,12 +197,19 @@ def _rmpflow_bridge_actions(context, start_rmpflow_bridge):
     ]
 
 
-def generate_launch_description():
+def generate_launch_description(
+    *,
+    params_filename="params.yaml",
+    urdf_filename="rb10_1300e.urdf",
+    controller_executable="rmpflow_controller",
+    sensor_topic_ids=None,
+    range_topics_from_params=False,
+):
     rmp_pkg = get_package_share_directory("rb10_rmpflow_rviz")
     config_dir = os.path.join(rmp_pkg, "config")
-    default_params_path = os.path.join(config_dir, "params.yaml")
+    default_params_path = os.path.join(config_dir, params_filename)
 
-    urdf_path = os.path.join(rmp_pkg, "urdf", "rb10_1300e.urdf")
+    urdf_path = os.path.join(rmp_pkg, "urdf", urdf_filename)
     with open(urdf_path, "r") as f:
         robot_description = f.read()
 
@@ -228,7 +237,20 @@ def generate_launch_description():
     recording_rate = LaunchConfiguration("recording_rate")
     recording_output_directory = LaunchConfiguration("recording_output_directory")
     recording_output_prefix = LaunchConfiguration("recording_output_prefix")
-    recorder_range_topics = [f"/raw_distance{index}" for index in range(1, 21)]
+    recorder_range_topics = [
+        f"/raw_distance{index}"
+        for index in (range(1, 21) if sensor_topic_ids is None else sensor_topic_ids)
+    ]
+    trace_range_topics = [
+        f"/proximity_distance{index}"
+        for index in (range(1, 13) if sensor_topic_ids is None else sensor_topic_ids)
+    ]
+    recorder_topic_parameters = (
+        {} if range_topics_from_params else {"range_topics": recorder_range_topics}
+    )
+    trace_topic_parameters = (
+        {} if range_topics_from_params else {"range_topics": trace_range_topics}
+    )
     servo_t1 = LaunchConfiguration("servo_t1")
     servo_t2 = LaunchConfiguration("servo_t2")
     servo_gain = LaunchConfiguration("servo_gain")
@@ -269,6 +291,10 @@ def generate_launch_description():
     joint_velocity_log_directory = LaunchConfiguration("joint_velocity_log_directory")
     joint_velocity_log_prefix = LaunchConfiguration("joint_velocity_log_prefix")
     controller_parameters = {
+        "record_rmp_details": ParameterValue(LaunchConfiguration("record_rmp_details"), value_type=bool),
+        "rmp_details_rate": ParameterValue(LaunchConfiguration("rmp_details_rate"), value_type=float),
+        "tg_rmp_direction_mode": LaunchConfiguration("tg_direction_mode"),
+        "tg_rmp_initial_angle": ParameterValue(LaunchConfiguration("tg_initial_angle"), value_type=float),
         "robot_ip": robot_ip,
         "solver_backend": solver_backend,
         # Local simulation must never be forwarded as RB controller-box mode.
@@ -319,12 +345,17 @@ def generate_launch_description():
         "startup_release_timeout_sec": startup_release_timeout_sec,
         "stop_on_shutdown": stop_on_shutdown,
         "shutdown_action": shutdown_action,
-        "publish_debug_joint_state_sources": publish_debug_joint_state_sources,
+        "publish_debug_joint_state_sources": ParameterValue(PythonExpression([
+            "'", LaunchConfiguration("record_rmp_details"), "'.lower() == 'true' or '",
+            publish_debug_joint_state_sources, "'.lower() == 'true'"
+        ]), value_type=bool),
         "publish_visualization": publish_visualization,
         "publish_rmp_ee_pose": publish_rmp_ee_pose,
         "tangent_escape_geometry_data_topic": "/tangent_escape_geometry_data",
         "tangent_escape_geometry_marker_topic": "tangent_escape_geometry_markers",
     }
+    if urdf_filename != "rb10_1300e.urdf":
+        controller_parameters["robot_urdf_path"] = urdf_path
 
     api_bridge = Node(
         package="rb10_rmpflow_rviz",
@@ -398,6 +429,7 @@ def generate_launch_description():
         kwargs={
             "params_file": params_file,
             "controller_parameters": controller_parameters,
+            "controller_executable": controller_executable,
         },
     )
 
@@ -449,7 +481,7 @@ def generate_launch_description():
         name="rmp_data_recorder",
         output="screen",
         condition=IfCondition(record_data),
-        parameters=[{
+        parameters=[params_file, {
             "mode": ParameterValue(
                 PythonExpression([
                     '"simulation" if "', cb_simulation,
@@ -461,8 +493,12 @@ def generate_launch_description():
             "recording_rate": recording_rate,
             "output_directory": recording_output_directory,
             "output_prefix": recording_output_prefix,
+            "record_rmp_details": ParameterValue(LaunchConfiguration("record_rmp_details"), value_type=bool),
+            "record_detail_raw_topics": ParameterValue(LaunchConfiguration("record_detail_raw_topics"), value_type=bool),
+            "snapshot_urdf_file": ParameterValue(urdf_path, value_type=str),
+            "snapshot_params_file": ParameterValue(params_file, value_type=str),
             "joint_state_topic": normalized_joint_state_topic,
-            "range_topics": recorder_range_topics,
+            **recorder_topic_parameters,
         }],
     )
 
@@ -506,7 +542,7 @@ def generate_launch_description():
         name="rmpflow_trace_logger",
         output="screen",
         condition=IfCondition(use_rmpflow_trace_logger),
-        parameters=[{
+        parameters=[params_file, {
             "log_rate_hz": ParameterValue(rmpflow_trace_log_rate, value_type=float),
             "console_summary": ParameterValue(
                 PythonExpression([
@@ -539,20 +575,7 @@ def generate_launch_description():
             "range_scale": 0.001,
             "minimum_hold_distance": 0.05,
             "trigger_distance": 0.29,
-            "range_topics": [
-                "/proximity_distance1",
-                "/proximity_distance2",
-                "/proximity_distance3",
-                "/proximity_distance4",
-                "/proximity_distance5",
-                "/proximity_distance6",
-                "/proximity_distance7",
-                "/proximity_distance8",
-                "/proximity_distance9",
-                "/proximity_distance10",
-                "/proximity_distance11",
-                "/proximity_distance12",
-            ],
+            **trace_topic_parameters,
         }],
     )
 
@@ -585,6 +608,18 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument("record_rmp_details", default_value=LaunchConfiguration("record_data", default="false")),
+        DeclareLaunchArgument("record_detail_raw_topics", default_value="false", description="Save duplicate raw streams in addition to coherent snapshots"),
+        DeclareLaunchArgument("rmp_details_rate", default_value="30.0"),
+        DeclareLaunchArgument(
+            "tg_direction_mode", default_value="simple",
+            choices=["sensor_history", "simple", "fixed", "legacy"],
+            description="Velocity-normal steering (default), sensor-history optimization, fixed tangent, or legacy score.",
+        ),
+        DeclareLaunchArgument(
+            "tg_initial_angle", default_value="3.141592653589793",
+            description="Initial angle for fixed/history; tie-breaking angle for head-on or stationary simple steering.",
+        ),
         DeclareLaunchArgument(
             "robot_ip",
             default_value="192.168.111.50",

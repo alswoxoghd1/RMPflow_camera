@@ -2,6 +2,22 @@ cmake_minimum_required(VERSION 3.8)
 project(rb10_rmpflow_rviz)
 include(CTest)
 
+# Embed the exact controller source identity, including uncommitted changes.
+file(GLOB_RECURSE RMP_BUILD_INPUTS CONFIGURE_DEPENDS
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/*.cpp" "${CMAKE_CURRENT_SOURCE_DIR}/include/*.hpp")
+list(APPEND RMP_BUILD_INPUTS "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
+list(SORT RMP_BUILD_INPUTS)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${RMP_BUILD_INPUTS})
+set(RMP_SOURCE_DIGESTS "")
+foreach(input IN LISTS RMP_BUILD_INPUTS)
+  file(SHA256 "${input}" digest)
+  file(RELATIVE_PATH relative "${CMAKE_CURRENT_SOURCE_DIR}" "${input}")
+  string(APPEND RMP_SOURCE_DIGESTS "${digest}  ${relative}\n")
+endforeach()
+string(SHA256 RMP_BUILD_SOURCE_ID "${RMP_SOURCE_DIGESTS}")
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/rmp_build_sources.sha256" "${RMP_SOURCE_DIGESTS}")
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/rmp_build_sources.sha256" DESTINATION share/${PROJECT_NAME})
+
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
   add_compile_options(-Wall -Wextra -Wpedantic)
 endif()
@@ -66,6 +82,9 @@ add_library(rb10_casadi_graph
   src/casadi_rmp2_solver.cpp
   src/tangent_escape_supervisor.cpp
   src/tangent_escape_ode.cpp
+  src/tangent_escape_prediction.cpp
+  src/tangent_sensor_history.cpp
+  src/simple_tangent_leaf.cpp
 )
 target_include_directories(rb10_casadi_graph PUBLIC include)
 target_include_directories(rb10_casadi_graph SYSTEM PUBLIC ${CASADI_INCLUDE_DIR})
@@ -125,6 +144,7 @@ add_executable(
   src/rb10_socket_client.cpp
 )
 target_include_directories(rmpflow_controller PRIVATE include)
+target_compile_definitions(rmpflow_controller PRIVATE RMP_BUILD_SOURCE_ID="${RMP_BUILD_SOURCE_ID}")
 set_target_properties(
   rmpflow_controller PROPERTIES
   BUILD_RPATH "${CASADI_ROOT}/lib"
@@ -149,6 +169,75 @@ ament_target_dependencies(
   std_msgs
   tf2_ros
   visualization_msgs
+)
+
+# Compile the identical RMPflow sources for the 12-sensor SoC layout. Keep
+# separate libraries so fixed-size TG-RMP state and kinematics always agree
+# within a controller, while the standard 20-sensor binary stays available.
+get_target_property(SOC_CORE_SOURCES rb10_rmp_core SOURCES)
+get_target_property(SOC_GRAPH_SOURCES rb10_casadi_graph SOURCES)
+get_target_property(SOC_PINOCCHIO_SOURCES rb10_pinocchio_rmp SOURCES)
+get_target_property(SOC_CONTROLLER_SOURCES rmpflow_controller SOURCES)
+
+add_library(rb10_rmp_core_soc ${SOC_CORE_SOURCES})
+target_include_directories(rb10_rmp_core_soc PUBLIC include)
+target_compile_definitions(rb10_rmp_core_soc PUBLIC RB10_SOC_SENSOR_LAYOUT=1)
+target_link_libraries(rb10_rmp_core_soc Eigen3::Eigen)
+
+add_library(rb10_casadi_graph_soc ${SOC_GRAPH_SOURCES})
+target_include_directories(rb10_casadi_graph_soc PUBLIC include)
+target_include_directories(rb10_casadi_graph_soc SYSTEM PUBLIC ${CASADI_INCLUDE_DIR})
+target_include_directories(rb10_casadi_graph_soc SYSTEM PRIVATE ${TINYXML2_INCLUDE_DIR})
+target_link_libraries(
+  rb10_casadi_graph_soc
+  Eigen3::Eigen
+  rb10_rmp_core_soc
+  ${TINYXML2_LIBRARY}
+  ${CASADI_LIBRARY}
+)
+
+add_library(rb10_pinocchio_rmp_soc ${SOC_PINOCCHIO_SOURCES})
+target_include_directories(rb10_pinocchio_rmp_soc PUBLIC include)
+target_include_directories(rb10_pinocchio_rmp_soc SYSTEM PUBLIC ${PINOCCHIO_INCLUDE_DIR})
+target_include_directories(rb10_pinocchio_rmp_soc SYSTEM PRIVATE ${CASADI_INCLUDE_DIR})
+target_link_libraries(
+  rb10_pinocchio_rmp_soc
+  Eigen3::Eigen
+  Boost::filesystem
+  Boost::serialization
+  ${PINOCCHIO_DEFAULT_LIBRARY}
+  ${PINOCCHIO_PARSERS_LIBRARY}
+  rb10_casadi_graph_soc
+)
+
+add_executable(SoC_rmpflow_controller ${SOC_CONTROLLER_SOURCES})
+target_include_directories(SoC_rmpflow_controller PRIVATE include)
+target_compile_definitions(SoC_rmpflow_controller PRIVATE RMP_BUILD_SOURCE_ID="${RMP_BUILD_SOURCE_ID}")
+target_link_libraries(
+  SoC_rmpflow_controller
+  Eigen3::Eigen
+  rb10_casadi_graph_soc
+  rb10_pinocchio_rmp_soc
+  Threads::Threads
+  yaml-cpp
+  ${CASADI_LIBRARY}
+)
+ament_target_dependencies(
+  SoC_rmpflow_controller
+  ament_index_cpp
+  geometry_msgs
+  rclcpp
+  realtime_tools
+  sensor_msgs
+  std_msgs
+  tf2_ros
+  visualization_msgs
+)
+set_target_properties(
+  rb10_casadi_graph_soc rb10_pinocchio_rmp_soc SoC_rmpflow_controller
+  PROPERTIES
+  BUILD_RPATH "${CASADI_ROOT}/lib"
+  INSTALL_RPATH "${CASADI_ROOT}/lib"
 )
 
 add_executable(interactive_goal src/interactive_goal_marker.cpp)
@@ -268,6 +357,10 @@ install(
     rb10_pinocchio_rmp
     rb10_learning_support
     rmpflow_controller
+    rb10_rmp_core_soc
+    rb10_casadi_graph_soc
+    rb10_pinocchio_rmp_soc
+    SoC_rmpflow_controller
     interactive_goal
     obstacle_manager
     tof_ray_visualizer
@@ -313,6 +406,14 @@ install(
     scripts/rb10_api_bridge.py
     scripts/rb10_api_standalone_test.py
     scripts/rmp_data_recorder.py
+    scripts/rmp_detail_capture.py
+    scripts/tg_escape_feedback.py
+    scripts/rmp_history_record.py
+    scripts/tg_initial_events.py
+    scripts/rmp_rviz_replay.py
+    scripts/tg_direction_audit.py
+    scripts/tg_sensor_shadow_audit.py
+    scripts/tg_direction_audit_rviz.py
     scripts/rmp_debug.py
     scripts/goal_cli.py
     scripts/run_tuning_scenario.py
@@ -328,6 +429,9 @@ install(
     scripts/check_tangent_escape_stage0_fake.py
     scripts/check_tangent_escape_closed_loop.py
     scripts/compare_tangent_escape_ab.py
+    scripts/log_tg_rmp_observation.py
+    scripts/compare_tangent_direction_runs.py
+    scripts/tg_rmp_html_monitor.py
   scripts/analyze_rmp_leaf_ablation.py
   scripts/compare_rmp_leaf_ablation.py
   scripts/compare_rmp_closed_loop_smoothness.py
@@ -353,6 +457,14 @@ install(
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
+
+  ament_add_gtest(test_tangent_escape_prediction test/test_tangent_escape_prediction.cpp)
+  target_include_directories(test_tangent_escape_prediction PRIVATE include)
+  target_link_libraries(test_tangent_escape_prediction Eigen3::Eigen rb10_casadi_graph)
+
+  ament_add_gtest(test_tangent_sensor_history test/test_tangent_sensor_history.cpp)
+  target_include_directories(test_tangent_sensor_history PRIVATE include)
+  target_link_libraries(test_tangent_sensor_history Eigen3::Eigen rb10_casadi_graph)
 
   add_executable(
     test_tangent_escape_ode
@@ -486,6 +598,32 @@ if(BUILD_TESTING)
     Eigen3::Eigen
     rb10_casadi_graph
     rb10_pinocchio_rmp
+  )
+
+  # Reuse the kinematics and backend equivalence checks with the SoC geometry,
+  # including the optional TG-RMP path, and verify the centered sensor layout.
+  ament_add_gtest(
+    test_soc_sensor_layout
+    test/test_soc_sensor_layout.cpp
+    test/test_tangent_escape_prediction.cpp
+    test/test_tangent_sensor_history.cpp
+    test/test_casadi_rb10_kinematics.cpp
+    test/test_solver_backend_equivalence.cpp
+  )
+  target_include_directories(test_soc_sensor_layout PRIVATE include)
+  target_compile_definitions(
+    test_soc_sensor_layout
+    PRIVATE RB10_TEST_URDF_PATH="${CMAKE_CURRENT_SOURCE_DIR}/urdf/SoC_rb10_1300e.urdf"
+  )
+  set_target_properties(
+    test_soc_sensor_layout PROPERTIES
+    BUILD_RPATH "${CASADI_ROOT}/lib"
+  )
+  target_link_libraries(
+    test_soc_sensor_layout
+    Eigen3::Eigen
+    rb10_casadi_graph_soc
+    rb10_pinocchio_rmp_soc
   )
 
   ament_add_gtest(

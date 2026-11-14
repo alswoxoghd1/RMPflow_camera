@@ -40,6 +40,7 @@ class RmpDataRecorder(Node):
         self.declare_parameter("mode", "simulation")
         self.declare_parameter("range_unit", "message_range")
         self.declare_parameter("auto_start", True)
+        self.declare_parameter("record_rmp_details", True)
         self.declare_parameter("joint_state_topic", "/joint_states")
         self.declare_parameter("ee_pose_topic", "/rmp_ee_pose")
         self.declare_parameter(
@@ -134,6 +135,10 @@ class RmpDataRecorder(Node):
         self.get_logger().info(f"Range topics: {', '.join(self.range_topics)}")
         self.get_logger().info(f"Output directory: {self.output_directory}")
 
+        self.details = None
+        if self._as_bool(self.get_parameter("record_rmp_details").value):
+            from rmp_detail_capture import DetailCapture
+            self.details = DetailCapture(self)
         if self.auto_start:
             self.start_recording()
 
@@ -212,7 +217,7 @@ class RmpDataRecorder(Node):
             if self.is_recording:
                 return True, f"Already recording: {self.recording_path}"
 
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
             filename = f"{self.output_prefix}_{self.mode}_{timestamp}.csv"
             self.recording_path = os.path.join(self.output_directory, filename)
 
@@ -226,6 +231,8 @@ class RmpDataRecorder(Node):
             self.recording_writer = csv.writer(self.recording_handle)
             self.recording_writer.writerow(self._header())
             self.recording_handle.flush()
+            if self.details:
+                self.details.start(self.recording_path)
             self.is_recording = True
 
         message = f"Recording started: {self.recording_path}"
@@ -238,6 +245,8 @@ class RmpDataRecorder(Node):
                 return False, "Not recording"
 
             self.is_recording = False
+            if self.details:
+                self.details.stop()
             if self.recording_handle is not None:
                 self.recording_handle.write(f"# stopped_at,{datetime.now().isoformat()}\n")
                 self.recording_handle.flush()

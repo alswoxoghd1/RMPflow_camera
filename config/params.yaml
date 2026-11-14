@@ -18,7 +18,7 @@ rmpflow_controller:
     collision_rmp_repulsion_gain: 800.0
     # collision_rmp_repulsion_gain: 50.0
     collision_rmp_repulsion_std_dev: 0.05
-    collision_rmp_metric_modulation_radius: 0.3
+    collision_rmp_metric_modulation_radius: 0.4
     collision_rmp_metric_scalar: 100000.0
     collision_rmp_metric_exploder_std_dev: 0.02
     collision_rmp_metric_exploder_eps: 0.8
@@ -85,18 +85,20 @@ rmpflow_controller:
 
     # --- TG-RMP
     # ownership
-    enable_tangent_escape_rmp: false
+    enable_tangent_escape_rmp: true
 
     tangent_escape_rmp_clearance_margin: 0.0
     tg_rmp_owner_hysteresis: 0.005
-    # Keep the active TG owner briefly after its range disappears. Set 0.0 to
-    # restore the original immediate release without reverting any code.
-    tg_rmp_sensor_hold_time: 3.0
+    # Disable the extra owner hold when its range becomes unavailable.
+    tg_rmp_sensor_hold_time: 0.0
     tg_rmp_observe_only: false
 
     # activation
     tg_rmp_alpha_on_distance: 0.05
-    tg_rmp_alpha_off_distance: 0.45
+    tg_rmp_alpha_off_distance: 0.25
+    # History activation: 40 deg -> 0, 0 deg -> 1 (linear in angle).
+    tg_rmp_block_start_angle_deg: 40.0
+    # Dot thresholds below apply to the other direction modes.
     tg_rmp_block_on_dot: 0.0
     tg_rmp_block_off_dot: 0.3
     tg_rmp_nominal_motion_epsilon: 0.001
@@ -105,11 +107,33 @@ rmpflow_controller:
     tg_rmp_pocket_threshold: 0.6
     tg_rmp_pocket_epsilon: 0.1
 
-    # direction
+    # simple: velocity-normal steering (default); fixed: former fixed-angle leaf;
+    # sensor_history: sensor-plane optimization; legacy: original score below.
+    # Collision is unchanged. Simple uses the mounting axis as a bearing proxy.
+    # tg_rmp_direction_mode: simple
+    tg_rmp_direction_mode: sensor_history
+    tg_rmp_observation_topic: /tg_rmp/sensor_ranges
+    tg_rmp_initial_angle: 3.141592653589793
+    tg_rmp_history_window: 1.0
+    tg_rmp_history_horizon: 0.12
+    tg_rmp_history_clearance: 0.08
+    tg_rmp_history_risk_length: 0.05
+    tg_rmp_history_weight_goal: 0.5  # ablation 3: goal + tangent execution prediction
+    tg_rmp_history_weight_escape: 0.2  # ablation 3: original execution weight
+    tg_rmp_history_escape_length: 0.01
+    tg_rmp_history_reselect_interval: 0.1  # legacy trace setting; v4 uses measured response windows
+    tg_rmp_history_weight_risk: 0.0  # unvalidated range forecasts remain diagnostic only
+    tg_rmp_history_weight_continuity: 0.0  # no selected-angle retention bonus
+    tg_rmp_unknown_motion_weight: 0.1
+    tg_rmp_max_direction_rate: 1.5
+    tg_rmp_direction_filter_tau: 0.1
+    tg_rmp_handoff_time: 0.15
+
+    # Original direction score, used only by legacy mode.
     tg_rmp_direction_rate: 1.5
-    tg_rmp_weight_goal: 0.6
-    tg_rmp_weight_continuity: 1.0
-    tg_rmp_e1_bias: -0.3
+    tg_rmp_weight_goal: 0.0
+    tg_rmp_weight_continuity: 0.0
+    tg_rmp_e1_bias: -1.0
     tg_rmp_e2_bias: 0.0
     tg_rmp_weight_risk: 0.5
     tg_rmp_weight_axis: 0.4
@@ -123,6 +147,13 @@ rmpflow_controller:
     tg_rmp_weight_stall: 0.0
     tg_rmp_stall_time_constant: 1.5
     tg_rmp_stall_speed: 0.005
+
+    # Legacy geometric prediction assumes actual observed sphere locations.
+    # Capacitive readings do not provide bearing: disabled for these profiles.
+    tg_rmp_weight_predicted_risk: 0.0
+    tg_rmp_prediction_distance: 0.02
+    tg_rmp_prediction_risk_length: 0.10
+    tg_rmp_prediction_damping: 0.05
 
     # clearance rate (ddot)
     tg_rmp_use_obstacle_motion: true
@@ -143,10 +174,16 @@ rmpflow_controller:
     tg_rmp_progress_recovery_time: 3.0
 
     # metric
-    tg_rmp_metric_mu: 10000.0
+    tg_rmp_metric_mu: 100000.0
     tg_rmp_metric_length: 0.03
     tg_rmp_metric_epsilon: 0.1
     tg_rmp_metric_rate_scale: 0.05
+    # Increase TG authority when observed-response direction rotation starts.
+    tg_rmp_authority_boost_enabled: true
+    tg_rmp_authority_boost_maximum: 2.0
+    tg_rmp_authority_boost_rise_rate: 1.0
+    tg_rmp_authority_boost_decay_rate: 1.0
+    tg_rmp_history_metric_rate_floor: 0.5  # history only; transient opening retains authority
 
     # diagnostics
     publish_tangent_escape_rmp_data: true
@@ -454,282 +491,212 @@ rmpflow_controller:
         type: "ball"
         link_name: "link1"
         center: [0.0, -0.012, 0.085]
-        # radius: 0.07  # 기존값
-        # radius: 0.095  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.12  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.07  # 기존값
+        # radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
       link1_guard_2:
         type: "ball"
         link_name: "link1"
         center: [0.0, -0.02, 0.11]
-        # radius: 0.085  # 기존값
-        # radius: 0.11  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.135  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.085  # 기존값
+        # radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
       link1_guard_3:
         type: "ball"
         link_name: "link1"
         center: [0.0, -0.025, 0.17]
-        # radius: 0.08  # 기존값
-        # radius: 0.105  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.13  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.08  # 기존값
+        # radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_1:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.05, 0.0]
-        # radius: 0.075  # 기존값
-        # radius: 0.10  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.125  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.15  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.075  # 기존값
+        # radius: 0.15  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_2:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.12, 0.0]
-        # radius: 0.08  # 기존값
-        # radius: 0.105  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.13  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.08  # 기존값
+        # radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_3:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.0]
-        # radius: 0.085  # 기존값
-        # radius: 0.11  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.135  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.085  # 기존값
+        # radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_4:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.11]
-        # radius: 0.08  # 기존값
-        # radius: 0.105  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.13  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.08  # 기존값
+        # radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_5:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.22]
-        # radius: 0.085  # 기존값
-        # radius: 0.11  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.135  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.085  # 기존값
+        # radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_6:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.33]
-        # radius: 0.085  # 기존값
-        # radius: 0.11  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.135  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.085  # 기존값
+        # radius: 0.16  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_7:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.44]
-        # radius: 0.08  # 기존값
-        # radius: 0.105  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.13  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.08  # 기존값
+        # radius: 0.155  # 현재값: 최초 대비 sphere 지름 +15 cm
       link2_guard_8:
         type: "ball"
         link_name: "link2"
         center: [0.0, -0.1875, 0.55]
-        # radius: 0.07  # 기존값
-        # radius: 0.095  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.12  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.07  # 기존값
+        # radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_guard_1:
         type: "ball"
         link_name: "link3"
         center: [0.0, 0.03, 0.0]
-        # radius: 0.07  # 기존값
-        # radius: 0.095  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.12  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.07  # 기존값
+        # radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_guard_2:
         type: "ball"
         link_name: "link3"
         center: [0.0, 0.06, 0.0]
-        # radius: 0.07  # 기존값
-        # radius: 0.095  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.12  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.07  # 기존값
+        # radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_guard_3:
         type: "ball"
         link_name: "link3"
         center: [0.0, 0.09, 0.0]
-        # radius: 0.07  # 기존값
-        # radius: 0.095  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.12  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.07  # 기존값
+        # radius: 0.145  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_guard_4:
         type: "ball"
         link_name: "link3"
         center: [0.0, 0.119, 0.0]
-        # radius: 0.065  # 기존값
-        # radius: 0.09  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.115  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.14  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.065  # 기존값
+        # radius: 0.14  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_guard_5:
         type: "ball"
         link_name: "link3"
         center: [0.0, 0.141, 0.0]
-        # radius: 0.06  # 기존값
-        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.06  # 기존값
+        # radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_5_guard_1:
         type: "ball"
         link_name: "link3_5"
         center: [0.0, 0.0, 0.10]
-        # radius: 0.065  # 기존값
-        # radius: 0.09  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.115  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.14  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.065  # 기존값
+        # radius: 0.14  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_5_guard_2:
         type: "ball"
         link_name: "link3_5"
         center: [0.0, 0.0, 0.21]
-        # radius: 0.065  # 기존값
-        # radius: 0.09  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.115  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.14  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.065  # 기존값
+        # radius: 0.14  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_5_guard_3:
         type: "ball"
         link_name: "link3_5"
         center: [0.0, 0.0, 0.32]
-        # radius: 0.06  # 기존값
-        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.06  # 기존값
+        # radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link3_5_guard_4:
         type: "ball"
         link_name: "link3_5"
         center: [0.0, 0.0, 0.44]
-        # radius: 0.055  # 기존값
-        # radius: 0.08  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.105  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.13  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.055  # 기존값
+        # radius: 0.13  # 현재값: 최초 대비 sphere 지름 +15 cm
       link4_guard_1:
         type: "ball"
         link_name: "link4"
         center: [0.0, -0.02, 0.0]
-        # radius: 0.06  # 기존값
-        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.06  # 기존값
+        # radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link4_guard_2:
         type: "ball"
         link_name: "link4"
         center: [0.0, -0.045, 0.0]
-        # radius: 0.06  # 기존값
-        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.06  # 기존값
+        # radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link4_guard_3:
         type: "ball"
         link_name: "link4"
         center: [0.0, -0.07, 0.0]
-        # radius: 0.05  # 기존값
-        # radius: 0.075  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.10  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.05  # 기존값
+        # radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
       link4_guard_4:
         type: "ball"
         link_name: "link4"
         center: [0.0, -0.095, 0.0]
-        # radius: 0.05  # 기존값
-        # radius: 0.075  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.10  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.05  # 기존값
+        # radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
       link4_guard_5:
         type: "ball"
         link_name: "link4"
         center: [0.0, -0.117, 0.0]
-        # radius: 0.045  # 기존값
-        # radius: 0.07  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.095  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.12  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.045  # 기존값
+        # radius: 0.12  # 현재값: 최초 대비 sphere 지름 +15 cm
       link5_guard_1:
         type: "ball"
         link_name: "link5"
         center: [0.0, 0.0, 0.02]
-        # radius: 0.06  # 기존값
-        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.06  # 기존값
+        # radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link5_guard_2:
         type: "ball"
         link_name: "link5"
         center: [0.0, 0.0, 0.05]
-        # radius: 0.06  # 기존값
-        # radius: 0.085  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.11  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.06  # 기존값
+        # radius: 0.135  # 현재값: 최초 대비 sphere 지름 +15 cm
       link5_guard_3:
         type: "ball"
         link_name: "link5"
         center: [0.0, 0.0, 0.08]
-        # radius: 0.055  # 기존값
-        # radius: 0.08  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.105  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.13  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.055  # 기존값
+        # radius: 0.13  # 현재값: 최초 대비 sphere 지름 +15 cm
       link5_guard_4:
         type: "ball"
         link_name: "link5"
         center: [0.0, 0.0, 0.11]
-        # radius: 0.05  # 기존값
-        # radius: 0.075  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.10  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.05  # 기존값
+        # radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
       link6_guard_1:
         type: "ball"
         link_name: "link6"
         center: [0.0, -0.025, 0.0]
-        # radius: 0.05  # 기존값
-        # radius: 0.075  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.10  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.05  # 기존값
+        # radius: 0.125  # 현재값: 최초 대비 sphere 지름 +15 cm
       link6_guard_2:
         type: "ball"
         link_name: "link6"
         center: [0.0, -0.055, 0.0]
-        # radius: 0.045  # 기존값
-        # radius: 0.07  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.095  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.12  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.045  # 기존값
+        # radius: 0.12  # 현재값: 최초 대비 sphere 지름 +15 cm
       link6_guard_3:
         type: "ball"
         link_name: "link6"
         center: [0.0, -0.085, 0.0]
-        # radius: 0.045  # 기존값
-        # radius: 0.07  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.095  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.12  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.045  # 기존값
+        # radius: 0.12  # 현재값: 최초 대비 sphere 지름 +15 cm
       link6_guard_4:
         type: "ball"
         link_name: "link6"
         center: [0.0, -0.11, 0.0]
-        # radius: 0.04  # 기존값
-        # radius: 0.065  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.09  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.115  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.04  # 기존값
+        # radius: 0.115  # 현재값: 최초 대비 sphere 지름 +15 cm
       tcp_rmp_guard_1:
         type: "ball"
         link_name: "tcp_rmp"
         center: [0.0, 0.04, 0.0]
-        # radius: 0.02  # 기존값
-        # radius: 0.045  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.07  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.095  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.02  # 기존값
+        # radius: 0.095  # 현재값: 최초 대비 sphere 지름 +15 cm
       tcp_rmp_guard_2:
         type: "ball"
         link_name: "tcp_rmp"
         center: [0.0, -0.04, 0.0]
-        # radius: 0.02  # 기존값
-        # radius: 0.045  # 1차 변경값: sphere 지름 +5 cm
-        # radius: 0.07  # 2차 변경값: 최초 대비 sphere 지름 +10 cm
-        radius: 0.095  # 현재값: 최초 대비 sphere 지름 +15 cm
+        radius: 0.02  # 기존값
+        # radius: 0.095  # 현재값: 최초 대비 sphere 지름 +15 cm
 
     # --- OTHER
     command_mode: "velocity"
@@ -760,6 +727,11 @@ obstacle_manager:
 
 proximity_obstacle_bridge:
   ros__parameters:
+    tg_observation_topic: /tg_rmp/sensor_ranges
+    # Scalar range validity ceiling (m), independent of Collision triggers.
+    tg_observation_max_range: 0.25
+    # Same sensor order as sensor_frames; only tof_N (index 6) uses 15 cm.
+    tg_observation_max_ranges: [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.15, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
     fixed_frame: "base_link"
     obstacle_topic: "obstacles"
     visualization_obstacle_topic: "obstacle_markers"
@@ -771,9 +743,16 @@ proximity_obstacle_bridge:
     valid_margin: 0.001
     range_scale: 0.001
     minimum_hold_distance: 0.05
-    trigger_distance: 0.15
+    trigger_distance: 0.25
     enable_proximity_distance_1_4: true
     joint_state_topic: "joint_states"
+    # Self detection: exclude link3 intermediate S/N at their respective elbow angles.
+    elbow_tof3_1_s_ignore_enabled: true
+    elbow_tof3_1_s_ignore_threshold_deg: -90.0
+    elbow_tof3_1_s_ignore_state_timeout: 0.5
+    elbow_tof3_1_n_ignore_enabled: true
+    elbow_tof3_1_n_ignore_threshold_deg: -120.0
+    elbow_tof3_1_n_ignore_state_timeout: 0.5
     elbow_tof3_1_w_ignore_enabled: true
     elbow_tof3_1_w_ignore_min_deg: -150.0
     elbow_tof3_1_w_ignore_max_deg: -130.0
@@ -781,14 +760,14 @@ proximity_obstacle_bridge:
     sensor_enabled:
       - true   # proximity_distance1 -> tof6_1_L
       - true   # proximity_distance2 -> tof6_1_F
-      - true   # proximity_distance3 -> tof6_1_R
+      - true   # proximity_distance3 -> tof6_1_R+
       - true   # proximity_distance4 -> tof6_1_U
       - true  # proximity_distance6 -> tof_S
       - true   # proximity_distance7 -> tof_E
-      - true   # proximity_distance8 -> tof_N
+      - false   # proximity_distance8 -> tof_N
       - true   # proximity_distance5 -> tof_W
-      - false   # proximity_distance12 -> tof3_1_S
-      - false  # proximity_distance9 -> tof3_1_W
+      - false  # proximity_distance12 -> tof3_1_S
+      - false   # proximity_distance9 -> tof3_1_W
       - false   # proximity_distance10 -> tof3_1_N
       - false # proximity_distance11 -> tof3_1_E
       - false  # proximity_distance13 -> tof2_N
@@ -800,26 +779,26 @@ proximity_obstacle_bridge:
       - false   # proximity_distance19 -> tof2_W
       - false  # proximity_distance20 -> tof2_N
     trigger_distances:
-      - 0.4
-      - 0.4
-      - 0.4
-      - 0.4
       - 0.25
       - 0.25
       - 0.25
       - 0.25
-      - 0.30
-      - 0.30
-      - 0.30
-      - 0.30
-      - 0.30
-      - 0.30
-      - 0.30
-      - 0.30
-      - 0.30
-      - 0.30
-      - 0.30
-      - 0.30
+      - 0.25
+      - 0.25
+      - 0.15  # tof_N only
+      - 0.25
+      - 0.25
+      - 0.25
+      - 0.25
+      - 0.25
+      - 0.25
+      - 0.25
+      - 0.25
+      - 0.25
+      - 0.25
+      - 0.25
+      - 0.25
+      - 0.25
     range_topics:
       - "proximity_distance1"
       - "proximity_distance2"

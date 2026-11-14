@@ -329,7 +329,11 @@ TEST(CasadiRmp2Solver, EscapeSupervisorProducesTangentRankOneContribution)
     101};
   const std::unordered_map<std::string, Eigen::Vector3d> goal{{"goal", best_goal}};
 
-  const auto enabled_config = escape_parity_config(true);
+  auto enabled_config = escape_parity_config(true);
+  // This fixture tests the rank-one pullback, independently of whether the
+  // chosen nominal motion passes the sensor-axis blockage gate.
+  enabled_config.tangent_escape_ode.block_on_dot = -2.0;
+  enabled_config.tangent_escape_ode.block_off_dot = -1.0;
   CasadiRmp2Solver solver(enabled_config, test_urdf_path());
   auto lean_config = enabled_config;
   lean_config.enable_tangent_escape_diagnostics = false;

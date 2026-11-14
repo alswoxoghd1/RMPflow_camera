@@ -1094,6 +1094,11 @@ CasadiRmp2Solver::CasadiRmp2Solver(EigenRmpConfig config, std::string urdf_path)
 : impl_(std::make_shared<Impl>(std::move(config), std::move(urdf_path)))
 {}
 
+void CasadiRmp2Solver::set_tangent_observations(const tangent_sensor_history::Input & input) const
+{
+  impl_->tangent_escape_supervisor.set_observations(input);
+}
+
 RmpSolveResult CasadiRmp2Solver::solve(
   const JointVector & q,
   const JointVector & qd,
@@ -1628,6 +1633,34 @@ RmpSolveResult CasadiRmp2Solver::solve(
         ablation.push_back(delta_command[joint]);
       }
     }
+    // Extension: marker, count, then group id, row-major M[36], f[6].
+    ablation.push_back(42042.0);
+    ablation.push_back(static_cast<double>(impl_->ablation_group_ids.size()));
+    for (const int group_id : impl_->ablation_group_ids) {
+      const auto & item = leaf_contributions.at(group_id);
+      ablation.push_back(group_id);
+      for (int row=0; row<6; ++row) {
+        for (int col=0; col<6; ++col) { ablation.push_back(item.metric(row,col)); }
+      }
+      for (int joint=0; joint<6; ++joint) { ablation.push_back(item.force[joint]); }
+    }
+
+    if (!context_valid) { context = impl_->model.forward_context(q, qd); context_valid = true; }
+
+    ablation.push_back(44044.0);
+    ablation.push_back(context.control_points.size());
+    for (std::size_t i=0; i<context.control_points.size(); ++i) {
+      for (int row=0; row<3; ++row) {
+        for (int col=0; col<6; ++col) { ablation.push_back(context.control_point_jacobians[i](row,col)); }
+        ablation.push_back(context.control_point_curvatures[i][row]);
+      }
+    }
+    for (int row=0; row<3; ++row) {
+      ablation.push_back(context.tcp_position[row]);
+      for (int col=0; col<6; ++col) { ablation.push_back(context.tcp_jacobian(row,col)); }
+      ablation.push_back(context.tcp_curvature[row]);
+    }
+
     result.leaf_ablation_data = std::move(ablation);
   }
   return result;

@@ -36,7 +36,19 @@ constexpr std::size_t kProgress = kTerms + 8;
 // TCP position and remaining goal distance.
 constexpr std::size_t kBasis = kProgress + 4;
 // e1, e2 and the goal reference projected into the tangent plane, in world.
-constexpr std::size_t kSize = kBasis + 9;
+constexpr std::size_t kPrediction = kBasis + 9;
+// Static-obstacle prediction: risk, weighted score, risk gradient, minimum
+// swept clearance, critical sensor, detecting sensor, pairs, approaching
+// pairs, total direction score. Existing offsets remain unchanged.
+constexpr std::size_t kHistory = kPrediction + 9;
+// mode, risk, weighted risk, gradient, unknown-motion cost, predicted range,
+// directional confidence, fitted sensors, unknown sensors, critical sensor,
+// handoff authority; then per sensor: sample count, age, noise, gradient norm.
+constexpr std::size_t kHistorySensors = kHistory + 11;
+constexpr std::size_t kSteering = kHistorySensors + 4 * tangent_escape_ode::kSensorCount;
+// Cartesian steering: actual speed, t dot actual velocity, velocity source,
+// fallback bits, angular rate commanded inside the velocity-normal plane.
+constexpr std::size_t kSize = kSteering + 5;
 }  // namespace tangent_escape_debug
 
 struct TangentEscapeCommand
@@ -78,6 +90,7 @@ public:
     const JointVector & base_force) const;
 
   void set_previous_qdd(const JointVector & qdd) const;
+  void set_observations(const tangent_sensor_history::Input & input) const;
 
 private:
   void evaluate_ode(
@@ -137,6 +150,11 @@ private:
   mutable bool nominal_qdd_seeded_{false};
   mutable ClearanceRateState clearance_rate_state_{};
   mutable SensorHoldState sensor_hold_state_{};
+  mutable tangent_sensor_history::History sensor_history_;
+  mutable std::array<std::array<double, 3>, tangent_escape_ode::kSensorCount> recorded_model_keys_{};
+  mutable std::size_t history_record_sequence_{0};
+  mutable std::size_t history_model_revision_{0};
+  mutable double history_keyframe_elapsed_{1.0};
 };
 
 }  // namespace rb10_rmpflow_rviz

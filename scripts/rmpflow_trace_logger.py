@@ -15,6 +15,44 @@ from std_msgs.msg import Float64MultiArray, UInt8
 from visualization_msgs.msg import Marker, MarkerArray
 
 
+# Appended after the schema-9 basis block, with offsets depending on the
+# sensor count in slot 50. Keep these out of the legacy fixed prefix.
+PREDICTION_FIELDS = [
+    "tangent_escape_ode_predicted_risk",
+    "tangent_escape_ode_predicted_risk_score",
+    "tangent_escape_ode_predicted_risk_gradient",
+    "tangent_escape_ode_predicted_min_clearance_m",
+    "tangent_escape_ode_predicted_critical_sensor",
+    "tangent_escape_ode_predicted_obstacle_sensor",
+    "tangent_escape_ode_predicted_pair_count",
+    "tangent_escape_ode_predicted_approaching_pair_count",
+    "tangent_escape_ode_total_direction_score",
+]
+
+
+HISTORY_FIELDS = [
+    "tangent_escape_ode_direction_mode",
+    "tangent_escape_ode_history_risk",
+    "tangent_escape_ode_history_risk_score",
+    "tangent_escape_ode_history_risk_gradient",
+    "tangent_escape_ode_unknown_motion_risk",
+    "tangent_escape_ode_history_min_predicted_range",
+    "tangent_escape_ode_history_confidence",
+    "tangent_escape_ode_history_model_count",
+    "tangent_escape_ode_history_unknown_count",
+    "tangent_escape_ode_history_critical_sensor",
+    "tangent_escape_ode_handoff_gain",
+]
+
+STEERING_FIELDS = [
+    "tangent_escape_ode_steering_speed",
+    "tangent_escape_ode_steering_velocity_dot",
+    "tangent_escape_ode_steering_velocity_source",
+    "tangent_escape_ode_steering_fallback",
+    "tangent_escape_ode_steering_turn_rate",
+]
+
+
 SENSOR_NAMES = [
     "tof6_1_L",
     "tof6_1_F",
@@ -113,6 +151,8 @@ class RmpflowTraceLogger(Node):
         self.declare_parameter("minimum_hold_distance", 0.05)
         self.declare_parameter("valid_margin", 0.001)
         self.declare_parameter("trigger_distance", 0.29)
+        self.declare_parameter("sensor_names", SENSOR_NAMES)
+        self.declare_parameter("sensor_parent_links", SENSOR_PARENT_LINKS)
         self.declare_parameter("rmp_flag_topic", "/RMP_flag")
         self.declare_parameter("external_goal_topic", "/RMP_goal")
         self.declare_parameter("controller_goal_topic", "/goal_pose")
@@ -160,6 +200,10 @@ class RmpflowTraceLogger(Node):
         self.minimum_hold_distance = float(self.get_parameter("minimum_hold_distance").value)
         self.valid_margin = float(self.get_parameter("valid_margin").value)
         self.trigger_distance = float(self.get_parameter("trigger_distance").value)
+        self.sensor_names = list(self.get_parameter("sensor_names").value)
+        self.sensor_parent_links = list(self.get_parameter("sensor_parent_links").value)
+        if len(self.sensor_names) != len(self.sensor_parent_links):
+            raise ValueError("sensor_names and sensor_parent_links must have the same size")
         self.range_topics = list(self.get_parameter("range_topics").value)
         self.range_labels = [self._topic_label(topic) for topic in self.range_topics]
 
@@ -638,6 +682,20 @@ class RmpflowTraceLogger(Node):
                 ("tangent_escape_ode_force_contribution_norm", 40),
             ]:
                 row[field] = self._fmt(values[index])
+            sensor_count = float(values[50])
+            if math.isfinite(sensor_count) and 0 < sensor_count <= 64 and sensor_count.is_integer():
+                prediction_base = 56 + 4 * int(sensor_count) + 4 + 8 + 8 + 4 + 9
+                if len(values) >= prediction_base + len(PREDICTION_FIELDS):
+                    for offset, field in enumerate(PREDICTION_FIELDS):
+                        row[field] = self._fmt(values[prediction_base + offset])
+                history_base = prediction_base + len(PREDICTION_FIELDS)
+                if len(values) >= history_base + len(HISTORY_FIELDS):
+                    for offset, field in enumerate(HISTORY_FIELDS):
+                        row[field] = self._fmt(values[history_base + offset])
+                steering_base = history_base + len(HISTORY_FIELDS) + 4 * int(sensor_count)
+                if len(values) >= steering_base + len(STEERING_FIELDS):
+                    for offset, field in enumerate(STEERING_FIELDS):
+                        row[field] = self._fmt(values[steering_base + offset])
             return
         prefix_size = (
             61 if schema == 6 else 68 if schema == 7 else 76 if schema == 8 else 0
@@ -979,10 +1037,10 @@ class RmpflowTraceLogger(Node):
                 row[field] = self._fmt(values[index])
         if len(values) > 1:
             sensor_index = int(round(values[1]))
-            if 0 <= sensor_index < len(SENSOR_NAMES):
+            if 0 <= sensor_index < len(self.sensor_names):
                 row["tangent_escape_geometry_sensor_index"] = sensor_index
-                row["tangent_escape_geometry_sensor_name"] = SENSOR_NAMES[sensor_index]
-                row["tangent_escape_geometry_sensor_parent_link"] = SENSOR_PARENT_LINKS[sensor_index]
+                row["tangent_escape_geometry_sensor_name"] = self.sensor_names[sensor_index]
+                row["tangent_escape_geometry_sensor_parent_link"] = self.sensor_parent_links[sensor_index]
         self._fill_xyz_from_array(row, values, 4, "tangent_escape_geometry_cp")
         self._fill_xyz_from_array(row, values, 7, "tangent_escape_geometry_obstacle")
         self._fill_xyz_from_array(row, values, 10, "tangent_escape_geometry_sensor_normal")
@@ -1516,6 +1574,9 @@ class RmpflowTraceLogger(Node):
                     f"{label}_dt_s",
                 ]
             )
+        header.extend(PREDICTION_FIELDS)
+        header.extend(HISTORY_FIELDS)
+        header.extend(STEERING_FIELDS)
         return header
 
     def _latest_data(self, key: str) -> Any:

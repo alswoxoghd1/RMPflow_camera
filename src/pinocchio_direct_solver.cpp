@@ -616,6 +616,11 @@ PinocchioDirectRmpSolver::PinocchioDirectRmpSolver(
   compiled_state_ = impl;
 }
 
+void PinocchioDirectRmpSolver::set_tangent_observations(const tangent_sensor_history::Input & input) const
+{
+  tangent_escape_supervisor_.set_observations(input);
+}
+
 RmpSolveResult PinocchioDirectRmpSolver::solve(
   const JointVector & q,
   const JointVector & qd,
@@ -1269,6 +1274,32 @@ RmpSolveResult PinocchioDirectRmpSolver::solve(
         leaf_ablation_data.push_back(delta_command_qdd[joint]);
       }
     }
+    // Extension: marker, count, then group id, row-major M[36], f[6].
+    leaf_ablation_data.push_back(42042.0);
+    leaf_ablation_data.push_back(static_cast<double>(group_ids.size()));
+    for (const int group_id : group_ids) {
+      const auto & item = leaf_root_contributions.at(group_id);
+      leaf_ablation_data.push_back(group_id);
+      for (int row=0; row<6; ++row) {
+        for (int col=0; col<6; ++col) { leaf_ablation_data.push_back(item.metric(row,col)); }
+      }
+      for (int joint=0; joint<6; ++joint) { leaf_ablation_data.push_back(item.force[joint]); }
+    }
+
+    leaf_ablation_data.push_back(44044.0);
+    leaf_ablation_data.push_back(context.control_points.size());
+    for (std::size_t i=0; i<context.control_points.size(); ++i) {
+      for (int row=0; row<3; ++row) {
+        for (int col=0; col<6; ++col) { leaf_ablation_data.push_back(context.control_point_jacobians[i](row,col)); }
+        leaf_ablation_data.push_back(context.control_point_curvatures[i][row]);
+      }
+    }
+    for (int row=0; row<3; ++row) {
+      leaf_ablation_data.push_back(context.tcp_position[row]);
+      for (int col=0; col<6; ++col) { leaf_ablation_data.push_back(context.tcp_jacobian(row,col)); }
+      leaf_ablation_data.push_back(context.tcp_curvature[row]);
+    }
+
   }
 
   RmpSolveResult result;

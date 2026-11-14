@@ -1,0 +1,73 @@
+{
+  "date": "2026-11-14",
+  "time_reference": "Seconds from recording start; user-selected intervals, inspect surrounding context too.",
+  "numbering": "Fixed mapping, independent of later recordings.",
+  "data_directory": "~/ros2_ws/data/rmp_datasets",
+  "raw_data_in_repository": false,
+  "recordings": [
+    {
+      "recording_number": 1,
+      "recording_id": "target_only_tuning_real_20261114_210351_234434",
+      "details_file": "target_only_tuning_real_20261114_210351_234434.details.jsonl",
+      "csv_file": "target_only_tuning_real_20261114_210351_234434.csv",
+      "focus_start_s": 27,
+      "focus_end_s": 40
+    },
+    {
+      "recording_number": 2,
+      "recording_id": "target_only_tuning_real_20261114_210739_148050",
+      "details_file": "target_only_tuning_real_20261114_210739_148050.details.jsonl",
+      "csv_file": "target_only_tuning_real_20261114_210739_148050.csv",
+      "focus_start_s": 118,
+      "focus_end_s": 124
+    },
+    {
+      "recording_number": 3,
+      "recording_id": "target_only_tuning_real_20261114_211102_197311",
+      "details_file": "target_only_tuning_real_20261114_211102_197311.details.jsonl",
+      "csv_file": "target_only_tuning_real_20261114_211102_197311.csv",
+      "focus_start_s": 82,
+      "focus_end_s": 92
+    },
+    {
+      "recording_number": 4,
+      "recording_id": "target_only_tuning_real_20261114_211403_088791",
+      "details_file": "target_only_tuning_real_20261114_211403_088791.details.jsonl",
+      "csv_file": "target_only_tuning_real_20261114_211403_088791.csv",
+      "focus_start_s": 45,
+      "focus_end_s": 61
+    },
+    {
+      "recording_number": 5,
+      "recording_id": "target_only_tuning_real_20261114_211700_768021",
+      "details_file": "target_only_tuning_real_20261114_211700_768021.details.jsonl",
+      "csv_file": "target_only_tuning_real_20261114_211700_768021.csv",
+      "focus_start_s": 42,
+      "focus_end_s": 58
+    },
+    {
+      "recording_number": 6,
+      "recording_id": "target_only_tuning_real_20261114_211945_155299",
+      "details_file": "target_only_tuning_real_20261114_211945_155299.details.jsonl",
+      "csv_file": "target_only_tuning_real_20261114_211945_155299.csv",
+      "focus_start_s": 46,
+      "focus_end_s": 65
+    },
+    {
+      "recording_number": 7,
+      "recording_id": "target_only_tuning_real_20261114_212117_057629",
+      "details_file": "target_only_tuning_real_20261114_212117_057629.details.jsonl",
+      "csv_file": "target_only_tuning_real_20261114_212117_057629.csv",
+      "focus_start_s": 35,
+      "focus_end_s": 46
+    },
+    {
+      "recording_number": 8,
+      "recording_id": "target_only_tuning_real_20261114_212249_623311",
+      "details_file": "target_only_tuning_real_20261114_212249_623311.details.jsonl",
+      "csv_file": "target_only_tuning_real_20261114_212249_623311.csv",
+      "focus_start_s": 14,
+      "focus_end_s": 24
+    }
+  ]
+}

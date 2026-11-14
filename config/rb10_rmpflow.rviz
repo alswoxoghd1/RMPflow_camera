@@ -5,7 +5,7 @@ Panels:
     Property Tree Widget:
       Expanded: ~
       Splitter Ratio: 0.5
-    Tree Height: 325
+    Tree Height: 371
   - Class: rviz_common/Selection
     Name: Selection
   - Class: rviz_common/Tool Properties
@@ -280,19 +280,19 @@ Visualization Manager:
         Value: /obstacle_markers
       Value: true
     - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
+      Enabled: false
       Name: BodyObstacles
       Namespaces:
-        body_obstacles: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /body_obstacle_markers
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
+      Enabled: false
       Name: RepulsionMetric
       Namespaces:
         {}
@@ -302,9 +302,9 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /repulsion_metric_markers
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/MarkerArray
-      Enabled: true
+      Enabled: false
       Name: TangentEscapeCanonical
       Namespaces:
         {}
@@ -314,9 +314,9 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /tangent_escape_geometry_markers
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/Marker
-      Enabled: true
+      Enabled: false
       Name: StabilityCertificate
       Namespaces:
         {}
@@ -327,12 +327,12 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: /rmp_stability_certificate_marker
-      Value: true
+      Value: false
     - Class: rviz_default_plugins/Marker
       Enabled: true
       Name: TcpAccel
       Namespaces:
-        tcp_accel: true
+        {}
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -394,39 +394,39 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 1.5660691261291504
+      Distance: 2.3663015365600586
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.30587679147720337
-        Y: -0.5883944630622864
-        Z: 0.4102550446987152
+        X: 0.42192450165748596
+        Y: -0.5296310186386108
+        Z: 0.47793281078338623
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.5024192929267883
+      Pitch: 0.1774192750453949
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz_default_plugins)
-      Yaw: 4.6212053298950195
+      Yaw: 5.27621603012085
     Saved: ~
 Window Geometry:
   Displays:
-    collapsed: false
+    collapsed: true
   Height: 1016
-  Hide Left Dock: false
+  Hide Left Dock: true
   Hide Right Dock: false
-  QMainWindow State: 000000ff00000000fd0000000100000000000001cb0000039efc0200000004fb000000100044006900730070006c006100790073010000003d000001c8000000c900fffffffb0000001200530065006c0065006300740069006f006e010000020b000000650000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007301000002760000007e0000005c00fffffffb0000000a0056006900650077007301000002fa000000e1000000a400ffffff000005690000039e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
+  QMainWindow State: 000000ff00000000fd0000000100000000000001cb0000039efc0200000004fb000000100044006900730070006c006100790073000000003d00000226000000c900fffffffb0000001200530065006c0065006300740069006f006e00000002690000005c0000005c00fffffffb0000001e0054006f006f006c002000500072006f007000650072007400690065007300000002cb0000005c0000005c00fffffffb0000000a00560069006500770073000000032d000000ae000000a400ffffff0000073a0000039e00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Selection:
-    collapsed: false
+    collapsed: true
   Tool Properties:
-    collapsed: false
+    collapsed: true
   Views:
-    collapsed: false
+    collapsed: true
   Width: 1850
   X: 70
   Y: 27

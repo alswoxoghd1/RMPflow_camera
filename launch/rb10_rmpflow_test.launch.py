@@ -14,6 +14,21 @@ def _as_bool(value):
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _controller_actions(context, params_file, controller_parameters, executable):
+    overrides = {}
+    for name in ("enable_tangent_escape_rmp", "publish_tangent_escape_rmp_data"):
+        value = LaunchConfiguration(name).perform(context).strip().lower()
+        if value:
+            if value not in ("true", "false"):
+                raise RuntimeError(f'{name} must be true, false, or empty (follow YAML)')
+            overrides[name] = value == "true"
+    return [Node(
+        package="rb10_rmpflow_rviz", executable=executable,
+        name="rmpflow_controller", output="screen",
+        parameters=[params_file, controller_parameters, overrides],
+    )]
+
+
 def _validate_launch(context):
     params_path = LaunchConfiguration("params_file").perform(context)
     if not os.path.isfile(params_path):
@@ -41,12 +56,20 @@ def _validate_launch(context):
     return []
 
 
-def generate_launch_description():
+def generate_launch_description(
+    *,
+    params_filename="params.yaml",
+    urdf_filename="rb10_1300e.urdf",
+    controller_executable="rmpflow_controller",
+    sensor_topic_ids=None,
+    use_proximity_bridge_default="false",
+    range_topics_from_params=False,
+):
     rmp_pkg = get_package_share_directory("rb10_rmpflow_rviz")
     config_dir = os.path.join(rmp_pkg, "config")
-    default_params_path = os.path.join(config_dir, "params.yaml")
+    default_params_path = os.path.join(config_dir, params_filename)
 
-    urdf_path = os.path.join(rmp_pkg, "urdf", "rb10_1300e.urdf")
+    urdf_path = os.path.join(rmp_pkg, "urdf", urdf_filename)
     with open(urdf_path, "r") as f:
         robot_description = f.read()
 
@@ -86,7 +109,13 @@ def generate_launch_description():
     recording_rate = LaunchConfiguration("recording_rate")
     recording_output_directory = LaunchConfiguration("recording_output_directory")
     recording_output_prefix = LaunchConfiguration("recording_output_prefix")
-    recorder_range_topics = [f"/raw_distance{index}" for index in range(1, 21)]
+    recorder_range_topics = [
+        f"/raw_distance{index}"
+        for index in (range(1, 21) if sensor_topic_ids is None else sensor_topic_ids)
+    ]
+    range_topic_parameters = (
+        {} if range_topics_from_params else {"range_topics": recorder_range_topics}
+    )
     use_rmpflow_trace_logger = LaunchConfiguration("use_rmpflow_trace_logger")
     rmpflow_trace_log_rate = LaunchConfiguration("rmpflow_trace_log_rate")
     rmpflow_trace_log_directory = LaunchConfiguration("rmpflow_trace_log_directory")
@@ -125,6 +154,10 @@ def generate_launch_description():
     joint_velocity_log_prefix = LaunchConfiguration("joint_velocity_log_prefix")
     params_file = LaunchConfiguration("params_file")
     controller_parameters = {
+        "record_rmp_details": ParameterValue(LaunchConfiguration("record_rmp_details"), value_type=bool),
+        "rmp_details_rate": ParameterValue(LaunchConfiguration("rmp_details_rate"), value_type=float),
+        "tg_rmp_direction_mode": LaunchConfiguration("tg_direction_mode"),
+        "tg_rmp_initial_angle": ParameterValue(LaunchConfiguration("tg_initial_angle"), value_type=float),
         "robot_ip": robot_ip,
         "solver_backend": solver_backend,
         "control_rate": ParameterValue(control_rate, value_type=float),
@@ -197,12 +230,17 @@ def generate_launch_description():
         "lock_memory": lock_memory,
         "enable_socket_realtime": enable_socket_realtime,
         "socket_realtime_priority": socket_realtime_priority,
-        "publish_debug_joint_state_sources": publish_debug_joint_state_sources,
+        "publish_debug_joint_state_sources": ParameterValue(PythonExpression([
+            "'", LaunchConfiguration("record_rmp_details"), "'.lower() == 'true' or '",
+            publish_debug_joint_state_sources, "'.lower() == 'true'"
+        ]), value_type=bool),
         "publish_rmp_ee_pose": ParameterValue(
             publish_rmp_ee_pose,
             value_type=bool,
         ),
     }
+    if urdf_filename != "rb10_1300e.urdf":
+        controller_parameters["robot_urdf_path"] = urdf_path
 
     api_bridge = Node(
         package="rb10_rmpflow_rviz",
@@ -266,15 +304,9 @@ def generate_launch_description():
         ],
     )
 
-    rmpflow_controller = Node(
-        package="rb10_rmpflow_rviz",
-        executable="rmpflow_controller",
-        name="rmpflow_controller",
-        output="screen",
-        parameters=[
-            params_file,
-            controller_parameters,
-        ],
+    rmpflow_controller = OpaqueFunction(
+        function=_controller_actions,
+        args=[params_file, controller_parameters, controller_executable],
     )
 
     interactive_goal = Node(
@@ -330,7 +362,7 @@ def generate_launch_description():
         name="rmp_data_recorder",
         output="screen",
         condition=IfCondition(record_data),
-        parameters=[{
+        parameters=[params_file, {
             "mode": ParameterValue(
                 PythonExpression([
                     '"simulation" if "', cb_simulation,
@@ -342,8 +374,12 @@ def generate_launch_description():
             "recording_rate": recording_rate,
             "output_directory": recording_output_directory,
             "output_prefix": recording_output_prefix,
+            "record_rmp_details": ParameterValue(LaunchConfiguration("record_rmp_details"), value_type=bool),
+            "record_detail_raw_topics": ParameterValue(LaunchConfiguration("record_detail_raw_topics"), value_type=bool),
+            "snapshot_urdf_file": ParameterValue(urdf_path, value_type=str),
+            "snapshot_params_file": ParameterValue(params_file, value_type=str),
             "joint_state_topic": "/joint_states",
-            "range_topics": recorder_range_topics,
+            **range_topic_parameters,
         }],
     )
 
@@ -368,7 +404,7 @@ def generate_launch_description():
         name="rmpflow_trace_logger",
         output="screen",
         condition=IfCondition(use_rmpflow_trace_logger),
-        parameters=[{
+        parameters=[params_file, {
             "log_rate_hz": ParameterValue(rmpflow_trace_log_rate, value_type=float),
             "console_summary": ParameterValue(
                 PythonExpression([
@@ -407,7 +443,7 @@ def generate_launch_description():
             "range_scale": 0.001,
             "minimum_hold_distance": 0.05,
             "trigger_distance": 0.29,
-            "range_topics": recorder_range_topics,
+            **range_topic_parameters,
         }],
     )
 
@@ -421,6 +457,26 @@ def generate_launch_description():
     )
 
     return LaunchDescription([
+        DeclareLaunchArgument("record_rmp_details", default_value=LaunchConfiguration("record_data", default="false")),
+        DeclareLaunchArgument("record_detail_raw_topics", default_value="false", description="Save duplicate raw streams in addition to coherent snapshots"),
+        DeclareLaunchArgument("rmp_details_rate", default_value="30.0"),
+        DeclareLaunchArgument(
+            "enable_tangent_escape_rmp", default_value="",
+            description="Enable TG leaf; empty follows YAML. Set true for either direction comparison.",
+        ),
+        DeclareLaunchArgument(
+            "publish_tangent_escape_rmp_data", default_value="",
+            description="Publish TG comparison diagnostics; empty follows YAML.",
+        ),
+        DeclareLaunchArgument(
+            "tg_direction_mode", default_value="simple",
+            choices=["sensor_history", "simple", "fixed", "legacy"],
+            description="Velocity-normal steering (default), sensor-history optimization, fixed tangent, or legacy score.",
+        ),
+        DeclareLaunchArgument(
+            "tg_initial_angle", default_value="3.141592653589793",
+            description="Initial angle for fixed/history; tie-breaking angle for head-on or stationary simple steering.",
+        ),
         DeclareLaunchArgument(
             "robot_ip",
             default_value="192.168.111.50",
@@ -549,7 +605,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             "use_proximity_bridge",
-            default_value="false",
+            default_value=use_proximity_bridge_default,
             description="Use external proximity topics to build obstacle markers.",
         ),
         DeclareLaunchArgument(

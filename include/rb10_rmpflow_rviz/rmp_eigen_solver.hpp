@@ -1,4 +1,5 @@
 #pragma once
+#include "rb10_rmpflow_rviz/tg_authority_boost.hpp"
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,7 @@
 #include <Eigen/Dense>
 
 #include "rb10_rmpflow_rviz/rb10_model.hpp"
+#include "rb10_rmpflow_rviz/tangent_sensor_history.hpp"
 
 namespace rb10_rmpflow_rviz
 {
@@ -134,11 +136,17 @@ struct TangentEscapeRmpParams
 // Field-by-field documentation lives in tangent_escape_ode.hpp.
 struct TangentEscapeOdeParams
 {
+  tangent_sensor_history::DirectionMode direction_mode{
+    tangent_sensor_history::DirectionMode::kLegacy};
+  tangent_sensor_history::Params history;
   // mu and l_m; see tangent_escape_ode.hpp.
   double metric_mu{10000.0};
   double metric_length{0.03};
   double metric_epsilon{0.1};
   double metric_rate_scale{0.05};
+  TgAuthorityBoostParams authority_boost;
+  double history_metric_rate_floor{0.5};  // history only; block/distance gates still release
+
   double accel_gain{50.0};
   double accel_length{0.08};
   double accel_saturation{50.0};
@@ -170,6 +178,11 @@ struct TangentEscapeOdeParams
   double i1_length{0.10};
   double i1_damping{0.05};
   bool i1_exclude_parent_link{true};
+  // Additional static-obstacle lookahead; see tangent_escape_prediction.hpp.
+  double weight_predicted_risk{0.0};
+  double prediction_distance{0.02};
+  double prediction_risk_length{0.10};
+  double prediction_damping{0.05};
   double axial_preference{1.0};
   double weight_axial_block{0.0};
   double pocket_threshold{0.6};
@@ -188,6 +201,7 @@ struct TangentEscapeOdeParams
   // Blockage activation; see tangent_escape_ode.hpp.
   double block_on_dot{0.0};
   double block_off_dot{0.3};
+  double block_start_angle_deg{40.0};  // history: linear in angle, zero at this angle
   double nominal_motion_epsilon{1e-3};
   double nominal_filter_tau{0.15};
 };
@@ -350,6 +364,7 @@ struct EigenRmpConfig
   double max_joint_accel{20.0};
   bool preserve_joint_accel_direction{true};
   bool enable_tangent_escape_diagnostics{false};
+  bool record_history_diagnostics{false};
   bool enable_tangent_escape_dual_solve_diagnostics{false};
   bool enable_leaf_ablation_diagnostics{false};
   bool enable_stability_certificate_diagnostics{false};

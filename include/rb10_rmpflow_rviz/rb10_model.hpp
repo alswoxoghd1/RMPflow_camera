@@ -115,7 +115,7 @@ public:
     {LINK6, TCP, 5, 0.05},
   }};
 
-  inline static const std::array<SensorControlPointSpec, 20> sensor_control_points{{
+  inline static const std::array<SensorControlPointSpec, 20> standard_sensor_control_points{{
     {"tof6_1_L", LINK5, Eigen::Vector3d(-0.06, 0.0, 0.11715), 0.05, Eigen::Vector3d(-1.0, 0.0, 0.0), Eigen::Vector3d(0.0, 0.0, 1.0)},
     {"tof6_1_F", LINK5, Eigen::Vector3d(0.0, 0.0, 0.17715), 0.05, Eigen::Vector3d(0.0, 0.0, 1.0), Eigen::Vector3d(0.0, 1.0, 0.0)},
     {"tof6_1_R", LINK5, Eigen::Vector3d(0.06, 0.0, 0.11715), 0.05, Eigen::Vector3d(1.0, 0.0, 0.0), Eigen::Vector3d(0.0, 0.0, 1.0)},
@@ -137,6 +137,34 @@ public:
     {"tof2_W", LINK2, Eigen::Vector3d(0.0, -0.2665, 0.4262), 0.05, Eigen::Vector3d(0.0, -1.0, 0.0), Eigen::Vector3d(0.0, 0.0, -1.0)},
     {"tof2_N", LINK2, Eigen::Vector3d(-0.079, -0.1875, 0.4262), 0.05, Eigen::Vector3d(-1.0, 0.0, 0.0), Eigen::Vector3d(0.0, 0.0, 1.0)},
   }};
+
+#ifdef RB10_SOC_SENSOR_LAYOUT
+  static constexpr const char * urdf_filename = "SoC_rb10_1300e.urdf";
+  // Keep the same sensor normals, radii and tangent bases as the standard
+  // layout. Only the two arm rings' stations and the sensor count change.
+  // Order matches SoC_params.yaml: wrist, link3 S/E/N/W, link2 N/W/S/E.
+  inline static const std::array<SensorControlPointSpec, 12> sensor_control_points = [] {
+      std::array<SensorControlPointSpec, 12> sensors{{
+        standard_sensor_control_points[0], standard_sensor_control_points[1],
+        standard_sensor_control_points[2], standard_sensor_control_points[3],
+        standard_sensor_control_points[4], standard_sensor_control_points[5],
+        standard_sensor_control_points[6], standard_sensor_control_points[7],
+        standard_sensor_control_points[19], standard_sensor_control_points[18],
+        standard_sensor_control_points[17], standard_sensor_control_points[16]
+      }};
+      for (auto & sensor : sensors) {
+        if (sensor.parent_link == LINK2) {
+          sensor.offset.z() = 0.6127 / 2.0;
+        } else if (sensor.parent_link == LINK3_5) {
+          sensor.offset.z() = 0.57015 / 2.0;
+        }
+      }
+      return sensors;
+    }();
+#else
+  static constexpr const char * urdf_filename = "rb10_1300e.urdf";
+  inline static const auto & sensor_control_points = standard_sensor_control_points;
+#endif
 
   static Eigen::Affine3d origin_transform(
     double x, double y, double z,

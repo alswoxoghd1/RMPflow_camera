@@ -201,9 +201,28 @@ LeafOutput evaluate(
   const JointVector & nominal_qdd,
   const Eigen::Vector3d & goal,
   const std::vector<double> & clearances,
-  const std::vector<double> & clearance_rates)
+  const std::vector<double> & clearance_rates,
+  const std::vector<tangent_escape_prediction::StaticObstacle> & prediction_obstacles,
+  const DirectionObjective & objective)
 {
   LeafOutput output;
+  using Mode = tangent_sensor_history::DirectionMode;
+  const bool legacy = params.direction_mode == Mode::kLegacy;
+  const bool adaptive = params.direction_mode == Mode::kSensorHistory;
+  const bool progress_block = adaptive || params.goal_progress_blockage;
+  output.block_from_goal_progress = progress_block;
+  if (progress_block) { output.alpha_block = 0.0; }
+  output.direction_mode = static_cast<int>(params.direction_mode);
+  const bool capture = adaptive && params.capture_history_decision;
+  auto & decision = output.decision;
+  if (capture) {
+    decision.active_before = state.active;
+    decision.theta_valid_before = state.theta_valid;
+    decision.owner_before = state.sensor_index;
+    decision.theta_before = state.theta;
+    decision.filtered_rate_before = state.filtered_theta_rate;
+    decision.handoff_before = state.handoff_gain;
+  }
 
   const auto & neighbours_table = neighborhood_table();
   const std::size_t point_count = std::min(
@@ -217,6 +236,7 @@ LeafOutput evaluate(
     });
 
   if (!params.enabled || params.metric_mu <= 0.0 || point_count == 0) {
+    if (capture) { decision.events |= 64; }
     state = LeafState{};
     return output;
   }
@@ -247,8 +267,24 @@ LeafOutput evaluate(
     };
 
   if (!found) {
+    if (capture) { decision.events |= 16; }
     reset();
     return output;
+  }
+
+  // One reference for both direction preference and history activation. It
+  // remains meaningful at zero actual velocity and during collision retreat.
+  // The sensor mounting axis is only a bearing proxy, not a measured normal.
+  JointVector goal_progress = JointVector::Zero();
+  if (progress_block) {
+    constexpr double inverse_damping = 0.01;
+    const Eigen::Matrix3d gram =
+      context.tcp_jacobian * context.tcp_jacobian.transpose() +
+      inverse_damping * inverse_damping * Eigen::Matrix3d::Identity();
+    goal_progress = context.tcp_jacobian.transpose() *
+      gram.ldlt().solve(goal - context.tcp_position);
+    if (!goal_progress.allFinite()) { goal_progress.setZero(); }
+    output.goal_progress_joint_motion = goal_progress;
   }
 
   // --- blockage observation ------------------------------------------------
@@ -289,6 +325,10 @@ LeafOutput evaluate(
     ++output.observation_count;
   }
   output.observation_valid = output.observation_count > 0;
+  if (capture) {
+    decision.closest = static_cast<int>(closest);
+    decision.closest_clearance = closest_clearance;
+  }
   output.alpha_distance = distance_activation(
     closest_clearance, params.alpha_on_distance, params.alpha_off_distance);
 
@@ -303,6 +343,7 @@ LeafOutput evaluate(
   const double release = std::max(params.alpha_off_distance, params.alpha_on_distance) +
     std::max(params.owner_hysteresis, 0.0);
   if (closest_clearance > release) {
+    if (capture) { decision.events |= 32; }
     reset();
     return output;
   }
@@ -310,14 +351,33 @@ LeafOutput evaluate(
   // Sensor hand-off keeps the current owner until another sensor is clearly
   // closer, so a near-tie does not chatter between two ring neighbours.
   std::size_t owner = state.active ? state.sensor_index : closest;
-  if (!state.active || !neighbours_table[owner].valid || owner >= point_count) {
+  if (!state.active || owner >= point_count || !neighbours_table[owner].valid) {
     owner = closest;
   }
   const double owner_clearance = clearances[owner] - params.clearance_margin;
-  const bool switch_owner =
+  bool switch_owner =
     !state.active ||
     !std::isfinite(owner_clearance) ||
     (owner_clearance - closest_clearance) > std::max(params.owner_hysteresis, 0.0);
+  if (params.freeze_owner && state.active) { switch_owner = false; }
+  if (capture) {
+    decision.owner_clearance = owner_clearance;
+    if (state.active && switch_owner && owner != closest) { decision.events |= 2; }
+  }
+
+  // A tangent cannot in general stay identical while its normal changes.
+  // Fade the leaf's authority out before changing planes, then back in.
+  // Both experimental leaves use this same handoff, independent of scores.
+  if (!legacy && !params.freeze_owner && state.active) {
+    const double step = dt / std::max(params.history.handoff_time, dt);
+    if (switch_owner && owner != closest && std::isfinite(owner_clearance)) {
+      if (capture) { decision.events |= 8; }
+      state.handoff_gain = std::max(0.0, state.handoff_gain - step);
+      switch_owner = state.handoff_gain <= 0.0;
+    } else {
+      state.handoff_gain = std::min(1.0, state.handoff_gain + step);
+    }
+  }
 
   // --- sensor frame --------------------------------------------------------
   const auto sensor_basis = [&context](std::size_t index) {
@@ -332,16 +392,26 @@ LeafOutput evaluate(
     };
 
   if (switch_owner) {
-    if (state.active && neighbours_table[state.sensor_index].valid) {
+    if (adaptive && state.active && owner != closest) { state.theta_valid = false; }
+    if (capture && state.active && owner != closest) { decision.events |= 4; }
+    if (state.active && state.sensor_index < point_count &&
+      neighbours_table[state.sensor_index].valid)
+    {
       // Carry the direction across by re-expressing the old world tangent in
       // the new sensor basis; the axial component is preserved exactly.
       const auto old_basis = sensor_basis(state.sensor_index);
       const Eigen::Vector3d old_tangent =
         std::cos(state.theta) * old_basis[1] + std::sin(state.theta) * old_basis[2];
       const auto new_basis = sensor_basis(closest);
-      state.theta = std::atan2(
-        new_basis[2].dot(old_tangent),
-        new_basis[1].dot(old_tangent));
+      const double x = new_basis[1].dot(old_tangent);
+      const double y = new_basis[2].dot(old_tangent);
+      if (capture && std::hypot(x, y) <= 1e-6) { decision.events |= 128; }
+      state.theta = legacy || std::hypot(x, y) > 1e-6 ?
+        std::atan2(y, x) : params.history.initial_angle;
+      if (!legacy) {
+        state.handoff_gain = 0.0;
+        state.filtered_theta_rate = 0.0;
+      }
     }
     owner = closest;
   }
@@ -405,7 +475,7 @@ LeafOutput evaluate(
   const Eigen::Vector3d to_goal = goal - context.control_points[index].position;
 
   // Where the goal-driven policy accelerates THIS control point once every
-  // obstacle is removed.  Also what the blockage gate reads further down.
+  // obstacle is removed. Retained for diagnostics and non-history modes.
   //
   // The obstacles have to be removed: a local minimum is target pull and
   // obstacle push cancelling, so a reference taken from the full solve would
@@ -425,17 +495,149 @@ LeafOutput evaluate(
   //
   // Near the goal the nominal acceleration vanishes and its direction is
   // noise; the TCP line is the fallback there, being at least well defined.
-  const Eigen::Vector3d goal_direction =
+  Eigen::Vector3d goal_direction =
     nominal_usable ?
     Eigen::Vector3d(nominal_acceleration / nominal_norm) :
     (to_goal.norm() > 1e-9 ?
     Eigen::Vector3d(to_goal.normalized()) :
     Eigen::Vector3d::Zero());
+  if (adaptive) {
+    // Direction preference must describe goal progress, not the braking
+    // acceleration in nominal_qdd. Map the TCP position error through a
+    // damped inverse to joint motion, then to this sensor's motion. In
+    // particular, do not aim a link sensor directly at the TCP goal.
+    const Eigen::Vector3d progress = point_jacobian * goal_progress;
+    goal_direction.setZero();
+    if (progress.norm() > 1e-9 && progress.allFinite()) {
+      goal_direction = progress.normalized();
+    }
+  }
   const Eigen::Vector3d velocity_direction =
     velocity.norm() > std::max(params.velocity_epsilon, 1e-12) ?
     Eigen::Vector3d(velocity.normalized()) :
     Eigen::Vector3d::Zero();
 
+
+  // Activation does not depend on the selected tangent. Track observations
+  // and ownership while off, but defer optimization until authority is positive.
+  // --- pocket guard --------------------------------------------------------
+  // Geometric mean over however many neighbours this sensor actually has, so
+  // a three-neighbour wrist sensor and a four-neighbour ring sensor are judged
+  // on the same scale.
+  const double mean_risk = pocket_count > 0 ?
+    std::pow(std::max(pocket_product, 0.0), 1.0 / static_cast<double>(pocket_count)) :
+    0.0;
+  const double alpha_free = std::clamp(
+    1.0 - sigmoid((mean_risk - params.pocket_threshold) /
+    std::max(params.pocket_epsilon, 1e-9)),
+    0.0,
+    1.0);
+
+  // --- blockage gate -------------------------------------------------------
+  // History asks whether goal progress moves this sensor toward its mounting
+  // axis. Braking is not evidence that the goal route is obstructed. Keep the
+  // existing nominal-acceleration rule in the other experimental modes.
+  const Eigen::Vector3d block_reference = progress_block ?
+    Eigen::Vector3d(point_jacobian * goal_progress) : nominal_acceleration;
+  const double block_norm = block_reference.norm();
+  const bool block_usable = block_reference.allFinite() &&
+    block_norm > std::max(params.nominal_motion_epsilon, 1e-12);
+  output.block_reference = block_reference;
+  output.block_reference_valid = block_usable;
+  const double blockage = block_usable ?
+    obstacle_direction.dot(block_reference) / block_norm :
+    0.0;
+  double alpha_block = progress_block ? 0.0 : 1.0;
+  if (block_usable) {
+    if (progress_block) {
+      const double start_angle = params.block_start_angle_deg;
+      if (std::isfinite(start_angle) && start_angle > 0.0 && start_angle <= 180.0) {
+        const double angle_deg = std::acos(std::clamp(blockage, -1.0, 1.0)) * 180.0 / kPi;
+        alpha_block = std::clamp(1.0 - angle_deg / start_angle, 0.0, 1.0);
+      }
+    } else {
+      alpha_block = smoothstep(blockage, params.block_on_dot, params.block_off_dot);
+    }
+  }
+
+  // From the owner, which the hand-off hysteresis may hold a little further
+  // out than the closest sensor.  The same distance drives the push and the
+  // metric, so the whole leaf has to speak about one sensor.
+  const double alpha_distance = distance_activation(
+    clearance, params.alpha_on_distance, params.alpha_off_distance);
+  const double alpha_total = alpha_distance * alpha_block * alpha_free *
+    (legacy ? 1.0 : state.handoff_gain);
+
+  const double raw_metric_gate = std::min(
+    2.0 * (1.0 - sigmoid(clearance_rate / std::max(params.metric_rate_scale, 1e-9))),
+    1.0);
+  // Preserve detour authority on a transient opening, without bypassing block
+  // or distance release. Frozen history trials preserve the same floor.
+  const double metric_gate = (adaptive || params.goal_progress_blockage) ?
+    std::max(raw_metric_gate, std::clamp(params.history_metric_rate_floor, 0.0, 1.0)) : raw_metric_gate;
+  const double metric_base =
+    alpha_total * metric_gate *
+    std::max(params.metric_mu, 0.0) /
+    (clearance / std::max(params.metric_length, 1e-9) +
+    std::max(params.metric_epsilon, 1e-9));
+
+  if (adaptive && !params.freeze_owner) {
+    const auto & feedback=params.response_input;
+    const bool fresh=feedback.encoder_stamp>=0 && feedback.stamp>=feedback.encoder_stamp &&
+      feedback.stamp-feedback.encoder_stamp<=.05 && feedback.command_available &&
+      feedback.command_qd.allFinite() && feedback.stamp>=feedback.command_stamp &&
+      feedback.stamp-feedback.command_stamp<=.05;
+    if (!fresh || !state.response.seeded || state.response.owner!=index ||
+      (state.response.goal-goal).norm()>1e-6 || alpha_block<=.1 || !(metric_base>1e-9))
+    {
+      state.response.authority.reset();
+    } else {
+      state.response.authority.advance(dt,params.authority_boost);
+    }
+  }
+  // Frozen history candidates use the same multiplier, without updating it.
+  // Multiplying both M and f below preserves the canonical TG acceleration.
+  const double authority_gain=params.authority_boost.enabled &&
+    (adaptive || params.goal_progress_blockage) ? state.response.authority.gain : 1.0;
+  const double metric=metric_base*authority_gain;
+  output.metric_base=metric_base;
+  output.authority_gain=authority_gain;
+
+  if (adaptive && !(metric > 1e-9)) {
+    state.response.pause();
+    state.active = true;
+    state.sensor_index = index;
+    state.filtered_theta_rate = 0.0;
+    output.active = true;
+    output.sensor_index = index;
+    output.active_link = RB10Model::sensor_control_points[index].parent_link;
+    output.clearance = clearance;
+    output.alpha_distance = alpha_distance;
+    output.alpha_free = alpha_free;
+    output.alpha_block = alpha_block;
+    output.alpha_total = alpha_total;
+    output.metric_gate = metric_gate;
+    output.blockage = blockage;
+    output.obstacle_direction = obstacle_direction;
+    output.goal_e1 = axis1.dot(goal_direction);
+    output.goal_e2 = axis2.dot(goal_direction);
+    output.goal_from_nominal = false;
+    output.theta = state.theta;
+    output.control_point = context.control_points[index].position;
+    output.tcp_position = context.tcp_position;
+    output.goal_distance = (goal - context.tcp_position).norm();
+    output.clearance_rate = clearance_rate;
+    if (state.theta_valid) {
+      output.basis_e1 = axis1;
+      output.basis_e2 = axis2;
+      output.tangent = std::cos(state.theta) * axis1 + std::sin(state.theta) * axis2;
+    }
+    if (capture) {
+      decision.theta_evaluated = state.theta;
+      decision.filtered_rate_before = 0.0;
+    }
+    return output;
+  }
 
   // --- I1: whole-body kinematic consequence --------------------------------
   // Local risk asks what the obstacles look like around this sensor.  I1 asks
@@ -462,7 +664,7 @@ LeafOutput evaluate(
   double score_b_i1 = 0.0;
   std::size_t i1_count = 0;
   double i1_largest_gain = 0.0;
-  {
+  if (legacy) {
     const double damping = std::max(params.i1_damping, 1e-6);
     const Eigen::Matrix3d gram =
       point_jacobian * point_jacobian.transpose() +
@@ -528,23 +730,29 @@ LeafOutput evaluate(
     neighbours.axial_sign * (params.axial_preference >= 0.0 ? 1.0 : -1.0) :
     0.0;
 
-  const double score_a_goal = params.weight_goal * axis1.dot(goal_direction);
-  const double score_b_goal = params.weight_goal * axis2.dot(goal_direction);
+  const double goal_weight = legacy ? params.weight_goal :
+    (adaptive ? params.history.weight_goal : 0.0);
+  const double continuity_weight = legacy ? params.weight_continuity :
+    (adaptive ? params.history.weight_continuity : 0.0);
+  const double score_a_goal = goal_weight * axis1.dot(goal_direction);
+  const double score_b_goal = goal_weight * axis2.dot(goal_direction);
   const double score_a_velocity =
-    params.weight_continuity * axis1.dot(velocity_direction);
+    continuity_weight * axis1.dot(velocity_direction);
   const double score_b_velocity =
-    params.weight_continuity * axis2.dot(velocity_direction);
+    continuity_weight * axis2.dot(velocity_direction);
   const double score_a_risk =
-    params.weight_risk * risk_a +
-    params.weight_axial_block * axial_sign * axial_block_risk;
-  const double score_b_risk = params.weight_risk * risk_b;
+    legacy ? params.weight_risk * risk_a +
+    params.weight_axial_block * axial_sign * axial_block_risk : 0.0;
+  const double score_b_risk = legacy ? params.weight_risk * risk_b : 0.0;
 
   // Signed sensor-frame biases provide explicit preferences along either
   // tangent basis axis without overloading the data-dependent goal/risk weights.
   double score_a =
-    score_a_goal + score_a_velocity + score_a_risk + score_a_i1 + params.e1_bias;
+    score_a_goal + score_a_velocity + score_a_risk + score_a_i1 +
+    (legacy ? params.e1_bias : 0.0);
   double score_b =
-    score_b_goal + score_b_velocity + score_b_risk + score_b_i1 + params.e2_bias;
+    score_b_goal + score_b_velocity + score_b_risk + score_b_i1 +
+    (legacy ? params.e2_bias : 0.0);
   // The axial block now ADDS to c.  c cos(2 theta) is +c along e1 and -c along
   // e2, so preferring the link axis -- which is what a blocked far side is
   // supposed to argue for, and what the dipole term above already does with
@@ -558,28 +766,61 @@ LeafOutput evaluate(
   // direction at all.  The lateral axis it picked happened to be vertical in
   // that pose, which is why the arm kept escaping downwards instead of round.
   const double score_c =
-    params.weight_axis * risk_c +
-    params.weight_axial_block * axial_block_risk;
-  const double score_e = params.weight_axis * risk_e;
+    legacy ? params.weight_axis * risk_c +
+    params.weight_axial_block * axial_block_risk : 0.0;
+  const double score_e = legacy ? params.weight_axis * risk_e : 0.0;
+
+  // Keep every existing score term intact. The new one-sided lookahead cost
+  // need not be a dipole, so evaluate it separately in both the initial
+  // candidate ranking and the continuous direction ODE.
+  const double prediction_weight = legacy && std::isfinite(params.weight_predicted_risk) ?
+    std::max(params.weight_predicted_risk, 0.0) : 0.0;
+  tangent_escape_prediction::StaticObstaclePredictor prediction;
+  if (prediction_weight > 0.0) {
+    prediction = tangent_escape_prediction::StaticObstaclePredictor(
+      context, index, axis1, axis2, prediction_obstacles,
+      params.prediction_distance, params.prediction_risk_length,
+      params.prediction_damping, params.clearance_margin);
+  }
 
   // --- direction state -----------------------------------------------------
-  if (!state.active) {
+  if (adaptive ? !state.theta_valid : !state.active) {
+    if (capture) { decision.events |= 1; }
     // The gradient vanishes at minima as well as maxima, so seed the ODE from
     // a coarse maximum instead of letting it settle into the wrong stationary
     // point.  The metric is ~0 at this instant, so the discrete jump in theta
     // has no effect on the commanded acceleration.
     double best_score = -std::numeric_limits<double>::infinity();
-    double best_theta = 0.0;
-    for (int seed = 0; seed < 8; ++seed) {
-      const double candidate = 2.0 * kPi * static_cast<double>(seed) / 8.0;
-      const double score =
-        direction_score(candidate, score_a, score_b, score_c, score_e);
-      if (score > best_score) {
+    double best_theta = legacy ? 0.0 : params.history.initial_angle;
+    for (int seed = 0; seed < (legacy || adaptive ? 8 : 0); ++seed) {
+      const double candidate = (legacy ? 0.0 : params.history.initial_angle) +
+        2.0 * kPi * static_cast<double>(seed) / 8.0;
+      const auto candidate_risk = adaptive && objective ? objective(candidate, index) :
+        tangent_sensor_history::Risk{};
+      const double history_cost = params.history.weight_risk * candidate_risk.value;
+      const double escape_score = adaptive ? params.history.weight_escape *
+        alpha_block * candidate_risk.escape : 0.0;
+      double score =
+        direction_score(candidate, score_a, score_b, score_c, score_e) -
+        prediction_weight * prediction.evaluate(candidate).value -
+        history_cost + escape_score;
+      const auto unified = adaptive && params.response_mobility ?
+        params.response_mobility(candidate,index) : TgDirectionCandidate{};
+      if(unified.valid)score=unified.total();
+      if (capture) {
+        decision.seed_escape.push_back(unified.valid?unified.execution:escape_score);
+        decision.seeds.push_back({candidate,
+          unified.valid?unified.goal:score_a_goal * std::cos(candidate) + score_b_goal * std::sin(candidate),
+          unified.valid?0.0:score_a_velocity * std::cos(candidate) + score_b_velocity * std::sin(candidate),
+          unified.valid?-unified.risk:-history_cost, score});
+      }
+      if (score > best_score + (legacy ? 0.0 : 1e-9)) {
         best_score = score;
         best_theta = candidate;
       }
     }
     if (!state.theta_valid) {
+      if (capture) { decision.events |= 256; }
       state.theta = best_theta;
       state.progress = 0.0;
     }
@@ -613,14 +854,65 @@ LeafOutput evaluate(
   const double stall_penalty = std::hypot(state.stall_x, state.stall_y);
 
   // Subtract the dipole: same algebra as the neighbour risk terms.
-  const double score_a_stall = std::max(params.weight_stall, 0.0) * state.stall_x;
-  const double score_b_stall = std::max(params.weight_stall, 0.0) * state.stall_y;
+  const double score_a_stall = legacy ? std::max(params.weight_stall, 0.0) * state.stall_x : 0.0;
+  const double score_b_stall = legacy ? std::max(params.weight_stall, 0.0) * state.stall_y : 0.0;
   score_a -= score_a_stall;
   score_b -= score_b_stall;
 
-  const double theta_rate = std::max(params.direction_rate, 0.0) *
-    direction_score_gradient(state.theta, score_a, score_b, score_c, score_e);
+  const auto update_risk = adaptive && objective ? objective(state.theta, index) :
+    tangent_sensor_history::Risk{};
+  const double total_gradient =
+    (direction_score_gradient(state.theta, score_a, score_b, score_c, score_e) -
+    prediction_weight * prediction.evaluate(state.theta).gradient -
+    (adaptive && objective ? params.history.weight_risk * update_risk.gradient : 0.0));
+  double ascent_gradient = total_gradient;
+  if (adaptive) {
+    const auto score_at = [&](double angle) {
+      return params.response_mobility ? params.response_mobility(angle,index) :
+        TgDirectionCandidate{};
+    };
+    const Eigen::Vector3d actual_tangent = std::cos(state.theta)*axis1+std::sin(state.theta)*axis2;
+    const double desired = state.response.update(state.theta,state.filtered_theta_rate,index,goal,
+      actual_tangent,context.control_point_jacobians[index],params.response_input,alpha_block,score_at,metric,context.tcp_jacobian,
+      (goal-context.tcp_position)/std::max((goal-context.tcp_position).norm(),1e-9),
+      params.history.weight_continuity,params.history.reselect_interval,params.history.max_direction_rate,
+      params.authority_boost);
+    ascent_gradient = 5.0*std::remainder(desired-state.theta,2*kPi);
+    // A worsening range response changes steering; only missing/invalid
+    // observations freeze it. Collision RMP independently supplies repulsion.
+    if (state.response.phase==5) {
+      state.filtered_theta_rate=0.0;ascent_gradient=0.0;
+    }
+    if (!state.response.seeded || (goal-context.tcp_position).norm()<.01) {
+      state.response.pause();state.filtered_theta_rate=0.0;ascent_gradient=0.0;
+    }
+  }
+  const double escape_gradient = ascent_gradient-total_gradient;
+  const double probe_gradient = 0.0;
+  double theta_rate = std::max(params.direction_rate, 0.0) * ascent_gradient;
+  if (capture) {
+    decision.theta_evaluated = state.theta;
+    // The handoff may have reset the filter since entry to evaluate().
+    decision.filtered_rate_before = state.filtered_theta_rate;
+    decision.goal_gradient = -score_a_goal * std::sin(state.theta) + score_b_goal * std::cos(state.theta);
+    decision.continuity_gradient = -score_a_velocity * std::sin(state.theta) + score_b_velocity * std::cos(state.theta);
+    decision.history_gradient = -params.history.weight_risk * update_risk.gradient;
+    decision.escape_gradient = escape_gradient + probe_gradient;
+    decision.total_gradient = ascent_gradient;
+    decision.raw_rate = theta_rate;
+    decision.risk_before = update_risk;
+  }
+  if (!legacy) {
+    const double limit = std::max(params.history.max_direction_rate, 0.0);
+    const double target = std::clamp(theta_rate, -limit, limit);
+    if (capture) { decision.clamped_rate = target; }
+    state.filtered_theta_rate += dt / (std::max(params.history.direction_filter_tau, 0.0) + dt) *
+      (target - state.filtered_theta_rate);
+    theta_rate = adaptive ? state.filtered_theta_rate : 0.0;
+  }
+  state.response.bound_clamped=false; // v5 compatibility; full-circle steering
   state.theta += theta_rate * dt;
+
   if (!std::isfinite(state.theta)) {
     state.theta = 0.0;
   }
@@ -647,51 +939,6 @@ LeafOutput evaluate(
   state.progress = std::max(state.progress, 0.0);
   const double progress_scale = std::max(params.progress_scale, 1e-6);
   const double progress_remaining = std::exp(-state.progress / progress_scale);
-
-  // --- pocket guard --------------------------------------------------------
-  // Geometric mean over however many neighbours this sensor actually has, so
-  // a three-neighbour wrist sensor and a four-neighbour ring sensor are judged
-  // on the same scale.
-  const double mean_risk = pocket_count > 0 ?
-    std::pow(std::max(pocket_product, 0.0), 1.0 / static_cast<double>(pocket_count)) :
-    0.0;
-  const double alpha_free = std::clamp(
-    1.0 - sigmoid((mean_risk - params.pocket_threshold) /
-    std::max(params.pocket_epsilon, 1e-9)),
-    0.0,
-    1.0);
-
-  // --- blockage gate -------------------------------------------------------
-  // Is this control point actually being driven into its own obstacle?  The
-  // reference is where the goal-driven policy accelerates this point with the
-  // obstacles removed -- not the line from here to the TCP goal, which is a
-  // place a link-2 or link-3 point is never asked to reach.  Measured on this
-  // scenario the two disagree in sign on 52% of the cycles tof3_1_E owns the
-  // leaf and on all 139 that tof6_1_L owns it.
-  //
-  // This is not the old velocity gate coming back.  That one died because
-  // qdot -> 0 at a local minimum, so it switched the leaf off exactly where it
-  // was needed.  Neither half of that applies here: this is an acceleration,
-  // which the policy keeps commanding while the robot stands still, and it is
-  // taken with the obstacles removed, so the target pull has nothing left to
-  // cancel against.
-  const double blockage = nominal_usable ?
-    obstacle_direction.dot(nominal_acceleration) / nominal_norm :
-    0.0;
-  // Fail open.  Near the goal the nominal acceleration vanishes and its
-  // direction is noise; answering "not blocked" there would reproduce the very
-  // failure the velocity gate was deleted for.  When the signal cannot be
-  // read, the gate does not close.
-  const double alpha_block = nominal_usable ?
-    smoothstep(blockage, params.block_on_dot, params.block_off_dot) :
-    1.0;
-
-  // From the owner, which the hand-off hysteresis may hold a little further
-  // out than the closest sensor.  The same distance drives the push and the
-  // metric, so the whole leaf has to speak about one sensor.
-  const double alpha_distance = distance_activation(
-    clearance, params.alpha_on_distance, params.alpha_off_distance);
-  const double alpha_total = alpha_distance * alpha_block * alpha_free;
 
   // --- Jdot_e * qdot, analytic ---------------------------------------------
   // tdot = theta_dot * t_perp + omega x t.  The direction only changes because
@@ -776,14 +1023,6 @@ LeafOutput evaluate(
   // the velocity activation gate was deleted for.  Doubling and clamping keeps
   // the intent, which is that RECEDING costs authority, and drops the
   // side effect, which was that being stationary did too.
-  const double metric_gate = std::min(
-    2.0 * (1.0 - sigmoid(clearance_rate / std::max(params.metric_rate_scale, 1e-9))),
-    1.0);
-  const double metric =
-    alpha_total * metric_gate *
-    std::max(params.metric_mu, 0.0) /
-    (clearance / std::max(params.metric_length, 1e-9) +
-    std::max(params.metric_epsilon, 1e-9));
   // f = M a is the representation change the tree transports.
   const double natural_force = metric * desired_acceleration;
 
@@ -827,10 +1066,22 @@ LeafOutput evaluate(
   output.score_a_i1 = score_a_i1;
   output.goal_e1 = axis1.dot(goal_direction);
   output.goal_e2 = axis2.dot(goal_direction);
-  output.goal_from_nominal = nominal_usable;
+  output.goal_from_nominal = !adaptive && nominal_usable;
   output.score_b_i1 = score_b_i1;
   output.i1_count = i1_count;
   output.i1_largest_gain = i1_largest_gain;
+  output.predicted_risk = prediction.evaluate(state.theta);
+  output.predicted_risk_score = -prediction_weight * output.predicted_risk.value;
+  output.total_direction_score =
+    direction_score(state.theta, score_a, score_b, score_c, score_e) +
+    output.predicted_risk_score;
+  if (adaptive && objective) {
+    output.history_risk = objective(state.theta, index);
+    output.history_risk_score = -params.history.weight_risk * output.history_risk.value;
+    output.total_direction_score += output.history_risk_score +
+      params.history.weight_escape * output.alpha_block * output.history_risk.escape;
+  }
+  output.handoff_gain = state.handoff_gain;
   output.clearance_rate = clearance_rate;
   output.closing_gate = closing_gate;
   output.closing_term = closing_term;
