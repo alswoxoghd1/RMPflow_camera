@@ -2021,6 +2021,7 @@ public:
     declare_parameter("tg_rmp_history_escape_length", 0.01);
     declare_parameter("tg_rmp_history_reselect_interval", 0.1);
     declare_parameter("tg_rmp_history_weight_risk", 0.0);
+    declare_parameter("tg_rmp_history_weight_neighbor_risk", 0.0);
     declare_parameter("tg_rmp_history_weight_continuity", 0.1);
     declare_parameter("tg_rmp_unknown_motion_weight", 0.1);
     declare_parameter("tg_rmp_max_direction_rate", 1.5);
@@ -3095,6 +3096,7 @@ private:
     history.escape_length = positive("tg_rmp_history_escape_length");
     history.reselect_interval = positive("tg_rmp_history_reselect_interval");
     history.weight_risk = nonnegative("tg_rmp_history_weight_risk");
+    history.weight_neighbor_risk = nonnegative("tg_rmp_history_weight_neighbor_risk");
     history.weight_continuity = nonnegative("tg_rmp_history_weight_continuity");
     history.unknown_motion_weight = nonnegative("tg_rmp_unknown_motion_weight");
     history.max_direction_rate = positive("tg_rmp_max_direction_rate");

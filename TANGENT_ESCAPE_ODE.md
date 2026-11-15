@@ -1,3 +1,59 @@
+# Current activation revision — 2026-11-15
+
+This section supersedes older pocket/handoff explanations retained below as design history.
+
+- Metric activation is now `alpha_distance * alpha_block`. `alpha_free` and
+  `handoff_gain` remain in legacy trace slots at one, but do not suppress TG.
+- No fade-to-zero when the owner changes. Existing distance hysteresis (5 mm),
+  within-plane rate limiting, joint acceleration/command limits remain. Removing
+  the fade does not prove smooth acceleration across different sensor Jacobians;
+  inspect owner transitions in subsequent recordings before claiming improvement.
+- In history mode, choose the nearest **eligible** sensor: fresh input, within TG
+  activation range, positive goal-progress angle gate (40 degrees by default).
+  A closer nonblocking sensor cannot steal ownership. An ineligible owner yields
+  immediately to an eligible blocker. With no blockers the TG metric stays zero.
+  The gate still uses the mounting axis as a proxy, not a measured obstacle bearing.
+- Other detecting sensors participate through a candidate-specific soft cost,
+  not an all-direction metric reduction. Both initial 8 candidates and later
+  72-candidate scans use it. Existing observed-response rotation conditions remain;
+  a new best score alone does not jump the applied direction.
+
+## Observed-neighbor cost and its limits
+
+Each candidate uses its existing bounded joint displacement prediction. Exclude
+its owner. Require a current detection, a fresh valid local distance-response fit,
+local pose/displacement trust radius, and a recent previous-model validation without
+a residual above 3 sigma. Require directional support >= 0.7. These thresholds
+are provisional engineering safeguards, not experimentally established guarantees.
+
+For supported sensor j, use the learned scalar response `change_j = gradient_j * dq`.
+Compute `sigma_j = noise_j * sqrt(2 + dq^T information_inverse_j dq)` and penalize
+only `closing_j = max(-change_j - 2 sigma_j, 0)`. The contribution is
+`support_j * exp(-max(range_j-clearance,0)/risk_length) * clamp(closing_j/risk_length,0,1)`.
+Use the maximum across eligible non-owner detections. No observed closing means
+no directional evidence, NOT certified free space. Unknown/unexcited/disappeared
+sensors add no fabricated bearing-based penalty; unknown counts are recorded.
+An unobserved initial direction therefore cannot be ruled out from scalar range alone.
+
+The full score adds `-weight_neighbor_risk * cost` to existing goal/execution terms.
+Main params.yaml enables this at 0.3 (provisional; no physical validation yet).
+The old risk weight remains zero. No model is assumed to describe a permanent
+obstacle; the existing expiry/discontinuity handling and new validation gates bound
+its use locally, but slow obstacle changes can still violate that approximation.
+
+## Recording and compatibility
+
+History trace v11 appends the active neighbor-risk weight plus seven arrays of
+72 values: weighted cost, support, valid model count, unknown count, critical sensor,
+predicted distance change, and noise sigma. They describe the most recent candidate
+scan, not new evaluations every control tick. The original shadow arrays retain
+their original diagnostic meaning. Initial event negative-risk components include
+the new cost; exact configuration/source is archived as before. v1–v10 remain readable.
+Deprecated pocket/handoff parameters may still be accepted for old YAML compatibility
+but no longer affect the metric. No Collision RMP changes are part of this revision.
+
+---
+
 # Escape RMP v2 — `tangent_ode`
 
 ## 센서 이력 방향과 단순 접선 leaf 비교

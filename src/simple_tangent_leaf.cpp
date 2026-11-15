@@ -101,8 +101,8 @@ tangent_escape_ode::LeafOutput evaluate(
   if (transported.norm() < 1e-6) {
     transported = seed;
     // A discontinuous change of velocity can destroy the previous projection.
-    // Reorient with zero leaf authority and let the shared fade restore it.
-    state.handoff_gain = 0.0;
+    // Choose the deterministic seed without an authority fade.
+    state.handoff_gain = 1.0;
   }
   transported.normalize();
 
@@ -151,7 +151,6 @@ tangent_escape_ode::LeafOutput evaluate(
   state.previous_tangent_rate = output.tangent_rate;
   output.damping_acceleration = std::max(params.tangent_damping, 0.0) * output.tangent_rate;
   output.desired_acceleration = output.push_acceleration - output.damping_acceleration;
-  if (state.handoff_gain == 0.0) { output.metric = output.alpha_total = 0.0; }
   output.handoff_gain = state.handoff_gain;
   output.natural_force = output.metric * output.desired_acceleration;
   output.injected_power = output.natural_force * output.tangent_rate;

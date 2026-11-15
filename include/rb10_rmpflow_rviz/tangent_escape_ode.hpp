@@ -449,9 +449,8 @@ struct LeafOutput
   // Filled whenever any sensor sees something, including on the cycles where
   // the leaf itself stays inactive, so the approach into an obstacle is
   // covered and not just the engaged episode.
-  // alpha_TG = alpha_distance * alpha_block * alpha_free, and it multiplies the
-  // metric only.  All four are logged: the product alone cannot say which
-  // factor closed the gate.
+  // alpha_TG = alpha_distance * alpha_block, applied to the metric only.
+  // Removed alpha_free and handoff diagnostics remain at one for compatibility.
   double alpha_distance{0.0};   // owner distance
   double alpha_block{1.0};      // owner driven into its own obstacle?
   double alpha_total{0.0};      // alpha_TG

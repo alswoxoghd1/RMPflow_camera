@@ -22,7 +22,7 @@ public:
     if (tg[44]>.5 || !(tg[10]>1e-9)) return false;  // actual TG contribution only
     const auto n=static_cast<std::size_t>(tg[50]);
     const auto tail=114+8*n, payload=tail+3;
-    if (tg.size()<payload+67 || tg[tail]!=45045 || tg[tail+1]<1 || tg[tail+1]>10 || std::floor(tg[tail+1])!=tg[tail+1]) return false;
+    if (tg.size()<payload+67 || tg[tail]!=45045 || tg[tail+1]<1 || tg[tail+1]>11 || std::floor(tg[tail+1])!=tg[tail+1]) return false;
     if (!(static_cast<unsigned>(tg[payload+2]) & 256U)) return false;
     if (tg[payload+66]!=8 || tg.size()<payload+107) return false;
     const auto w=write_.load(std::memory_order_relaxed),r=read_.load(std::memory_order_acquire);
@@ -36,7 +36,7 @@ public:
     std::copy(goal.begin(),goal.end(),v.begin()+32);v[35]=8;v[36]=0;
     std::copy_n(tg.begin()+payload+67,40,v.begin()+37);
     std::fill(v.begin()+77,v.end(),0.0);
-    const std::size_t extra=(tg[tail+1]>=9?17:0)+(tg[tail+1]>=10?14:0);
+    const std::size_t extra=(tg[tail+1]>=9?17:0)+(tg[tail+1]>=10?14:0)+(tg[tail+1]>=11?505:0);
     if(tg[tail+1]>=8 && (tg.size()<=extra || tg[tg.size()-extra-1]!=509+8*n))return false;
     const std::size_t suffix=tg[tail+1]>=8 ? 476+509+8*n+extra : (tg[tail+1]==7 ? 476 : (tg[tail+1]==6 ? 387 : (tg[tail+1]==5 ? 58 : (tg[tail+1]==4 ? 10 : 0))));
     if (tg[tail+1]>=3 && tg.size()>=15+suffix && tg[tg.size()-suffix-9]==8) {

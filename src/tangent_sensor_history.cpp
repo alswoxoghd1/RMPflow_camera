@@ -274,4 +274,50 @@ Risk History::evaluate(const JointVector & displacement, const KinematicsContext
   if (risk.model_count > 0) { risk.confidence /= static_cast<double>(risk.model_count); }
   return risk;
 }
+Risk History::evaluate_neighbors(const JointVector & displacement, std::size_t owner) const
+{
+  Risk result;
+  if (!displacement.allFinite() || displacement.norm()>params_.max_joint_step ||
+      current_.stamp<0.0) { return result; }
+  const auto fresh=ranges();
+  double support_sum=0.0;
+  for (std::size_t k=0;k<kSensorCount;++k) {
+    if (k==owner || !std::isfinite(fresh[k])) { continue; }
+    const auto & model=models_[k];
+    const double age=current_.stamp-model.stamp;
+    const JointVector offset=current_.q-model.anchor_q;
+    const JointVector future=offset+displacement;
+    const auto & check=prediction_checks_[k];
+    // Use only current detections and a validated local response, not an old
+    // obstacle remembered after disappearance. Reject contradictory evidence.
+    if (!model.valid || age<0.0 || age>params_.fresh_time ||
+        offset.norm()>params_.max_joint_step || future.norm()>params_.max_joint_step ||
+        !check.valid || current_.stamp-check.stamp>params_.fresh_time ||
+        std::abs(check.error)>3.0*std::max(check.sigma,params_.noise_floor)) {
+      ++result.unknown_count;continue;
+    }
+    const double variance=std::max(0.0,displacement.dot(model.information_inverse*displacement));
+    const double support=displacement.squaredNorm()>1e-16 ?
+      std::clamp(1.0-params_.ridge*variance/displacement.squaredNorm(),0.0,1.0) : 0.0;
+    if (support<0.7) { ++result.unknown_count;continue; }
+    ++result.model_count;support_sum+=support;
+    const double change=model.gradient.dot(displacement);
+    const double sigma=model.noise*std::sqrt(2.0+variance);
+    // Only closing larger than the observed noise band is directional evidence.
+    const double closing=std::max(-change-2.0*sigma,0.0);
+    const double proximity=std::exp(-std::max(fresh[k]-params_.clearance,0.0)/params_.risk_length);
+    const double cost=support*proximity*std::clamp(closing/params_.risk_length,0.0,1.0);
+    result.min_predicted_range=std::min(result.min_predicted_range,fresh[k]+change);
+    // Maximum rather than a sensor-count-dependent sum. One detection cannot
+    // weaken all candidates merely because more sensors see the same object.
+    if (cost>result.value) {
+      result.value=result.measured=result.nominal_cost=cost;
+      result.critical_sensor=result.shadow_sensor=static_cast<int>(k);
+      result.critical_change=change;result.critical_sigma=sigma;
+    }
+  }
+  result.confidence=result.shadow_support=result.model_count ?
+    support_sum/static_cast<double>(result.model_count) : 0.0;
+  return result;
+}
 }  // namespace rb10_rmpflow_rviz::tangent_sensor_history

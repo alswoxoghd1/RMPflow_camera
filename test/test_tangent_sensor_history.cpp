@@ -303,7 +303,7 @@ TEST(TangentSensorHistorySupervisor, RealInitializationTraceEntersRetainedQueue)
   ASSERT_TRUE(queue.push(command.debug_data,123,1000,100,q,qd,goal));
   ASSERT_TRUE(queue.pop(event));
   EXPECT_DOUBLE_EQ(event.data[1],2.0);
-  for (int i=0;i<8;++i) EXPECT_DOUBLE_EQ(event.data[77+i],command.debug_data[command.debug_data.size()-14-17-484-static_cast<std::size_t>(command.debug_data[command.debug_data.size()-32])+i]);
+  for (int i=0;i<8;++i) EXPECT_DOUBLE_EQ(event.data[77+i],command.debug_data[command.debug_data.size()-505-14-17-484-static_cast<std::size_t>(command.debug_data[command.debug_data.size()-537])+i]);
   const auto payload=tangent_escape_debug::kSize+3;
   EXPECT_DOUBLE_EQ(event.data[6],command.debug_data[payload+10]);
   for (int i=0;i<40;++i) EXPECT_DOUBLE_EQ(event.data[37+i],command.debug_data[payload+67+i]);
@@ -324,7 +324,7 @@ TEST(TangentSensorHistorySupervisor, WideSearchRecordsFiniteSameStateCandidates)
     const auto command=supervisor.evaluate(input.q,context,JointVector::Zero(),
       {-.4,.03,.02},{},JointVector::Zero(),history::Matrix6::Identity(),JointVector::Zero());
     const auto & trace=command.debug_data;
-    ASSERT_GT(trace.size(),476U);const auto extra=trace.size()-14-17-466-static_cast<std::size_t>(trace[trace.size()-32]);
+    ASSERT_GT(trace.size(),476U);const auto extra=trace.size()-505-14-17-466-static_cast<std::size_t>(trace[trace.size()-537]);
     if(trace[extra+3]>0){
       found=true;max_us=std::max(max_us,trace[extra+7]);
       for(std::size_t i=extra+11;i<extra+11+72;++i)EXPECT_TRUE(std::isfinite(trace[i]));
@@ -352,10 +352,10 @@ TEST(TangentSensorHistorySupervisor, ExtraTraceIsHistoryOnlyAndAppendOnly)
     } else {
       ASSERT_GT(command.debug_data.size(),offset+3);
       EXPECT_DOUBLE_EQ(command.debug_data[offset],45045.0);
-      EXPECT_DOUBLE_EQ(command.debug_data[offset+1],10.0);
+      EXPECT_DOUBLE_EQ(command.debug_data[offset+1],11.0);
       EXPECT_DOUBLE_EQ(command.debug_data[offset+2],command.debug_data.size()-offset-3);
       const auto seeds = static_cast<std::size_t>(command.debug_data[offset+3+66]);
-      const auto tail = command.debug_data.size() - 14 - 17 - 12 - 7 - seeds - 476 - static_cast<std::size_t>(command.debug_data[command.debug_data.size()-32]);
+      const auto tail = command.debug_data.size() - 505 - 14 - 17 - 12 - 7 - seeds - 476 - static_cast<std::size_t>(command.debug_data[command.debug_data.size()-537]);
       EXPECT_DOUBLE_EQ(command.debug_data[tail],2.0);  // angle-linear goal-progress reference
       EXPECT_DOUBLE_EQ(command.debug_data[tail+2],config.tangent_escape_ode.nominal_motion_epsilon);
     }
@@ -624,34 +624,74 @@ TEST(TangentSensorHistoryLeaf, WorseningRangeStillPassesSteeringThroughTheRateLi
   EXPECT_TRUE(risk_turn);EXPECT_GT(movement,.2);
 }
 
-TEST(TangentSensorHistoryLeaf, OwnerChangesOnlyAtZeroAuthority)
+TEST(TangentSensorHistoryLeaf, OwnerSwitchHasNoZeroAuthorityFade)
 {
-  auto params = experimental_params();
-  params.history.handoff_time = 0.03;
-  const auto context = history_context();
-  std::vector<double> ranges(history::kSensorCount, INFINITY);
-  ranges[0] = 0.1; ranges[1] = 0.2;
+  auto params=experimental_params();params.block_on_dot=-2.;params.block_off_dot=-1.;
+  const auto context=history_context();
+  std::vector<double> ranges(history::kSensorCount,INFINITY);ranges[0]=.1;ranges[1]=.2;
   ode::LeafState state;
-  const auto run = [&]() {
-      return simple_tangent_leaf::evaluate(state, params, context, JointVector::Zero(),
-        JointVector::Zero(), {0.4, 0.3, 0.2}, ranges, {});
-    };
-  ASSERT_EQ(run().sensor_index, 0U);
-  ranges[1] = 0.05;
-  bool switched = false;
-  for (int k = 0; k < 20; ++k) {
-    const auto old_owner = state.sensor_index;
-    const auto leaf = run();
-    if (leaf.sensor_index != old_owner) {
-      switched = true;
-      EXPECT_DOUBLE_EQ(leaf.handoff_gain, 0.0);
-      EXPECT_DOUBLE_EQ(leaf.metric, 0.0);
-      EXPECT_NEAR(leaf.force_contribution.norm(), 0.0, 1e-12);
-    }
-  }
-  EXPECT_TRUE(switched);
-  EXPECT_EQ(state.sensor_index, 1U);
-  EXPECT_GT(state.handoff_gain, 0.0);
+  const auto run=[&](){return simple_tangent_leaf::evaluate_fixed(state,params,context,
+    JointVector::Zero(),JointVector::Zero(),{.4,.3,.2},ranges,{});};
+  ASSERT_EQ(run().sensor_index,0U);
+  ranges[1]=.098;EXPECT_EQ(run().sensor_index,0U); // hysteresis retained
+  ranges[1]=.05;const auto changed=run();
+  EXPECT_EQ(changed.sensor_index,1U);EXPECT_DOUBLE_EQ(changed.handoff_gain,1.);
+  EXPECT_GT(changed.metric,0.);EXPECT_GT(changed.force_contribution.norm(),0.);
+}
+
+TEST(TangentSensorHistoryLeaf, CloserNonblockingSensorCannotStealOwnership)
+{
+  auto p=experimental_params();p.direction_mode=history::DirectionMode::kSensorHistory;
+  auto c=history_context();c.tcp_jacobian.leftCols<3>().setIdentity();
+  std::vector<double> ranges(history::kSensorCount,INFINITY);ranges[0]=.12;ranges[2]=.02;
+  ode::LeafState state;
+  const auto run=[&](const Eigen::Vector3d & goal){return ode::evaluate(state,p,c,
+    JointVector::Zero(),JointVector::Zero(),goal,ranges,{});};
+  auto a=run({-1,0,0});ASSERT_TRUE(a.active);EXPECT_EQ(a.sensor_index,0U);EXPECT_GT(a.metric,0.);
+  EXPECT_DOUBLE_EQ(a.alpha_free,1.);EXPECT_DOUBLE_EQ(a.handoff_gain,1.);
+  EXPECT_NEAR(a.alpha_total,a.alpha_distance*a.alpha_block,1e-12);
+  a=run({1,0,0});EXPECT_EQ(a.sensor_index,2U);EXPECT_GT(a.metric,0.);
+  ranges[2]=INFINITY;a=run({1,0,0});EXPECT_DOUBLE_EQ(a.metric,0.);
+}
+
+TEST(TangentSensorHistory, NeighborCostIsDirectionalAndExcludesOwner)
+{
+  history::History estimator;
+  for(int k=0;k<=60;++k)estimator.update(training_input(k,true));
+  JointVector delta=JointVector::Zero();delta[0]=.02;
+  // Sensor 0 closes on +q0; sensor 1 closes on -q0. Owner 0 is excluded.
+  const auto toward=estimator.evaluate_neighbors(-delta,0);
+  const auto away=estimator.evaluate_neighbors(delta,0);
+  EXPECT_GT(toward.value,0.);EXPECT_DOUBLE_EQ(away.value,0.);
+  EXPECT_EQ(toward.critical_sensor,1);EXPECT_GE(toward.confidence,.7);
+  EXPECT_LE(toward.value,1.);
+  // Same pair with reversed owner reverses which movement is penalized.
+  EXPECT_GT(estimator.evaluate_neighbors(delta,1).value,0.);
+  EXPECT_DOUBLE_EQ(estimator.evaluate_neighbors(-delta,1).value,0.);
+}
+
+TEST(TangentSensorHistory, UnknownOrLostNeighborCannotInventDirectionalRisk)
+{
+  history::History estimator;estimator.update(training_input(0,true));
+  JointVector delta=JointVector::Zero();delta[0]=.02;
+  EXPECT_DOUBLE_EQ(estimator.evaluate_neighbors(-delta,0).value,0.);
+  for(int k=1;k<=60;++k)estimator.update(training_input(k,true));
+  JointVector unsupported=JointVector::Zero();unsupported[5]=.02;
+  auto r=estimator.evaluate_neighbors(unsupported,0);EXPECT_DOUBLE_EQ(r.value,0.);
+  EXPECT_GT(r.unknown_count,0U);
+  auto input=training_input(61,true);input.samples[1].range=INFINITY;estimator.update(input);
+  EXPECT_DOUBLE_EQ(estimator.evaluate_neighbors(-delta,0).value,0.);
+}
+
+TEST(TangentSensorHistory, NeighborRiskRejectsContradictionAndOutsideLocalTrustRegion)
+{
+  history::History estimator;
+  for(int k=0;k<=60;++k)estimator.update(training_input(k,true));
+  JointVector delta=JointVector::Zero();delta[0]=-.02;
+  ASSERT_GT(estimator.evaluate_neighbors(delta,0).value,0.);
+  JointVector far=delta*5.;EXPECT_DOUBLE_EQ(estimator.evaluate_neighbors(far,0).value,0.);
+  auto input=training_input(61,true);input.samples[1].range+=.025;estimator.update(input);
+  EXPECT_DOUBLE_EQ(estimator.evaluate_neighbors(delta,0).value,0.);
 }
 
 TEST(TangentSensorHistorySupervisor, UsesScalarInputInsteadOfMovingVirtualSphereGeometry)
@@ -1006,3 +1046,17 @@ TEST(TgInitialEventQueue, VersionTenPreservesSeedExecutionScores)
 
 }  // namespace
 }  // namespace rb10_rmpflow_rviz
+
+TEST(TgInitialEventQueue, VersionElevenPreservesSeedExecutionScores)
+{
+  rb10_rmpflow_rviz::TgInitialEventQueue queue;rb10_rmpflow_rviz::TgInitialEvent out;
+  constexpr std::size_t payload=277,shadow=509+8*20,suffix=476+shadow+17+14+505;
+  std::vector<double> tg(payload+107+9+suffix,0.);
+  tg[26]=9;tg[50]=20;tg[274]=45045;tg[275]=11;tg[10]=100;
+  tg[payload+2]=256;tg[payload+66]=8;tg[tg.size()-537]=shadow;
+  tg[tg.size()-suffix-9]=8;
+  for(int i=0;i<8;++i)tg[tg.size()-suffix-8+i]=.1*i;
+  ASSERT_TRUE(queue.push(tg,1,100,10,{},{},{}));ASSERT_TRUE(queue.pop(out));
+  EXPECT_EQ(out.data[1],2);
+  for(int i=0;i<8;++i)EXPECT_DOUBLE_EQ(out.data[77+i],.1*i);
+}

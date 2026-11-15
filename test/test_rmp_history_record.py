@@ -148,6 +148,22 @@ class HistoryTraceTest(unittest.TestCase):
         self.assertEqual(boost['phase_name'],'rising')
         with self.assertRaises(ValueError):decode_history(tg[:-1])
 
+    def test_v11_neighbor_risk_is_separate_from_old_shadow(self):
+        tg=packet();offset=114+8*int(tg[50]);tg[offset+1]=11
+        tg += [2.,1.,.001]+[0.]*9
+        tg += [.2,.01,.1,.4,.5,.6,1.,.12]+[0.]*476
+        tg += [0.]*(7*72)+[10.,1.,0.]+[2.]+[0.]*16+[525.]
+        tg += [0.]*17+[0.]*14
+        tg += [.3]
+        for value in [.1,.9,1.,2.,3.,-.02,.002]:tg += [value]*72
+        tg[offset+2]=len(tg)-offset-3
+        h=decode_history(tg)
+        self.assertEqual(h['weight_neighbor_risk'],.3)
+        self.assertEqual(h['response']['neighbor_risk']['weighted_cost'],[.1]*72)
+        self.assertEqual(h['response']['neighbor_risk']['unknown_count'],[2.]*72)
+        self.assertEqual(h['response']['shadow']['nominal_cost'],[0.]*72)
+        with self.assertRaises(ValueError):decode_history(tg[:-1])
+
     def test_v7_observed_failure_memory_and_reason_preserve_v6_layout(self):
         tg=packet();offset=114+8*int(tg[50]);tg[offset+1]=7
         tg += [2.,1.,.001]+[0.]*9

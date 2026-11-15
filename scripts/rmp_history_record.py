@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Schema for the append-only TG history decision trace (45045, versions 1--10).
+"""Schema for the append-only TG history decision trace (45045, versions 1--11).
 
 The enclosing control snapshot supplies the control sequence and timestamps.
 Model updates are deltas; full keyframes permit recovery after packet loss.
@@ -47,7 +47,7 @@ def decode_history(tg):
     offset = 114 + 8 * int(tg[50])
     if len(tg) <= offset:
         return None
-    if len(tg) < offset + 3 or tg[offset] != 45045 or tg[offset + 1] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10):
+    if len(tg) < offset + 3 or tg[offset] != 45045 or tg[offset + 1] not in (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
         raise ValueError('unsupported TG history trace')
     version = int(tg[offset + 1])
     count = int(tg[offset + 2])
@@ -136,6 +136,11 @@ def decode_history(tg):
         boost=result['response']['authority_boost']
         boost['phase_name']={0:'idle',1:'waiting',2:'rising',3:'settling',4:'exhausted',
             5:'supported',6:'recovering',7:'danger',8:'searching'}.get(int(boost['phase']),'unknown')
+    if version >= 11:
+        result['weight_neighbor_risk'] = take(1)[0]
+        result['response']['neighbor_risk'] = {
+            name: take(72) for name in ('weighted_cost', 'support', 'model_count',
+                'unknown_count', 'critical_sensor', 'predicted_change', 'sigma')}
     if cursor != len(data):
         raise ValueError('unexpected TG history fields')
     return result
@@ -216,7 +221,7 @@ class RecordingQuality:
         return dict(**self.counts, modes=dict(self.modes), event_counts=dict(self.events))
 
 
-SCHEMA = dict(v10_note="Bounded command-deficit authority boost; base/applied metric and observation state appended after v9.", magic=45045, version=10, supported_versions=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+SCHEMA = dict(v11_note="No pocket/ownership fades; goal-blocking owner eligibility. Append neighbor-risk weight then seven 72-candidate arrays: weighted cost, support, model count, unknown count, sensor, change, sigma. Existing shadow fields keep their old diagnostic meaning.", v10_note="Bounded authority boost (trigger semantics depend on archived source; current trigger is rotation); base/applied metric and observation state appended after v9.", magic=45045, version=11, supported_versions=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
               v9_note="Post-guard submitted command coverage and rolling encoder net progress. Unexecuted search does not penalize headings. Forecast costs are diagnostic by default; compare effective weight_risk. History-only metric-rate floor is logged.", decision_fields=DECISION_FIELDS,
               v8_note='Observation-only diagnostics; controller scores and direction decisions unchanged. Seven arrays of72 raw (unweighted) candidate diagnostics, window stamp/stall/range-worsening, sensor count, eight fields per pre-fit sample validation, extension length. Sigma is a model/noise scale, NOT a calibrated confidence interval. Validation uses the configured model pose source, not an unexecuted candidate trajectory.',
               v8_shadow_fields=SHADOW_FIELDS, v8_prediction_check_fields=PREDICTION_CHECK_FIELDS,

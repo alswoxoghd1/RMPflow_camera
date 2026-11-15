@@ -378,12 +378,8 @@ void test_leaf(const KinematicsContext & context)
   std::cout << "  injected energy " << injected_energy
             << " vs well depth " << well_depth << "\n";
 
-  // --- pocket guard shuts the leaf down ------------------------------------
-  // The guard is a smooth sigmoid on the geometric mean neighbour risk, so the
-  // meaningful property is monotonicity as the pocket closes, not one value.
+  // Neighbour detections no longer suppress every tangent via alpha_free.
   {
-    double previous_alpha = 2.0;
-    double tightest_alpha = 1.0;
     for (const double neighbour_clearance : {0.30, 0.15, 0.06, 0.02, 0.005}) {
       ode::LeafState pocket_state;
       auto pocket = clear_scene();
@@ -391,12 +387,7 @@ void test_leaf(const KinematicsContext & context)
       set_neighbours(pocket, neighbour_clearance);
       const auto out = ode::evaluate(pocket_state, params, context, qd, nominal_qdd, goal, pocket, no_rates);
       require(out.active, "pocket probe did not activate the leaf");
-      require(
-        out.alpha_free <= previous_alpha + 1e-12,
-        "pocket guard did not tighten monotonically as the pocket closed");
-      require(
-        out.alpha_free >= -1e-12 && out.alpha_free <= 1.0 + 1e-12,
-        "pocket guard left the unit interval");
+      require(out.alpha_free == 1.0, "removed pocket gate reduced TG authority");
       // Activation lives on the metric and nowhere else.  Gating the push as
       // well was the older arrangement, and it was wrong twice over: alpha
       // entered the transported force f = M a squared, and since the damping
@@ -412,8 +403,8 @@ void test_leaf(const KinematicsContext & context)
       require(
         std::abs(
           out.alpha_total -
-          out.alpha_distance * out.alpha_block * out.alpha_free) <= 1e-12,
-        "alpha_TG is not the product of its three factors");
+          out.alpha_distance * out.alpha_block) <= 1e-12,
+        "alpha_TG is not the product of distance and block");
       // With the progress attenuation off and no clearance rate supplied, the
       // push is the distance term alone -- and in particular carries no
       // activation factor.
@@ -427,14 +418,9 @@ void test_leaf(const KinematicsContext & context)
       require(
         out.closing_term == 0.0 && out.clearance_rate == 0.0,
         "closing-rate term fired without a clearance rate");
-      previous_alpha = out.alpha_free;
-      tightest_alpha = out.alpha_free;
     }
-    require(
-      tightest_alpha < 0.10,
-      "fully enclosed pocket did not shut the leaf down");
   }
-  std::cout << "  pocket guard closes monotonically when boxed in\n";
+  std::cout << "  neighbour suppression removed from the metric\n";
 
   // --- distance activation reaches zero smoothly ---------------------------
   // The old Schmitt trigger let the metric step to whatever it happened to be

@@ -103,9 +103,7 @@ rmpflow_controller:
     tg_rmp_block_off_dot: 0.3
     tg_rmp_nominal_motion_epsilon: 0.001
     tg_rmp_nominal_filter_tau: 0.15
-    tg_rmp_pocket_length: 0.06
-    tg_rmp_pocket_threshold: 0.6
-    tg_rmp_pocket_epsilon: 0.1
+    # Pocket suppression removed: alpha_f = 1.
 
     # simple: velocity-normal steering (default); fixed: former fixed-angle leaf;
     # sensor_history: sensor-plane optimization; legacy: original score below.
@@ -122,12 +120,13 @@ rmpflow_controller:
     tg_rmp_history_weight_escape: 0.2  # ablation 3: original execution weight
     tg_rmp_history_escape_length: 0.01
     tg_rmp_history_reselect_interval: 0.1  # legacy trace setting; v4 uses measured response windows
-    tg_rmp_history_weight_risk: 0.0  # unvalidated range forecasts remain diagnostic only
+    tg_rmp_history_weight_risk: 0.0  # old extrapolation remains diagnostic
+    tg_rmp_history_weight_neighbor_risk: 0.3  # provisional soft cost; validated non-owner closing only
     tg_rmp_history_weight_continuity: 0.0  # no selected-angle retention bonus
     tg_rmp_unknown_motion_weight: 0.1
     tg_rmp_max_direction_rate: 1.5
     tg_rmp_direction_filter_tau: 0.1
-    tg_rmp_handoff_time: 0.15
+    # Ownership fade removed: alpha_h = 1 (no handoff time).
 
     # Original direction score, used only by legacy mode.
     tg_rmp_direction_rate: 1.5

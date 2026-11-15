@@ -243,6 +243,42 @@ LeafOutput evaluate(
 
   const double dt = std::max(params.control_dt, 1e-4);
 
+  // One reference for both direction preference and history activation. It
+  // remains meaningful at zero actual velocity and during collision retreat.
+  // The sensor mounting axis is only a bearing proxy, not a measured normal.
+  JointVector goal_progress = JointVector::Zero();
+  if (progress_block) {
+    constexpr double inverse_damping = 0.01;
+    const Eigen::Matrix3d gram =
+      context.tcp_jacobian * context.tcp_jacobian.transpose() +
+      inverse_damping * inverse_damping * Eigen::Matrix3d::Identity();
+    goal_progress = context.tcp_jacobian.transpose() *
+      gram.ldlt().solve(goal - context.tcp_position);
+    if (!goal_progress.allFinite()) { goal_progress.setZero(); }
+    output.goal_progress_joint_motion = goal_progress;
+  }
+
+  // Ownership is restricted to goal-blocking detections in history mode.
+  // This uses the same mounting-axis proxy and angle gate as activation; it
+  // does not turn a scalar capacitive measurement into an obstacle bearing.
+  const auto goal_block = [&](std::size_t k) {
+      const Eigen::Vector3d motion = context.control_point_jacobians[k] * goal_progress;
+      const double norm = motion.norm();
+      const auto & sensor = RB10Model::sensor_control_points[k];
+      const Eigen::Vector3d axis =
+        (context.link_rotations[sensor.parent_link] * sensor.local_normal).normalized();
+      const double angle = params.block_start_angle_deg;
+      if (!motion.allFinite() || norm <= std::max(params.nominal_motion_epsilon, 1e-12) ||
+        !std::isfinite(angle) || angle <= 0.0 || angle > 180.0) { return 0.0; }
+      const double degrees = std::acos(std::clamp(axis.dot(motion)/norm, -1.0, 1.0))*180.0/kPi;
+      return std::clamp(1.0-degrees/angle, 0.0, 1.0);
+    };
+  const auto eligible = [&](std::size_t k) {
+      if (k >= point_count || !neighbours_table[k].valid) { return false; }
+      const double d = clearances[k]-params.clearance_margin;
+      return std::isfinite(d) && distance_activation(d,params.alpha_on_distance,
+        params.alpha_off_distance)>0.0 && (!progress_block || goal_block(k)>0.0);
+    };
   // --- ownership: one leaf for the whole robot -----------------------------
   std::size_t closest = 0;
   double closest_clearance = std::numeric_limits<double>::infinity();
@@ -262,6 +298,18 @@ LeafOutput evaluate(
     }
   }
 
+  // Keep nearest detection for diagnostics when no sensor blocks the goal.
+  // Such a detection receives zero activation, never a fallback TG direction.
+  bool have_blocker = false;
+  if (progress_block) {
+    for (std::size_t k=0;k<point_count;++k) {
+      if (!eligible(k)) { continue; }
+      const double d=clearances[k]-params.clearance_margin;
+      if (!have_blocker || d<closest_clearance) { closest=k;closest_clearance=d; }
+      have_blocker=true;
+    }
+  }
+
   const auto reset = [&state]() {
       state = LeafState{};
     };
@@ -270,21 +318,6 @@ LeafOutput evaluate(
     if (capture) { decision.events |= 16; }
     reset();
     return output;
-  }
-
-  // One reference for both direction preference and history activation. It
-  // remains meaningful at zero actual velocity and during collision retreat.
-  // The sensor mounting axis is only a bearing proxy, not a measured normal.
-  JointVector goal_progress = JointVector::Zero();
-  if (progress_block) {
-    constexpr double inverse_damping = 0.01;
-    const Eigen::Matrix3d gram =
-      context.tcp_jacobian * context.tcp_jacobian.transpose() +
-      inverse_damping * inverse_damping * Eigen::Matrix3d::Identity();
-    goal_progress = context.tcp_jacobian.transpose() *
-      gram.ldlt().solve(goal - context.tcp_position);
-    if (!goal_progress.allFinite()) { goal_progress.setZero(); }
-    output.goal_progress_joint_motion = goal_progress;
   }
 
   // --- blockage observation ------------------------------------------------
@@ -358,6 +391,7 @@ LeafOutput evaluate(
   bool switch_owner =
     !state.active ||
     !std::isfinite(owner_clearance) ||
+    (progress_block && have_blocker && !eligible(owner)) ||
     (owner_clearance - closest_clearance) > std::max(params.owner_hysteresis, 0.0);
   if (params.freeze_owner && state.active) { switch_owner = false; }
   if (capture) {
@@ -365,19 +399,9 @@ LeafOutput evaluate(
     if (state.active && switch_owner && owner != closest) { decision.events |= 2; }
   }
 
-  // A tangent cannot in general stay identical while its normal changes.
-  // Fade the leaf's authority out before changing planes, then back in.
-  // Both experimental leaves use this same handoff, independent of scores.
-  if (!legacy && !params.freeze_owner && state.active) {
-    const double step = dt / std::max(params.history.handoff_time, dt);
-    if (switch_owner && owner != closest && std::isfinite(owner_clearance)) {
-      if (capture) { decision.events |= 8; }
-      state.handoff_gain = std::max(0.0, state.handoff_gain - step);
-      switch_owner = state.handoff_gain <= 0.0;
-    } else {
-      state.handoff_gain = std::min(1.0, state.handoff_gain + step);
-    }
-  }
+  // No metric fade on ownership changes. Retain the serialized field at one
+  // for old trace readers; switching still uses distance hysteresis above.
+  state.handoff_gain = 1.0;
 
   // --- sensor frame --------------------------------------------------------
   const auto sensor_basis = [&context](std::size_t index) {
@@ -409,7 +433,7 @@ LeafOutput evaluate(
       state.theta = legacy || std::hypot(x, y) > 1e-6 ?
         std::atan2(y, x) : params.history.initial_angle;
       if (!legacy) {
-        state.handoff_gain = 0.0;
+        state.handoff_gain = 1.0;
         state.filtered_theta_rate = 0.0;
       }
     }
@@ -443,8 +467,6 @@ LeafOutput evaluate(
   double risk_c = 0.0;
   double risk_e = 0.0;
   double axial_block_risk = 0.0;
-  double pocket_product = 1.0;
-  std::size_t pocket_count = 0;
 
   for (std::size_t slot = 0; slot < neighbours.count; ++slot) {
     const auto & contribution = neighbours.entries[slot];
@@ -454,8 +476,6 @@ LeafOutput evaluate(
     const double neighbour_clearance =
       clearances[contribution.index] - params.clearance_margin;
     const double weight = risk_weight(neighbour_clearance, params.risk_length);
-    pocket_product *= risk_weight(neighbour_clearance, params.pocket_length);
-    ++pocket_count;
 
     if (contribution.axial_block) {
       axial_block_risk += weight;
@@ -520,18 +540,9 @@ LeafOutput evaluate(
 
   // Activation does not depend on the selected tangent. Track observations
   // and ownership while off, but defer optimization until authority is positive.
-  // --- pocket guard --------------------------------------------------------
-  // Geometric mean over however many neighbours this sensor actually has, so
-  // a three-neighbour wrist sensor and a four-neighbour ring sensor are judged
-  // on the same scale.
-  const double mean_risk = pocket_count > 0 ?
-    std::pow(std::max(pocket_product, 0.0), 1.0 / static_cast<double>(pocket_count)) :
-    0.0;
-  const double alpha_free = std::clamp(
-    1.0 - sigmoid((mean_risk - params.pocket_threshold) /
-    std::max(params.pocket_epsilon, 1e-9)),
-    0.0,
-    1.0);
+  // alpha_free is a compatibility diagnostic only. Neighbour detections
+  // constrain candidate scores, never the amplitude of every tangent.
+  const double alpha_free = 1.0;
 
   // --- blockage gate -------------------------------------------------------
   // History asks whether goal progress moves this sensor toward its mounting
@@ -565,8 +576,7 @@ LeafOutput evaluate(
   // metric, so the whole leaf has to speak about one sensor.
   const double alpha_distance = distance_activation(
     clearance, params.alpha_on_distance, params.alpha_off_distance);
-  const double alpha_total = alpha_distance * alpha_block * alpha_free *
-    (legacy ? 1.0 : state.handoff_gain);
+  const double alpha_total = alpha_distance * alpha_block;
 
   const double raw_metric_gate = std::min(
     2.0 * (1.0 - sigmoid(clearance_rate / std::max(params.metric_rate_scale, 1e-9))),
@@ -788,8 +798,8 @@ LeafOutput evaluate(
     if (capture) { decision.events |= 1; }
     // The gradient vanishes at minima as well as maxima, so seed the ODE from
     // a coarse maximum instead of letting it settle into the wrong stationary
-    // point.  The metric is ~0 at this instant, so the discrete jump in theta
-    // has no effect on the commanded acceleration.
+    // point. A sensor switch may re-seed at nonzero metric; no zero-authority
+    // transition is assumed, and the existing joint command limits remain.
     double best_score = -std::numeric_limits<double>::infinity();
     double best_theta = legacy ? 0.0 : params.history.initial_angle;
     for (int seed = 0; seed < (legacy || adaptive ? 8 : 0); ++seed) {
@@ -832,9 +842,7 @@ LeafOutput evaluate(
   // Stall: the leaf is commanding a push but the control point is not making
   // tangential progress.  Uses the previous cycle's tangent rate, which is the
   // motion the previous command actually produced.
-  // The distance-driven part of the push is already known here; the progress and
-  // pocket factors only scale it down, so this is the right "is it trying"
-  // signal without reordering the rest of the cycle.
+  // The distance-driven push supplies the legacy stall reference.
   const double commanded_push =
     std::max(params.accel_gain, 0.0) *
     std::exp(-clearance / std::max(params.accel_length, 1e-9));

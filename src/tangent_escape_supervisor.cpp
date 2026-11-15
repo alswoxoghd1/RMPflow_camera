@@ -330,8 +330,7 @@ void TangentEscapeSupervisor::evaluate_ode(
     trial_state.active = true; trial_state.theta_valid = true;
     trial_state.sensor_index = owner; trial_state.theta = angle;
     trial_state.filtered_theta_rate = 0.0;
-    // Compare all candidates at full handoff authority, including initial seeds.
-    // Actual output keeps its ramp; this is a common evaluation condition only.
+    // Candidate and actual policies both use full ownership authority.
     trial_state.handoff_gain = 1.0;
     auto trial_params = leaf_params;
     trial_params.response_mobility = {};
@@ -358,9 +357,16 @@ void TangentEscapeSupervisor::evaluate_ode(
       error.dot(context.tcp_jacobian*displacement)/(std::max(error.norm(),1e-9)*length));
     candidate.execution=ode.history.weight_escape*std::tanh(
       trial.tangent.dot(context.control_point_jacobians[owner]*displacement)/length);
-    // Existing valid local range models plus explicit unknown-motion exposure.
-    // Neither term reconstructs a geometric obstacle bearing.
-    candidate.risk=ode.history.weight_risk*risk.value;
+    // The old risk remains separately configurable (default zero). The new
+    // non-owner cost only uses validated, direction-supported closing evidence.
+    // Existing shadow fields retain the original diagnostic model semantics.
+    const auto neighbor_risk=sensor_history_.evaluate_neighbors(displacement,owner);
+    candidate.risk=ode.history.weight_risk*risk.value +
+      ode.history.weight_neighbor_risk*neighbor_risk.value;
+    candidate.neighbor={ode.history.weight_neighbor_risk*neighbor_risk.value,
+      neighbor_risk.confidence,static_cast<double>(neighbor_risk.model_count),
+      static_cast<double>(neighbor_risk.unknown_count),static_cast<double>(neighbor_risk.critical_sensor),
+      neighbor_risk.critical_change,neighbor_risk.critical_sigma};
     candidate.shadow={risk.nominal_cost,risk.uncertainty_cost,risk.unknown_motion,
       risk.shadow_support,static_cast<double>(risk.shadow_sensor),risk.critical_change,risk.critical_sigma};
     return candidate;
@@ -604,7 +610,7 @@ void TangentEscapeSupervisor::evaluate_ode(
     // Lightweight decisions accompany every cycle; models on change plus
     // full keyframes every 0.5 s allow recovery after a dropped packet.
     const std::size_t start = values.size();
-    values.insert(values.end(), {45045.0, 10.0, 0.0}); // magic, version, payload length
+    values.insert(values.end(), {45045.0, 11.0, 0.0}); // magic, version, payload length
     const auto & d = leaf.decision;
     values.insert(values.end(), {
       static_cast<double>(++history_record_sequence_), dt,
@@ -720,6 +726,9 @@ void TangentEscapeSupervisor::evaluate_ode(
       static_cast<double>(boost.phase),boost.deficit_time,boost.cap_time,
       boost.command_coverage,boost.exhausted?1.:0.,bp.enabled?1.:0.,bp.maximum,
       bp.rise_rate,bp.decay_rate,bp.trigger_time,bp.settle_time});
+    values.push_back(ode.history.weight_neighbor_risk);
+    for (const auto & component:response.neighbor)
+      values.insert(values.end(),component.begin(),component.end());
     values[start + 2] = static_cast<double>(values.size() - start - 3);
   }
   *debug_data = std::move(values);

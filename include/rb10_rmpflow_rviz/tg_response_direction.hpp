@@ -9,6 +9,8 @@ namespace rb10_rmpflow_rviz {
 struct TgDirectionCandidate {
   // nominal cost, uncertainty cost, unknown exposure, support, sensor, delta, sigma
   std::array<double,7> shadow{};
+  // neighbor cost, support, model count, unknown count, sensor, change, sigma
+  std::array<double,7> neighbor{};
   double goal{0},execution{0},risk{0};
   bool valid{false};
   TgDirectionCandidate()=default;
@@ -32,7 +34,7 @@ struct TgResponseDirection {
   double current_score{0},best_score{0},chosen_angle{0},sweep_us{0};
   double observation_confidence{1},goal_speed{0},poor_evidence{0},progress_evidence{0},pending_angle{0};
   std::array<double,candidate_count> sweep_scores{},sweep_goal{},sweep_execution{},sweep_risk{},sweep_continuity{};
-  std::array<std::array<double,candidate_count>,7> shadow{};
+  std::array<std::array<double,candidate_count>,7> shadow{},neighbor{};
   double shadow_window_stamp{-1},shadow_stalled{0},shadow_worsening{0};
   // Weighted costs, updated only around directions actually applied to the robot.
   std::array<double,candidate_count> sweep_failure{};
@@ -203,7 +205,7 @@ struct TgResponseDirection {
       for(std::size_t k=0;k<candidate_count;++k){
         const TgDirectionCandidate c=score(k*2*M_PI/candidate_count);const double raw=c.total();
         sweep_goal[k]=c.goal;sweep_execution[k]=c.execution;sweep_risk[k]=c.risk;
-        for(std::size_t j=0;j<shadow.size();++j)shadow[j][k]=c.shadow[j];
+        for(std::size_t j=0;j<shadow.size();++j){shadow[j][k]=c.shadow[j];neighbor[j][k]=c.neighbor[j];}
         if(!std::isfinite(raw)){score_valid[k]=false;sweep_scores[k]=NAN;continue;}
         sweep_scores[k]=score_valid[k]?(1-alpha)*sweep_scores[k]+alpha*raw:raw;
         score_valid[k]=true;
