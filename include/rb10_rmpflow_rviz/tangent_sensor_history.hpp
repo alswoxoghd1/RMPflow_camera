@@ -25,7 +25,10 @@ struct Params
   double weight_escape{0.2};
   double escape_length{0.01};  // common displacement scale, metres
   double reselect_interval{0.1};
-  double weight_neighbor_risk{0.0}; // observed, supported non-owner closing only
+  double weight_neighbor_risk{0.0}; // current range times mounting-axis alignment
+  std::array<double,kSensorCount> neighbor_distances = [] {
+    std::array<double,kSensorCount> a{}; a.fill(0.25); return a;
+  }();
   double weight_risk{0.0};  // range extrapolation is diagnostic by default
   double weight_continuity{0.1};
   double unknown_motion_weight{0.1};
@@ -108,6 +111,14 @@ struct PredictionCheck
   bool valid{false};
 };
 
+struct NeighborRisk
+{
+  double value{0.0}, alignment{0.0}, closeness{0.0};
+  std::size_t detection_count{0};
+  int critical_sensor{-1};
+  double range{0.0}, distance_limit{0.0};
+};
+
 class History
 {
 public:
@@ -123,9 +134,9 @@ public:
   std::array<double, kSensorCount> ranges() const;
   std::array<double, kSensorCount> rates() const;
   Risk evaluate(const JointVector & displacement, const KinematicsContext & context) const;
-  // Soft cost in [0,1], not a free-space certificate. Unknown/stale/unexcited
-  // directions carry no invented bearing or directional risk.
-  Risk evaluate_neighbors(const JointVector & displacement, std::size_t owner) const;
+  // Soft mounting-direction preference, not predicted obstacle motion/safety.
+  NeighborRisk evaluate_neighbors(const Eigen::Vector3d & tangent, std::size_t owner,
+    const KinematicsContext & context) const;
 
 private:
   std::array<PredictionCheck,kSensorCount> prediction_checks_{};

@@ -9,7 +9,7 @@ namespace rb10_rmpflow_rviz {
 struct TgDirectionCandidate {
   // nominal cost, uncertainty cost, unknown exposure, support, sensor, delta, sigma
   std::array<double,7> shadow{};
-  // neighbor cost, support, model count, unknown count, sensor, change, sigma
+  // v12 neighbor: weighted cost, alignment, closeness, detections, sensor, range, distance limit
   std::array<double,7> neighbor{};
   double goal{0},execution{0},risk{0};
   bool valid{false};

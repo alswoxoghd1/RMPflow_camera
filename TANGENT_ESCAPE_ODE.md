@@ -1,3 +1,42 @@
+# Current neighbor-direction revision — 2026-11-17
+
+This section supersedes the 2026-11-15 observed-neighbor regression cost below.
+Only the neighbor score changes; goal/execution scores, observed stall/rotation,
+authority boost and removal of alpha_f/alpha_h are retained.
+
+For fresh currently detected sensors j other than owner i, in common world coordinates:
+
+- `c_j = clip(1 - rho_j / d_N,j, 0, 1)` (current calibrated sensor input, not clearance).
+- `a_ij(theta) = max(0, n_j^T t_i(theta))`, with unit mounting axis and candidate tangent.
+- `R_i(theta) = max_j c_j * a_ij(theta)`; empty set gives zero.
+- `S_i = S_g + S_t - w_N R_i`, where S_g and S_t already include their weights.
+
+There is no displacement magnitude, candidate joint prediction, regression model,
+directional support, noise band or model-validation gate in this neighbor cost.
+A first fresh detection contributes immediately; its own TG block need not be active.
+Invalid, lost, masked and stale detections are excluded by the input path/freshness check.
+The mounting-axis bearing is a proxy, especially for omnidirectional capacitive sensing.
+This is a soft directional preference, not predicted link clearance or collision probability.
+A penalized candidate can still win on total score. Different links need not move in
+parallel to the owner's tangent; this simple cost intentionally does not predict that motion.
+
+Main YAML: weight remains 0.3; `tg_rmp_neighbor_distances` uses sensor-control-point
+order, 0.25 m except tof_N (index 6), 0.15 m. All entries must be positive and finite.
+Old regression diagnostics remain for recording compatibility/analysis; they do not
+enter the current candidate risk score. Actual response history still drives rotation.
+
+Trace v12 keeps the v11 suffix length but changes its seven arrays to weighted cost,
+alignment, closeness, detection count, critical sensor, current range, distance limit.
+Alignment, closeness, critical sensor, range and distance limit describe the
+maximum-cost sensor; no winner has id -1 and zero values. Detection count includes
+fresh in-range non-owner sensors regardless of alignment. Old v11 remains decoded
+with its original field names; archived parameters identify per-sensor cutoffs.
+Tests cover first detection, owner exclusion, perpendicular/opposite directions,
+common-frame rotation, maximum aggregation, cutoff, zero range and stale/lost input.
+No physical experiment or latency validation has been performed for this revision.
+
+---
+
 # Current activation revision — 2026-11-15
 
 This section supersedes older pocket/handoff explanations retained below as design history.

@@ -22,7 +22,7 @@ public:
     if (tg[44]>.5 || !(tg[10]>1e-9)) return false;  // actual TG contribution only
     const auto n=static_cast<std::size_t>(tg[50]);
     const auto tail=114+8*n, payload=tail+3;
-    if (tg.size()<payload+67 || tg[tail]!=45045 || tg[tail+1]<1 || tg[tail+1]>11 || std::floor(tg[tail+1])!=tg[tail+1]) return false;
+    if (tg.size()<payload+67 || tg[tail]!=45045 || tg[tail+1]<1 || tg[tail+1]>12 || std::floor(tg[tail+1])!=tg[tail+1]) return false;
     if (!(static_cast<unsigned>(tg[payload+2]) & 256U)) return false;
     if (tg[payload+66]!=8 || tg.size()<payload+107) return false;
     const auto w=write_.load(std::memory_order_relaxed),r=read_.load(std::memory_order_acquire);

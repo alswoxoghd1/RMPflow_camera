@@ -121,7 +121,9 @@ rmpflow_controller:
     tg_rmp_history_escape_length: 0.01
     tg_rmp_history_reselect_interval: 0.1  # legacy trace setting; v4 uses measured response windows
     tg_rmp_history_weight_risk: 0.0  # old extrapolation remains diagnostic
-    tg_rmp_history_weight_neighbor_risk: 0.3  # provisional soft cost; validated non-owner closing only
+    tg_rmp_history_weight_neighbor_risk: 0.3  # current distance x mounting-direction alignment
+    # Metres, sensor_control_points order; tof_N (index 6) uses 15 cm, others 25 cm.
+    tg_rmp_neighbor_distances: [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.15, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
     tg_rmp_history_weight_continuity: 0.0  # no selected-angle retention bonus
     tg_rmp_unknown_motion_weight: 0.1
     tg_rmp_max_direction_rate: 1.5

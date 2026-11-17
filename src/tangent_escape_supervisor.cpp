@@ -231,6 +231,8 @@ void TangentEscapeSupervisor::evaluate_ode(
   leaf_params.capture_history_decision = config_.record_history_diagnostics && debug_data != nullptr;
   leaf_params.direction_mode = ode.direction_mode;
   leaf_params.history = ode.history;
+  // Historical regression remains diagnostic, including fallback seed paths.
+  leaf_params.history.weight_risk = 0.0;
   leaf_params.response_input = sensor_history_.current();
   leaf_params.enabled = params.enabled;
   leaf_params.metric_mu = ode.metric_mu;
@@ -357,16 +359,13 @@ void TangentEscapeSupervisor::evaluate_ode(
       error.dot(context.tcp_jacobian*displacement)/(std::max(error.norm(),1e-9)*length));
     candidate.execution=ode.history.weight_escape*std::tanh(
       trial.tangent.dot(context.control_point_jacobians[owner]*displacement)/length);
-    // The old risk remains separately configurable (default zero). The new
-    // non-owner cost only uses validated, direction-supported closing evidence.
-    // Existing shadow fields retain the original diagnostic model semantics.
-    const auto neighbor_risk=sensor_history_.evaluate_neighbors(displacement,owner);
-    candidate.risk=ode.history.weight_risk*risk.value +
-      ode.history.weight_neighbor_risk*neighbor_risk.value;
-    candidate.neighbor={ode.history.weight_neighbor_risk*neighbor_risk.value,
-      neighbor_risk.confidence,static_cast<double>(neighbor_risk.model_count),
-      static_cast<double>(neighbor_risk.unknown_count),static_cast<double>(neighbor_risk.critical_sensor),
-      neighbor_risk.critical_change,neighbor_risk.critical_sigma};
+    // Independent current-detection preference; no candidate displacement,
+    // regression support or model validation enters this cost.
+    const auto neighbor_risk=sensor_history_.evaluate_neighbors(trial.tangent,owner,context);
+    candidate.risk=ode.history.weight_neighbor_risk*neighbor_risk.value;
+    candidate.neighbor={candidate.risk,neighbor_risk.alignment,neighbor_risk.closeness,
+      static_cast<double>(neighbor_risk.detection_count),static_cast<double>(neighbor_risk.critical_sensor),
+      neighbor_risk.range,neighbor_risk.distance_limit};
     candidate.shadow={risk.nominal_cost,risk.uncertainty_cost,risk.unknown_motion,
       risk.shadow_support,static_cast<double>(risk.shadow_sensor),risk.critical_change,risk.critical_sigma};
     return candidate;
@@ -610,7 +609,7 @@ void TangentEscapeSupervisor::evaluate_ode(
     // Lightweight decisions accompany every cycle; models on change plus
     // full keyframes every 0.5 s allow recovery after a dropped packet.
     const std::size_t start = values.size();
-    values.insert(values.end(), {45045.0, 11.0, 0.0}); // magic, version, payload length
+    values.insert(values.end(), {45045.0, 12.0, 0.0}); // magic, version, payload length
     const auto & d = leaf.decision;
     values.insert(values.end(), {
       static_cast<double>(++history_record_sequence_), dt,
@@ -639,7 +638,7 @@ void TangentEscapeSupervisor::evaluate_ode(
     const auto & h = ode.history;
     // Includes compiled estimator constants that ROS parameter services cannot report.
     values.insert(values.end(), {h.window, h.horizon, h.clearance, h.risk_length,
-      h.weight_goal, h.weight_risk, h.weight_continuity, h.unknown_motion_weight,
+      h.weight_goal, 0.0, h.weight_continuity, h.unknown_motion_weight,
       h.max_direction_rate, h.direction_filter_tau, h.handoff_time, h.initial_angle,
       h.fresh_time, h.expiry, h.sample_interval, h.ridge, h.noise_floor, h.max_joint_step,
       ode.direction_rate, ode.owner_hysteresis, ode.sensor_hold_time, config_.solve_offset});

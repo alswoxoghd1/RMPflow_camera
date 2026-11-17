@@ -2022,6 +2022,7 @@ public:
     declare_parameter("tg_rmp_history_reselect_interval", 0.1);
     declare_parameter("tg_rmp_history_weight_risk", 0.0);
     declare_parameter("tg_rmp_history_weight_neighbor_risk", 0.0);
+    declare_parameter("tg_rmp_neighbor_distances", std::vector<double>(tangent_sensor_history::kSensorCount,0.25));
     declare_parameter("tg_rmp_history_weight_continuity", 0.1);
     declare_parameter("tg_rmp_unknown_motion_weight", 0.1);
     declare_parameter("tg_rmp_max_direction_rate", 1.5);
@@ -3097,6 +3098,14 @@ private:
     history.reselect_interval = positive("tg_rmp_history_reselect_interval");
     history.weight_risk = nonnegative("tg_rmp_history_weight_risk");
     history.weight_neighbor_risk = nonnegative("tg_rmp_history_weight_neighbor_risk");
+    const auto neighbor_distances=get_parameter("tg_rmp_neighbor_distances").as_double_array();
+    if (neighbor_distances.size()!=history.neighbor_distances.size())
+      throw std::invalid_argument("tg_rmp_neighbor_distances must have one entry per sensor");
+    for (std::size_t k=0;k<neighbor_distances.size();++k) {
+      if (!std::isfinite(neighbor_distances[k]) || neighbor_distances[k]<=0.0)
+        throw std::invalid_argument("tg_rmp_neighbor_distances must be finite and positive");
+      history.neighbor_distances[k]=neighbor_distances[k];
+    }
     history.weight_continuity = nonnegative("tg_rmp_history_weight_continuity");
     history.unknown_motion_weight = nonnegative("tg_rmp_unknown_motion_weight");
     history.max_direction_rate = positive("tg_rmp_max_direction_rate");
